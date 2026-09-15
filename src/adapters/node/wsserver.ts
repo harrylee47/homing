@@ -18,6 +18,7 @@ export interface WsServerDeps {
   cipher: Cipher
   hub: Hub
   heartbeatSec: number
+  baseUrl: string | null
 }
 
 /**
@@ -35,7 +36,9 @@ export function createWsServer(deps: WsServerDeps): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true })
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    const session = new DeviceSession({ store: deps.store, cipher: deps.cipher, hub: deps.hub })
+    const session = new DeviceSession({
+      store: deps.store, cipher: deps.cipher, hub: deps.hub, baseUrl: deps.baseUrl,
+    })
     let alive = true
     let seq = 0
 

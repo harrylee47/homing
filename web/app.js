@@ -414,6 +414,11 @@ async function rules() {
     render(`
       <h1>规则</h1>
       <p class="muted">按优先级从小到大匹配。没有规则命中时走兜底：推送到全部启用渠道并归档。</p>
+      ${!rs.length && chs.length ? `<div class="card">
+        <b>还没有规则</b>
+        <p class="muted">可以一键写入一组建议规则：银行验证码高优先级 + 自动提取、政务运营商正常推送、推广短信只归档不打扰、来电单独分组。之后随时可改。</p>
+        <div class="btnrow"><button id="seed" class="sm">写入建议规则</button></div>
+      </div>` : ''}
       ${rs.length ? `<div class="card list">${rs.map((r) => `
         <div class="item" data-id="${esc(r.id)}">
           <div class="row">
@@ -427,6 +432,15 @@ async function rules() {
       <div class="btnrow"><button id="add">新建规则</button></div>`)
 
     $('#add').onclick = () => ruleEditor(null, chs)
+    const seedBtn = $('#seed')
+    if (seedBtn) seedBtn.onclick = async () => {
+      seedBtn.disabled = true
+      try {
+        const r = await api('/rules/seed', { method: 'POST', body: { channels: chs.map((c) => c.id) } })
+        toast(`已写入 ${r.created} 条规则`)
+        rules()
+      } catch (e) { toast(e.message); seedBtn.disabled = false }
+    }
     for (const el of app.querySelectorAll('.item')) {
       el.onclick = () => ruleEditor(rs.find((r) => r.id === el.dataset.id), chs)
     }
@@ -561,15 +575,50 @@ async function channels() {
           </div>
           <div class="muted" data-result="${esc(c.id)}"></div>
         </div>`).join('')}</div>` : '<div class="card muted">还没有渠道。没有渠道则收到短信不会推送到任何地方。</div>'}
-      <h2>新增 Telegram</h2>
+      <h2>新增渠道</h2>
       <div class="card">
-        <label>名称</label><input id="name" value="主 Telegram">
-        <label>Bot Token</label><input id="bt" class="mono" type="password">
-        <label>Chat ID</label><input id="cid" class="mono">
-        <div class="muted">正文会以模糊形式发送，点击才可见——明文转发验证码会导致 Bot 被封禁。</div>
+        <label>类型</label>
+        <select id="type">
+          <option value="bark">Bark（推荐用于验证码）</option>
+          <option value="telegram">Telegram</option>
+          <option value="webhook">Webhook</option>
+        </select>
+        <label>名称</label><input id="name" value="">
+        <div id="fields"></div>
         <div class="btnrow"><button id="add">添加</button></div>
         <div id="err" class="err-text"></div>
       </div>`)
+
+    const FORMS = {
+      bark: {
+        name: '主 Bark',
+        html: `<label>服务端地址</label><input id="f_server" class="mono" placeholder="https://bark.example.com">
+               <label>设备 Key</label><input id="f_key" class="mono">
+               <div class="muted">自建 bark-server。验证码会放进通知标题，长按即可复制，无需打开任何 App。</div>`,
+        collect: () => ({ server: $('#f_server').value.trim(), key: $('#f_key').value.trim() }),
+      },
+      telegram: {
+        name: '主 Telegram',
+        html: `<label>Bot Token</label><input id="f_bt" class="mono" type="password">
+               <label>Chat ID</label><input id="f_cid" class="mono">
+               <div class="muted">正文会以模糊形式发送，点击才可见——明文转发验证码会导致 Bot 被封禁。</div>`,
+        collect: () => ({ bot_token: $('#f_bt').value.trim(), chat_id: $('#f_cid').value.trim() }),
+      },
+      webhook: {
+        name: 'Webhook',
+        html: `<label>目标地址</label><input id="f_url" class="mono" placeholder="https://example.com/hook">
+               <div class="muted">正文会发往这个地址，必须是 https。</div>`,
+        collect: () => ({ url: $('#f_url').value.trim() }),
+      },
+    }
+
+    const paintForm = () => {
+      const t = $('#type').value
+      $('#fields').innerHTML = FORMS[t].html
+      if (!$('#name').value.trim()) $('#name').value = FORMS[t].name
+    }
+    $('#type').onchange = () => { $('#name').value = ''; paintForm() }
+    paintForm()
 
     for (const b of app.querySelectorAll('[data-test]')) {
       b.onclick = async () => {
@@ -597,13 +646,11 @@ async function channels() {
     }
 
     $('#add').onclick = async () => {
+      const t = $('#type').value
       try {
         await api('/channels', {
           method: 'POST',
-          body: {
-            type: 'telegram', name: $('#name').value.trim() || 'Telegram',
-            config: { bot_token: $('#bt').value.trim(), chat_id: $('#cid').value.trim() },
-          },
+          body: { type: t, name: $('#name').value.trim() || FORMS[t].name, config: FORMS[t].collect() },
         })
         toast('已添加')
         channels()

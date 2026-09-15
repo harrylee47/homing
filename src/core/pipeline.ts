@@ -22,6 +22,8 @@ export interface PipelineDeps {
   tzOffsetMin?: number
   /** 重试退避基数，测试用 */
   retryBaseMs?: number
+  /** 控制台地址，用于生成通知里的深链。未配置则通知不带跳转。 */
+  baseUrl?: string | null
 }
 
 /**
@@ -68,6 +70,8 @@ export async function processEvent(
       code,
       eventId,
       occurredAt: e.occurred_at,
+      consoleUrl: deps.baseUrl ?? null,
+      ...(action.bark ? { options: { bark: action.bark } } : {}),
     }
 
     const results = await dispatch(targets, msg, { retryBaseMs: deps.retryBaseMs })
@@ -107,6 +111,10 @@ function mergeActions(matched: Rule[]): RuleAction {
     template: first.action.template,
     archive: matched.some((r) => r.action.archive),
     stop_processing: first.action.stop_processing,
+    // Bark 选项取优先级最高那条规则的，避免多条互相覆盖导致行为不可预期
+    ...(matched.find((r) => r.action.bark)?.action.bark
+      ? { bark: matched.find((r) => r.action.bark)!.action.bark }
+      : {}),
   }
 }
 

@@ -19,7 +19,11 @@ await store.migrate()
 
 const cipher = await createCipher(cfg.dek)
 const hub = new MemoryHub()
-const wss = createWsServer({ store, cipher, hub, heartbeatSec: DEFAULT_AGENT_CONFIG.heartbeat_sec })
+const wss = createWsServer({
+  store, cipher, hub,
+  heartbeatSec: DEFAULT_AGENT_CONFIG.heartbeat_sec,
+  baseUrl: cfg.baseUrl,
+})
 
 /**
  * 登录连续失败时告警。计划 §6.3 要求「失败立即告警到 Telegram」——

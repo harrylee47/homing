@@ -23,6 +23,8 @@ export interface SessionDeps {
   store: Store
   cipher: Cipher
   hub: Hub
+  /** 控制台地址，供通知生成深链 */
+  baseUrl?: string | null
   config?: AgentConfig
   /** 可注入，便于测试 */
   now?: () => number
@@ -231,7 +233,10 @@ export class DeviceSession {
     eventId: string,
     e: { device_id: string; kind: EventKindT; from: string; content: string; occurred_at: number },
   ): void => {
-    void processEvent({ store: this.deps.store, cipher: this.deps.cipher }, eventId, e)
+    void processEvent(
+      { store: this.deps.store, cipher: this.deps.cipher, baseUrl: this.deps.baseUrl ?? null },
+      eventId, e,
+    )
   }
 
   private ackEvent(id: string, status: 'stored' | 'duplicate' | 'rejected', error: string | null = null): SessionAction {

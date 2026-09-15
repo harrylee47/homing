@@ -5,6 +5,7 @@
  * 运行时无关——不依赖任何 Node / Workers API。
  */
 import { z } from 'zod'
+import { BarkOptions } from './providers/bark.js'
 import { EventKind } from './protocol.js'
 
 // ── 匹配条件 ────────────────────────────────────────────────
@@ -42,6 +43,11 @@ export const RuleAction = z.object({
   archive: z.boolean().default(true),
   /** 命中后不再匹配后续规则 */
   stop_processing: z.boolean().default(false),
+  /**
+   * Bark 专属字段（计划 §11.3）。放在规则里而不是渠道配置里，
+   * 是因为它随消息类型变化：银行验证码要穿透专注模式，广告短信不该。
+   */
+  bark: BarkOptions.optional(),
 })
 export type RuleAction = z.infer<typeof RuleAction>
 

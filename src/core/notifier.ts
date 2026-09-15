@@ -7,11 +7,15 @@
  *  - 单个 Provider 故障不得阻塞其他渠道（并发发送，独立超时）
  */
 import { log } from './logging.js'
+import { barkProvider } from './providers/bark.js'
 import { telegramProvider } from './providers/telegram.js'
+import { webhookProvider } from './providers/webhook.js'
 import { ProviderError, type NotifyMessage, type Provider } from './providers/types.js'
 
 export const PROVIDERS: Record<string, Provider<never>> = {
   telegram: telegramProvider as unknown as Provider<never>,
+  bark: barkProvider as unknown as Provider<never>,
+  webhook: webhookProvider as unknown as Provider<never>,
 }
 
 /** 注册渠道实现。M4 的 Bark / Webhook 走同一入口，测试也用它注入桩。 */

@@ -14,6 +14,14 @@ export interface NotifyMessage {
   /** 事件 id，用于深链跳转 */
   eventId: string
   occurredAt: number
+  /** 控制台里这条事件的完整地址。未配置 GW_BASE_URL 时为 null。 */
+  consoleUrl?: string | null
+  /**
+   * 渠道私有选项，按渠道类型分组（如 `{ bark: { level: 'timeSensitive' } }`）。
+   * 放在消息上而不是渠道配置里，是因为它随规则变化：
+   * 银行验证码要穿透专注模式，广告短信不该。
+   */
+  options?: Record<string, unknown>
 }
 
 export interface Provider<C = unknown> {
