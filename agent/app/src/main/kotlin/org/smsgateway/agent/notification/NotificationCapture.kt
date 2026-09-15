@@ -34,8 +34,8 @@ class NotificationCapture : NotificationListenerService() {
             if (!app.captureNotification) return
 
             val pkg = sbn.packageName ?: return
-            // 空白名单 = 不捕获，而不是全捕获
-            if (!app.notificationPackages.contains(pkg)) return
+            // all 模式连以后新装的应用也一起捕获，不用回控制台更新列表
+            if (app.notificationScope != "all" && !app.notificationPackages.contains(pkg)) return
             // 自己的前台服务通知不能被自己捕获，否则会无限自我触发
             if (pkg == packageName) return
 

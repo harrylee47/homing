@@ -28,26 +28,32 @@ class PhoneStateReceiver : BroadcastReceiver() {
             TelephonyManager.EXTRA_STATE_RINGING -> {
                 if (!number.isNullOrBlank()) ringingNumber = number
                 answered = false
+                // 记响铃时刻而不是挂断时刻：系统通话记录里的 date 也是通话开始时间，
+                // 两边对齐才能在「历史导入」时认出这是同一通电话。
+                // 用挂断时刻的话，一通聊了三分钟的电话会差出三分钟，导入就会重复一条。
+                ringingAt = System.currentTimeMillis()
             }
 
             TelephonyManager.EXTRA_STATE_OFFHOOK -> answered = true
 
             TelephonyManager.EXTRA_STATE_IDLE -> {
                 val num = ringingNumber ?: return
+                val at = ringingAt.takeIf { it > 0 } ?: System.currentTimeMillis()
                 ringingNumber = null
-                report(num, if (answered) "incoming" else "missed")
+                ringingAt = 0
+                report(num, if (answered) "incoming" else "missed", at)
             }
         }
     }
 
-    private fun report(number: String, callType: String) {
+    private fun report(number: String, callType: String, at: Long) {
         val app = App.get()
         val event = PendingEvent(
             id = "evt_${UUID.randomUUID()}",
             kind = "call",
             from = number,
             content = if (callType == "missed") "未接来电" else "已接来电",
-            occurredAt = System.currentTimeMillis(),
+            occurredAt = at,
             simSlot = null,
             callType = callType,
             pkg = null,
@@ -62,5 +68,7 @@ class PhoneStateReceiver : BroadcastReceiver() {
         // 广播接收器每次是新实例，状态必须放在伴生对象里
         @Volatile var ringingNumber: String? = null
         @Volatile var answered: Boolean = false
+        /** 响铃开始时刻，作为这通电话的发生时间 */
+        @Volatile var ringingAt: Long = 0
     }
 }

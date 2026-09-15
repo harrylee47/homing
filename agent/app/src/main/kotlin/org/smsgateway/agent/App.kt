@@ -11,6 +11,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import org.smsgateway.agent.net.WsClient
+import org.smsgateway.agent.receiver.CallLogObserver
+import org.smsgateway.agent.receiver.SentSmsObserver
 import org.smsgateway.agent.ui.MainActivity
 import org.smsgateway.agent.util.Log
 import org.smsgateway.agent.util.Prefs
@@ -32,7 +34,12 @@ class App : Application() {
      * 放在内存而不是落盘：Agent 无状态（计划 §2.3），配置以服务端为准，
      * 每次握手都会重新下发。
      */
+    private var sentObserver: SentSmsObserver? = null
+    private var callObserver: CallLogObserver? = null
+
     @Volatile var captureNotification: Boolean = false
+    /** "all" = 全部应用（含以后新装的）；"selected" = 仅白名单 */
+    @Volatile var notificationScope: String = "selected"
     @Volatile var notificationPackages: Set<String> = emptySet()
 
     override fun onCreate() {
@@ -48,8 +55,18 @@ class App : Application() {
             return
         }
 
+        // 读一次就会写入并固定下来。必须在这里读，而不是等到导入时才读——
+        // 那时读到的是「点导入的时刻」，中间实时捕获过的记录会被再导一遍
+        Log.d("采集起点 ${prefs.captureStartedAt}")
+
         ws = WsClient(this, prefs, scope)
         initKeepAlive()
+
+        // 捕获本机发出的短信。没有「已发送」广播，只能监听短信库变化。
+        sentObserver = SentSmsObserver(this).also { it.start() }
+        // 去电同理：NEW_OUTGOING_CALL 从 Android 10 起只发给默认拨号应用
+        callObserver = CallLogObserver(this).also { it.start() }
+
         if (prefs.isPaired) ws.start()
     }
 
