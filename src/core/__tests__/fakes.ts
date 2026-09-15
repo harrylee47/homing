@@ -1,9 +1,14 @@
 /** 测试用的内存 Store 与 Hub。行为要与 SQLite 实现保持一致，尤其是幂等语义。 */
 import type { Connection, Hub } from '../hub.js'
 import type {
-  ChannelRecord, DeviceRecord, EventQuery, InsertEventResult,
+  ChannelRecord, DeviceRecord, EventQuery, InsertEventResult, OutboundRecord,
   PairingCodeRecord, RuleRecord, Store, StoredEvent,
 } from '../store.js'
+
+/** 与 SQLite 实现保持一致的状态机顺序 */
+const OUTBOUND_RANK: Record<string, number> = {
+  pending: 0, accepted: 1, sent: 2, delivered: 3, failed: 4,
+}
 
 export class MemoryStore implements Store {
   devices = new Map<string, DeviceRecord>()
@@ -52,6 +57,22 @@ export class MemoryStore implements Store {
     if (!p || p.used_at !== null || p.expires_at <= now) return null
     this.pairings.set(hash, { ...p, used_at: now })
     return { ...p, used_at: now }
+  }
+
+  outbound = new Map<string, OutboundRecord>()
+
+  async createOutbound(o: OutboundRecord) { this.outbound.set(o.id, o) }
+  async getOutbound(id: string) { return this.outbound.get(id) ?? null }
+  async listOutbound(limit: number, offset: number) {
+    return [...this.outbound.values()].sort((a, b) => b.created_at - a.created_at).slice(offset, offset + limit)
+  }
+  async advanceOutbound(id: string, status: OutboundRecord['status'], error: string | null, at: number) {
+    const o = this.outbound.get(id)
+    if (!o) return
+    const from = OUTBOUND_RANK[o.status] ?? 0
+    const to = OUTBOUND_RANK[status] ?? 0
+    if (status !== 'failed' && to <= from) return
+    this.outbound.set(id, { ...o, status, error, updated_at: at })
   }
 
   async audit(e: { action: string; detail: string | null }) {

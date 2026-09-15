@@ -86,10 +86,24 @@ export class DeviceSession {
       case 'pong':
         return this.onPong(frame.payload)
       case 'cmd_result':
-        // M2 落地发送状态机；此前先记录，避免 Agent 侧误以为服务端不接收
-        log.info('收到指令回执', { device_id: this.deviceId, ...frame.payload })
-        return NONE
+        return this.onCmdResult(frame.payload)
     }
+  }
+
+  /**
+   * 指令回执：推进发送任务状态机。
+   *
+   * cmd_id 即 outbound id —— 两者一一对应，不需要额外的映射表，
+   * 也就不存在「服务端重启后映射丢失」的问题（硬约束④）。
+   */
+  private async onCmdResult(p: {
+    cmd_id: string
+    status: 'accepted' | 'sent' | 'delivered' | 'failed'
+    error: string | null
+  }): Promise<SessionAction> {
+    log.info('收到指令回执', { device_id: this.deviceId, cmd_id: p.cmd_id, status: p.status, error: p.error })
+    await this.deps.store.advanceOutbound(p.cmd_id, p.status, p.error, this.now())
+    return NONE
   }
 
   /** 连接断开时调用，登记离线时间。 */

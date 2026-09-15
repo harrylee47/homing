@@ -82,6 +82,25 @@ export interface PairingCodeRecord {
   created_at: number
 }
 
+/**
+ * 发送任务（计划 §7.3 outbound）。
+ *
+ * 状态机 pending → accepted → sent → delivered，任一步可转 failed。
+ * 每一步都落库，控制台上能看到完整过程——上游 SmsForwarder 在这块体验较糙，
+ * 是明确的改进点（计划 §5.5）。
+ */
+export interface OutboundRecord {
+  id: string
+  device_id: string
+  to_number: string
+  content_enc: Uint8Array
+  sim_slot: number | null
+  status: 'pending' | 'accepted' | 'sent' | 'delivered' | 'failed'
+  error: string | null
+  created_at: number
+  updated_at: number
+}
+
 export interface Store {
   /** 启动时执行迁移。必须幂等。 */
   migrate(): Promise<void>
@@ -109,6 +128,16 @@ export interface Store {
   createPairingCode(p: PairingCodeRecord): Promise<void>
   /** 按哈希取出未使用且未过期的配对码 */
   takePairingCode(codeHash: string, now: number): Promise<PairingCodeRecord | null>
+
+  // 发送任务
+  createOutbound(o: OutboundRecord): Promise<void>
+  getOutbound(id: string): Promise<OutboundRecord | null>
+  listOutbound(limit: number, offset: number): Promise<OutboundRecord[]>
+  /**
+   * 状态机推进。只允许前进不允许后退：delivered 之后再收到 sent 必须忽略，
+   * 因为多段短信的回执顺序不保证。
+   */
+  advanceOutbound(id: string, status: OutboundRecord['status'], error: string | null, at: number): Promise<void>
 
   // 审计
   audit(entry: { actor: string | null; action: string; detail: string | null; ip: string | null; created_at: number }): Promise<void>

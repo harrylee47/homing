@@ -13,6 +13,8 @@ import type { Cipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
 import { dispatch, PROVIDERS, type ChannelConfig } from '../../core/notifier.js'
 import { createPairing, redeemPairing } from '../../core/pairing.js'
+import { makeFrame, newCmdId } from '../../core/frames.js'
+import type { DownstreamFrame } from '../../core/protocol.js'
 import { RuleAction, RuleMatch } from '../../core/rules.js'
 import type { Hub } from '../../core/hub.js'
 import type { Store } from '../../core/store.js'
@@ -217,6 +219,93 @@ route('DELETE', '/api/rules/:id', async ({ res, params, deps }) => {
   await deps.store.deleteRule(params.id!)
   json(res, 200, { ok: true })
 })
+
+// ── 下行发送 ────────────────────────────────────────────────
+
+/**
+ * 发短信限速。
+ *
+ * 这个接口能让设备真的发出短信，误用或凭证泄露的代价是实打实的话费与骚扰，
+ * 所以即便已经过了鉴权也要限速（计划 §11.4 安全约束③）。
+ */
+const outboundWindow: number[] = []
+const OUTBOUND_MAX_PER_HOUR = 20
+
+function outboundRateLimited(): boolean {
+  const cutoff = now() - 3600_000
+  while (outboundWindow.length > 0 && outboundWindow[0]! < cutoff) outboundWindow.shift()
+  if (outboundWindow.length >= OUTBOUND_MAX_PER_HOUR) return true
+  outboundWindow.push(now())
+  return false
+}
+
+route('POST', '/api/outbound', async ({ res, body, deps, ip }) => {
+  const b = body as { device_id?: string; to?: string; text?: string; sim_slot?: number | null }
+  if (!b.device_id || !b.to || !b.text) return json(res, 400, { error: '缺少 device_id / to / text' })
+  if (b.text.length > 4096) return json(res, 400, { error: '内容过长' })
+
+  if (outboundRateLimited()) {
+    log.warn('发送请求超出限速', { ip })
+    return json(res, 429, { error: `超出限速（每小时 ${OUTBOUND_MAX_PER_HOUR} 条）` })
+  }
+
+  const device = await deps.store.getDevice(b.device_id)
+  if (!device) return json(res, 404, { error: '设备不存在' })
+  if (device.status === 'revoked') return json(res, 403, { error: '设备凭证已吊销' })
+
+  // cmd_id 即 outbound id：一一对应，服务端不需要额外的映射表
+  const id = `cmd_${crypto.randomUUID()}`
+  const t = now()
+  await deps.store.createOutbound({
+    id, device_id: b.device_id, to_number: b.to,
+    content_enc: await deps.cipher.encrypt(b.text),
+    sim_slot: b.sim_slot ?? null,
+    status: 'pending', error: null, created_at: t, updated_at: t,
+  })
+
+  const frame = makeFrame('cmd', {
+    cmd_id: id, action: 'send_sms',
+    args: { to: b.to, text: b.text, sim_slot: b.sim_slot ?? null },
+  }, t) as DownstreamFrame
+
+  // 设备离线就直接失败：短信有时效性，排队几小时后再发出去
+  // 往往比不发更糟（验证码早已过期，对方收到莫名其妙的回复）
+  if (!deps.hub.send(b.device_id, frame)) {
+    await deps.store.advanceOutbound(id, 'failed', '设备离线', now())
+    return json(res, 503, { id, status: 'failed', error: '设备离线' })
+  }
+
+  await deps.store.audit({ actor: 'console', action: 'outbound.create', detail: `${id} → ${maskNumber(b.to)}`, ip, created_at: t })
+  json(res, 202, { id, status: 'pending' })
+})
+
+route('GET', '/api/outbound/:id', async ({ res, params, deps }) => {
+  const o = await deps.store.getOutbound(params.id!)
+  if (!o) return json(res, 404, { error: '任务不存在' })
+  json(res, 200, {
+    id: o.id, device_id: o.device_id, to: o.to_number,
+    text: await deps.cipher.decrypt(o.content_enc),
+    sim_slot: o.sim_slot, status: o.status, error: o.error,
+    created_at: o.created_at, updated_at: o.updated_at,
+  })
+})
+
+route('GET', '/api/outbound', async ({ res, url, deps }) => {
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 200)
+  const offset = Math.max(Number(url.searchParams.get('offset') ?? 0), 0)
+  const rows = await deps.store.listOutbound(limit, offset)
+  json(res, 200, {
+    outbound: await Promise.all(rows.map(async (o) => ({
+      id: o.id, device_id: o.device_id, to: o.to_number,
+      text: await deps.cipher.decrypt(o.content_enc),
+      status: o.status, error: o.error, created_at: o.created_at, updated_at: o.updated_at,
+    }))),
+  })
+})
+
+/** 审计日志里不写完整号码。 */
+const maskNumber = (n: string): string =>
+  n.length <= 5 ? '*'.repeat(n.length) : n.slice(0, 3) + '*'.repeat(n.length - 5) + n.slice(-2)
 
 // ── 事件 ────────────────────────────────────────────────────
 

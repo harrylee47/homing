@@ -4,8 +4,9 @@
 
 基于 [SmsForwarder](https://github.com/pppscn/SmsForwarder) 裁剪改造，GPL-3.0。
 
-> **状态：开发中（M1）。** 短信 → 规则 → Telegram 全链路已打通，
-> 实测「短信到达 → Telegram 送达」约 1.1 秒。Web 控制台（M3）尚未开始。
+> **状态：开发中（M2）。** 收发双向均已打通：
+> 短信到达 → Telegram 推送约 1.1 秒；通过 API 发送可看到
+> accepted → sent → delivered 完整状态。Web 控制台（M3）尚未开始。
 
 ## Scope 声明
 
@@ -81,6 +82,10 @@ DELETE /api/channels/:id
 GET    /api/rules                  规则列表
 POST   /api/rules                  新增/更新规则
 DELETE /api/rules/:id
+
+POST   /api/outbound               下发短信（限速 20 条/小时）
+GET    /api/outbound/:id            查询发送状态
+GET    /api/outbound                发送历史
 
 GET    /api/events?kind=&limit=&offset=
 GET    /api/health

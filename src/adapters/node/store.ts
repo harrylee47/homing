@@ -11,6 +11,7 @@ import type {
   DeviceRecord,
   EventQuery,
   InsertEventResult,
+  OutboundRecord,
   PairingCodeRecord,
   RuleRecord,
   Store,
@@ -77,7 +78,24 @@ const MIGRATIONS: string[] = [
      created_at INTEGER NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS outbound (
+     id          TEXT PRIMARY KEY,
+     device_id   TEXT NOT NULL,
+     to_number   TEXT NOT NULL,
+     content_enc BLOB NOT NULL,
+     sim_slot    INTEGER,
+     status      TEXT NOT NULL DEFAULT 'pending',
+     error       TEXT,
+     created_at  INTEGER NOT NULL,
+     updated_at  INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_outbound_time ON outbound(created_at DESC)`,
 ]
+
+/** 状态机的前进顺序。数字大者为更后的状态，用于拒绝倒退的回执。 */
+const OUTBOUND_RANK: Record<string, number> = {
+  pending: 0, accepted: 1, sent: 2, delivered: 3, failed: 4,
+}
 
 export class SqliteStore implements Store {
   private readonly db: DatabaseSync
@@ -234,6 +252,44 @@ export class SqliteStore implements Store {
     if (Number(r.changes) === 0) return null
     const row = this.db.prepare('SELECT * FROM pairing_codes WHERE code_hash = ?').get(codeHash)
     return (row as unknown as PairingCodeRecord) ?? null
+  }
+
+  // ── 发送任务 ──────────────────────────────────────────
+
+  async createOutbound(o: OutboundRecord): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO outbound (id, device_id, to_number, content_enc, sim_slot, status, error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(o.id, o.device_id, o.to_number, o.content_enc, o.sim_slot, o.status, o.error, o.created_at, o.updated_at)
+  }
+
+  async getOutbound(id: string): Promise<OutboundRecord | null> {
+    const row = this.db.prepare('SELECT * FROM outbound WHERE id = ?').get(id)
+    return row ? (row as unknown as OutboundRecord) : null
+  }
+
+  async listOutbound(limit: number, offset: number): Promise<OutboundRecord[]> {
+    return this.db
+      .prepare('SELECT * FROM outbound ORDER BY created_at DESC LIMIT ? OFFSET ?')
+      .all(limit, offset) as unknown as OutboundRecord[]
+  }
+
+  /**
+   * 只前进不后退：多段短信的 sent/delivered 回执顺序不保证，
+   * 已经 delivered 的任务不能被后到的 sent 覆盖回去。
+   * failed 是终态之外的例外——任何阶段失败都要能记录下来。
+   */
+  async advanceOutbound(id: string, status: OutboundRecord['status'], error: string | null, at: number): Promise<void> {
+    const cur = this.db.prepare('SELECT status FROM outbound WHERE id = ?').get(id) as { status?: string } | undefined
+    if (!cur?.status) return
+    const from = OUTBOUND_RANK[cur.status] ?? 0
+    const to = OUTBOUND_RANK[status] ?? 0
+    if (status !== 'failed' && to <= from) return
+    this.db
+      .prepare('UPDATE outbound SET status = ?, error = ?, updated_at = ? WHERE id = ?')
+      .run(status, error, at, id)
   }
 
   // ── 审计 ──────────────────────────────────────────────

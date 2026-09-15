@@ -1,7 +1,10 @@
 package org.smsgateway.agent.net
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.BatteryManager
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +20,7 @@ import org.smsgateway.agent.BuildConfig
 import org.smsgateway.agent.db.AgentDatabase
 import org.smsgateway.agent.db.PendingEvent
 import org.smsgateway.agent.protocol.*
+import org.smsgateway.agent.sms.SmsSender
 import org.smsgateway.agent.util.Log
 import org.smsgateway.agent.util.Prefs
 import java.util.UUID
@@ -267,12 +271,46 @@ class WsClient(
         }
     }
 
-    /** M2 落地发送状态机；当前先明确回失败，避免服务端一直等。 */
+    private val smsSender by lazy { SmsSender(ctx) }
+
     private fun onCommand(webSocket: WebSocket, cmd: CmdPayload) {
         Log.i("收到指令 ${cmd.action} cmd_id=${cmd.cmdId}")
-        webSocket.send(
-            frame("cmd_result", CmdResultPayload(cmd.cmdId, "failed", "尚未实现：${cmd.action}")),
-        )
+        when (cmd.action) {
+            "send_sms" -> onSendSms(cmd)
+            else -> report(cmd.cmdId, "failed", "尚未实现：${cmd.action}")
+        }
+    }
+
+    private fun onSendSms(cmd: CmdPayload) {
+        val args = runCatching {
+            Protocol.json.decodeFromJsonElement(SendSmsArgs.serializer(), cmd.args)
+        }.getOrNull()
+        if (args == null) {
+            report(cmd.cmdId, "failed", "send_sms 参数非法")
+            return
+        }
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            report(cmd.cmdId, "failed", "未授予 SEND_SMS 权限")
+            return
+        }
+        // 每一步状态都独立上报，控制台上能看到完整流转
+        smsSender.send(cmd.cmdId, args.to, args.text, args.simSlot) { id, status, error ->
+            report(id, status, error)
+        }
+    }
+
+    /**
+     * 回执必须走当前连接。断线期间产生的回执会丢失 ——
+     * 这是可接受的：outbound 的真实状态以设备重连后的查询为准，
+     * 而短信本身已经发出，重发比丢状态危险得多。
+     */
+    private fun report(cmdId: String, status: String, error: String?) {
+        val socket = ws
+        if (socket == null) {
+            Log.w("回执无法上报（连接已断）cmd=$cmdId status=$status")
+            return
+        }
+        socket.send(frame("cmd_result", CmdResultPayload(cmdId, status, error)))
     }
 
     // ── 补传 ────────────────────────────────────────────────
