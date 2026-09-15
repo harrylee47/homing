@@ -1,6 +1,7 @@
 /**
  * Node 入口。
  */
+import { setDefaultResultOrder } from 'node:dns'
 import { createServer } from 'node:http'
 import { createCipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
@@ -15,6 +16,18 @@ import { TelegramBot } from './bot.js'
 import { isBarkAllowed, isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
 import { createWsServer, isAllowedAgentOrigin } from './wsserver.js'
+
+/**
+ * 强制优先使用 IPv4。
+ *
+ * Docker 默认网络没有 IPv6 出口，而 api.telegram.org 之类的域名同时返回
+ * A 与 AAAA 记录。Node 18+ 默认 verbatim（按 DNS 返回顺序尝试），
+ * 挑中 IPv6 就会立即失败——表现为时快时慢的 "fetch failed"，
+ * 推送偶尔重试才成功、读取更新大概率失败。
+ *
+ * 这是部署形态决定的，属于适配层的事，不放进 core。
+ */
+setDefaultResultOrder('ipv4first')
 
 const cfg = loadConfig()
 const store = new SqliteStore(cfg.dbPath)

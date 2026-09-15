@@ -375,11 +375,24 @@ route('POST', '/api/channels/telegram/discover-chat', async ({ res, body }) => {
   const token = (body as { bot_token?: string })?.bot_token?.trim()
   if (!token) return json(res, 400, { error: '缺少 bot_token' })
 
-  const r = await fetch(`https://api.telegram.org/bot${token}/getUpdates?limit=20`, {
-    signal: AbortSignal.timeout(20_000),
-  }).catch(() => null)
+  // 到 Telegram 的链路偶有超时（实测约 1/6），重试两次基本都能成
+  let r: Response | null = null
+  let lastErr = ''
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    r = await fetch(`https://api.telegram.org/bot${token}/getUpdates?limit=20`, {
+      signal: AbortSignal.timeout(20_000),
+    }).catch((e: unknown) => {
+      lastErr = e instanceof Error ? ((e.cause as { code?: string } | undefined)?.code ?? e.message) : String(e)
+      return null
+    })
+    if (r) break
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 800 * attempt))
+  }
 
-  if (!r) return json(res, 502, { error: '无法连接 Telegram' })
+  if (!r) {
+    log.warn('查询 Telegram 更新失败', { error: lastErr })
+    return json(res, 502, { error: `无法连接 Telegram（${lastErr}），请稍后重试` })
+  }
   if (r.status === 409) {
     return json(res, 409, { error: '该 token 正被另一个程序长轮询，无法读取更新。请换用独立的 Bot。' })
   }
