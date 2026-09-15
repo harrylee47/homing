@@ -17,7 +17,14 @@ const makeApi = (over: Partial<BotApi> = {}): BotApi => ({
     today: { events: 24, outbound: 2, outbound_failed: 0 },
     rules: 4, channels: 2,
   }),
-  events: async ({ q }) => ({ events: q ? EVENTS.filter((e) => e.content.includes(q)) : EVENTS }),
+  events: async ({ q, from, kind }) => {
+    let list = EVENTS
+    if (q) list = list.filter((e) => e.content.includes(q))
+    if (from) list = list.filter((e) => e.from.includes(from))
+    if (kind) list = list.filter((e) => e.kind === kind)
+    return { events: list, total: list.length }
+  },
+  tasks: async () => ({ tasks: [{ name: '保号', enabled: true, schedule_text: '每 30 天', to: '138', next_run_at: 1_700_000_000_000, fail_count: 0 }] }),
   rules: async () => ({ rules: [{ name: '验证码', priority: 10, enabled: true }] }),
   sendSms: async () => ({ id: 'cmd_1', status: 'pending' }),
   lookupRef: async (ref) => (ref === '555' ? { sender: '95533', device_id: 'dev_1', event_id: 'evt_1' } : null),
@@ -80,7 +87,7 @@ describe('Bot 输出必须模糊化', () => {
 
   it('HTML 被转义，正文无法破坏消息结构', async () => {
     const api = makeApi({
-      events: async () => ({ events: [{ id: 'e', from: '<b>x</b>', content: '<script>alert(1)</script>', kind: 'sms', occurred_at: 0 }] }),
+      events: async () => ({ events: [{ id: 'e', from: '<b>x</b>', content: '<script>alert(1)</script>', kind: 'sms', occurred_at: 0 }], total: 1 }),
     })
     const r = await handleCommand(api, '/recent')
     expect(r!.text).not.toContain('<script>')
@@ -234,5 +241,72 @@ describe('Reply 即回复', () => {
   it('发送失败时如实报错，不假装成功', async () => {
     const api = makeApi({ sendSms: async () => ({ id: '', status: 'failed', error: '设备离线' }) })
     expect((await handleReply(api, '555', 'x'))!.text).toContain('设备离线')
+  })
+})
+
+describe('查询命令', () => {
+  it('/from 按号码筛选', async () => {
+    const r = await handleCommand(makeApi(), '/from 95533')
+    expect(r!.text).toContain('95533')
+    expect(r!.text).not.toContain('10086')
+  })
+
+  it('/from 支持指定条数', async () => {
+    const events = vi.fn(async () => ({ events: EVENTS, total: 2 }))
+    await handleCommand(makeApi({ events }), '/from 955 5')
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({ from: '955', limit: 5 }))
+  })
+
+  it('/from 参数缺失给用法提示', async () => {
+    expect((await handleCommand(makeApi(), '/from'))!.text).toContain('用法')
+  })
+
+  it('/calls 只查来电', async () => {
+    const events = vi.fn(async () => ({ events: [], total: 0 }))
+    await handleCommand(makeApi({ events }), '/calls')
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({ kind: 'call' }))
+  })
+
+  it('/tasks 显示排期与下次执行', async () => {
+    const r = await handleCommand(makeApi(), '/tasks')
+    expect(r!.text).toContain('保号')
+    expect(r!.text).toContain('每 30 天')
+    expect(r!.text).toContain('只读')
+  })
+
+  it('结果被截断时明确告知总数', async () => {
+    const events = vi.fn(async () => ({ events: EVENTS, total: 99 }))
+    const r = await handleCommand(makeApi({ events }), '/recent 2')
+    expect(r!.text).toContain('共 99 条')
+    expect(r!.text).toContain('控制台')
+  })
+
+  it('所有列表命令的正文都在 spoiler 内', async () => {
+    for (const cmd of ['/recent', '/search 验证码', '/from 95533', '/calls']) {
+      const r = await handleCommand(makeApi(), cmd)
+      if (!r || !r.text.includes('<tg-spoiler>')) continue
+      const outside = r.text.split(/<tg-spoiler>.*?<\/tg-spoiler>/gs).join('')
+      expect(outside).not.toContain('902431')
+    }
+  })
+
+  it('/status 显示充电状态', async () => {
+    const api = makeApi({
+      stats: async () => ({
+        devices: [{ id: 'd', name: 'JP', status: 'online', last_seen_at: Date.now(), battery: 95, charging: true }],
+        today: { events: 0, outbound: 0, outbound_failed: 0 }, rules: 0, channels: 0,
+      }),
+    })
+    expect((await handleCommand(api, '/status'))!.text).toContain('🔌 95%')
+  })
+
+  it('命令菜单覆盖全部主要命令', async () => {
+    const { COMMANDS } = await import('../bot.js')
+    const names = COMMANDS.map((c) => c.command)
+    for (const c of ['status', 'recent', 'search', 'from', 'send', 'devices', 'tasks', 'rules', 'help']) {
+      expect(names).toContain(c)
+    }
+    // Telegram 要求命令名全小写、不带斜杠
+    for (const c of COMMANDS) expect(c.command).toMatch(/^[a-z_]+$/)
   })
 })

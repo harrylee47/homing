@@ -6,7 +6,7 @@
  * （计划 §11.4）。Workers 版没有常驻进程，届时改为 webhook，但命令逻辑
  * 在 core/bot.ts 里不变。
  */
-import { handleCallback, handleCommand, handleReply, type BotApi, type BotMessage } from '../../core/bot.js'
+import { COMMANDS, handleCallback, handleCommand, handleReply, type BotApi, type BotMessage } from '../../core/bot.js'
 import { log } from '../../core/logging.js'
 import type { Store } from '../../core/store.js'
 
@@ -55,8 +55,33 @@ export class TelegramBot {
   start(): void {
     if (this.running) return
     this.running = true
+    void this.registerMenu()
     void this.loop()
     log.info('Telegram Bot 已启动', { chats: this.allowedChats.size })
+  }
+
+  /**
+   * 注册命令菜单，用户点输入框旁的菜单按钮即可看到全部命令。
+   *
+   * 到 Telegram 的链路有约 1/6 的偶发超时，一次失败就没菜单了，
+   * 而这是每次启动只做一次的操作，值得重试几轮。
+   */
+  private async registerMenu(): Promise<void> {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const ok = await fetch(`https://api.telegram.org/bot${this.botToken}/setMyCommands`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ commands: COMMANDS }),
+        signal: AbortSignal.timeout(15_000),
+      }).then((r) => r.ok).catch(() => false)
+
+      if (ok) {
+        log.info('Bot 命令菜单已注册', { count: COMMANDS.length })
+        return
+      }
+      if (attempt < 3) await sleep(2000 * attempt)
+    }
+    log.warn('注册 Bot 命令菜单失败，不影响命令本身可用')
   }
 
   stop(): void {
@@ -205,8 +230,15 @@ export class TelegramBot {
     return {
       stats: () => call('/api/stats') as ReturnType<BotApi['stats']>,
       rules: () => call('/api/rules') as ReturnType<BotApi['rules']>,
-      events: (p) =>
-        call(`/api/events?limit=${p.limit ?? 10}${p.q ? `&q=${encodeURIComponent(p.q)}` : ''}`) as ReturnType<BotApi['events']>,
+      tasks: () => call('/api/tasks') as ReturnType<BotApi['tasks']>,
+      events: (p) => {
+        const q = new URLSearchParams({ limit: String(p.limit ?? 10) })
+        if (p.q) q.set('q', p.q)
+        if (p.from) q.set('from', p.from)
+        if (p.device) q.set('device', p.device)
+        if (p.kind) q.set('kind', p.kind)
+        return call(`/api/events?${q.toString()}`) as ReturnType<BotApi['events']>
+      },
 
       sendSms: async (deviceId, to, text) => {
         try {

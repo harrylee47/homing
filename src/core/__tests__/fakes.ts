@@ -1,7 +1,7 @@
 /** 测试用的内存 Store 与 Hub。行为要与 SQLite 实现保持一致，尤其是幂等语义。 */
 import type { Connection, Hub } from '../hub.js'
 import type {
-  ChannelRecord, DeviceRecord, EventQuery, InsertEventResult, OutboundRecord,
+  ChannelRecord, DeviceRecord, EventFilter, EventQuery, InsertEventResult, OutboundRecord,
   MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord,
 } from '../store.js'
 
@@ -35,7 +35,19 @@ export class MemoryStore implements Store {
     return 'stored'
   }
   async getEvent(id: string) { return this.events.get(id) ?? null }
-  async listEvents(_q: EventQuery) { return [...this.events.values()] }
+  async listEvents(q: EventQuery) {
+    return this.filtered(q).slice(q.offset, q.offset + q.limit)
+  }
+  async countEvents(f: EventFilter) { return this.filtered(f).length }
+  private filtered(f: EventFilter) {
+    return [...this.events.values()]
+      .filter((e) =>
+        (!f.kind || e.kind === f.kind) &&
+        (!f.device_id || e.device_id === f.device_id) &&
+        (f.since === undefined || e.occurred_at >= f.since) &&
+        (f.until === undefined || e.occurred_at <= f.until))
+      .sort((a, b) => b.occurred_at - a.occurred_at)
+  }
   async setMatchedRules(id: string, ruleIds: string[]) {
     const e = this.events.get(id)
     if (e) this.events.set(id, { ...e, matched_rules: JSON.stringify(ruleIds) })

@@ -13,18 +13,25 @@
 /** Bot 可用的接口，就是计划 §11.1 能力矩阵的代码化。 */
 export interface BotApi {
   stats(): Promise<{
-    devices: { id: string; name: string; status: string; last_seen_at: number | null; battery: number | null }[]
+    devices: {
+      id: string; name: string; status: string
+      last_seen_at: number | null; battery: number | null; charging?: boolean | null
+    }[]
     today: { events: number; outbound: number; outbound_failed: number }
     rules: number
     channels: number
   }>
-  events(params: { limit?: number; q?: string }): Promise<{
+  events(params: { limit?: number; q?: string; from?: string; device?: string; kind?: string }): Promise<{
     events: {
       id: string; from: string; content: string; kind: string
       occurred_at: number; device_name?: string
     }[]
+    total: number
   }>
   rules(): Promise<{ rules: { name: string; priority: number; enabled: boolean }[] }>
+  tasks(): Promise<{
+    tasks: { name: string; enabled: boolean; schedule_text: string; to: string; next_run_at: number | null; fail_count: number }[]
+  }>
   sendSms(deviceId: string, to: string, text: string): Promise<{ id: string; status: string; error?: string }>
   /** 查回复映射：把用户引用的那条推送还原成「发给谁」 */
   lookupRef(ref: string): Promise<{ sender: string; device_id: string; event_id: string } | null>
@@ -81,17 +88,35 @@ const ago = (ts: number | null): string => {
   return `${Math.floor(s / 86400)} 天前`
 }
 
+/** 注册给 Telegram 的命令菜单，用户点输入框旁的菜单按钮就能看到。 */
+export const COMMANDS: { command: string; description: string }[] = [
+  { command: 'status', description: '设备状态、电量、今日统计' },
+  { command: 'recent', description: '最近的消息，可加条数如 /recent 20' },
+  { command: 'search', description: '全文检索，如 /search 验证码' },
+  { command: 'from', description: '按号码查询，如 /from 95533' },
+  { command: 'calls', description: '最近的来电' },
+  { command: 'send', description: '发送短信：/send 号码 内容' },
+  { command: 'devices', description: '设备列表' },
+  { command: 'tasks', description: '计划任务' },
+  { command: 'rules', description: '规则列表（只读）' },
+  { command: 'help', description: '全部命令说明' },
+]
+
 export const HELP = [
   '<b>可用命令</b>',
-  '/status — 设备在线状态、电量、今日统计',
-  '/recent [n] — 最近 n 条消息（默认 10）',
+  '/status — 设备在线状态、电量、充电状态、今日统计',
+  '/recent [n] — 最近 n 条消息（默认 10，上限 30）',
   '/search &lt;关键词&gt; — 全文检索',
+  '/from &lt;号码&gt; [n] — 按来源号码查询，支持部分匹配',
+  '/calls [n] — 最近的来电',
   '/send &lt;号码&gt; &lt;内容&gt; — 发送短信',
   '/devices — 设备列表',
-  '/rules — 规则列表（只读）',
+  '/tasks — 计划任务与下次执行时间',
+  '/rules — 规则列表（只读，修改请用控制台）',
   '/help — 这条',
   '',
   '直接<b>引用回复</b>任意一条短信推送，即可把内容作为短信回给对方。',
+  '更复杂的筛选（时间范围、按设备、分页）请用控制台。',
 ].join('\n')
 
 /** 处理一条文本命令。返回 null 表示不响应（例如无法识别的普通消息）。 */
@@ -117,12 +142,27 @@ export async function handleCommand(api: BotApi, text: string): Promise<BotMessa
 
     case '/recent': {
       const n = Math.min(Math.max(Number(arg) || 10, 1), 30)
-      return recent(api, n)
+      return list(api, { limit: n }, `最近 ${n} 条`)
+    }
+
+    case '/calls': {
+      const n = Math.min(Math.max(Number(arg) || 10, 1), 30)
+      return list(api, { limit: n, kind: 'call' }, `最近 ${n} 条来电`)
     }
 
     case '/search':
       if (!arg) return { text: '用法：/search 关键词' }
-      return search(api, arg)
+      return list(api, { limit: 15, q: arg }, `「${esc(arg)}」`)
+
+    case '/from': {
+      const m = arg.match(/^(\S+)(?:\s+(\d+))?$/)
+      if (!m) return { text: '用法：/from 号码 [条数]' }
+      const n = Math.min(Math.max(Number(m[2]) || 10, 1), 30)
+      return list(api, { limit: n, from: m[1]! }, `来自 ${esc(m[1]!)}`)
+    }
+
+    case '/tasks':
+      return tasksList(api)
 
     case '/rules':
       return rules(api)
@@ -144,7 +184,10 @@ async function status(api: BotApi): Promise<BotMessage> {
   if (s.devices.length === 0) lines.push('还没有设备')
   for (const d of s.devices) {
     const dot = d.status === 'online' ? '🟢' : d.status === 'revoked' ? '🔴' : '⚪️'
-    lines.push(`${dot} ${esc(d.name)} · 心跳 ${ago(d.last_seen_at)}${d.battery != null ? ` · 电量 ${d.battery}%` : ''}`)
+    const batt = d.battery != null
+      ? ` · ${d.charging === true ? '🔌' : d.battery <= 20 ? '🪫' : '🔋'} ${d.battery}%`
+      : ''
+    lines.push(`${dot} ${esc(d.name)} · 心跳 ${ago(d.last_seen_at)}${batt}`)
   }
   lines.push('', `今日事件 ${s.today.events} ｜ 发送 ${s.today.outbound} ｜ 失败 ${s.today.outbound_failed}`)
   lines.push(`${s.rules} 条规则 · ${s.channels} 个渠道`)
@@ -156,23 +199,40 @@ async function devices(api: BotApi): Promise<BotMessage> {
   if (s.devices.length === 0) return { text: '还没有设备' }
   return {
     text: ['<b>设备</b>', '', ...s.devices.map((d) =>
-      `${d.status === 'online' ? '🟢' : '⚪️'} ${esc(d.name)}\n<code>${esc(d.id)}</code>\n心跳 ${ago(d.last_seen_at)}${d.battery != null ? ` · ${d.battery}%` : ''}`,
+      `${d.status === 'online' ? '🟢' : '⚪️'} ${esc(d.name)}\n<code>${esc(d.id)}</code>\n心跳 ${ago(d.last_seen_at)}` +
+      (d.battery != null ? ` · ${d.charging === true ? '🔌 充电中' : '🔋'} ${d.battery}%` : ''),
     )].join('\n\n'),
   }
 }
 
-async function recent(api: BotApi, n: number): Promise<BotMessage> {
-  const [{ events }, s] = await Promise.all([api.events({ limit: n }), api.stats()])
-  if (events.length === 0) return { text: '还没有消息' }
+/** 所有列表类查询的统一出口，保证 spoiler 与设备标注的处理只有一处。 */
+async function list(
+  api: BotApi,
+  params: { limit: number; q?: string; from?: string; kind?: string },
+  title: string,
+): Promise<BotMessage> {
+  const [r, s] = await Promise.all([api.events(params), api.stats()])
+  if (r.events.length === 0) return { text: `没有匹配的消息（${title}）` }
   const multi = s.devices.filter((d) => d.status !== 'revoked').length > 1
-  return { text: [`<b>最近 ${events.length} 条</b>`, '', ...events.map((e) => renderEvent(e, multi))].join('\n\n') }
+  const more = r.total > r.events.length
+    ? `\n\n共 ${r.total} 条，这里只显示前 ${r.events.length} 条。完整筛选与分页请用控制台。`
+    : ''
+  return {
+    text: [`<b>${title} · ${r.events.length} 条</b>`, '', ...r.events.map((e) => renderEvent(e, multi))].join('\n\n') + more,
+  }
 }
 
-async function search(api: BotApi, q: string): Promise<BotMessage> {
-  const [{ events }, s] = await Promise.all([api.events({ limit: 15, q }), api.stats()])
-  if (events.length === 0) return { text: `没有匹配「${esc(q)}」的消息` }
-  const multi = s.devices.filter((d) => d.status !== 'revoked').length > 1
-  return { text: [`<b>「${esc(q)}」共 ${events.length} 条</b>`, '', ...events.map((e) => renderEvent(e, multi))].join('\n\n') }
+async function tasksList(api: BotApi): Promise<BotMessage> {
+  const { tasks } = await api.tasks()
+  if (tasks.length === 0) return { text: '还没有计划任务' }
+  const fmtNext = (t: number | null) =>
+    t ? new Date(t).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'
+  return {
+    text: ['<b>计划任务</b>（只读，修改请用控制台）', '', ...tasks.map((t) =>
+      `${t.enabled ? '✅' : '⬜️'} ${esc(t.name)}\n${esc(t.schedule_text)} → ${esc(t.to || '未设置')}\n下次 ${fmtNext(t.next_run_at)}` +
+      (t.fail_count > 0 ? `  ⚠️ 连续失败 ${t.fail_count} 次` : ''),
+    )].join('\n\n'),
+  }
 }
 
 /**

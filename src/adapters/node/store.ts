@@ -14,6 +14,7 @@ import type {
   InsertEventResult,
   OutboundRecord,
   MessageRefRecord,
+  EventFilter,
   PairingCodeRecord,
   SessionRecord,
   TaskRecord,
@@ -235,16 +236,16 @@ export class SqliteStore implements Store {
   }
 
   async listEvents(q: EventQuery): Promise<StoredEvent[]> {
-    const where: string[] = []
-    const args: (string | number)[] = []
-    if (q.kind) { where.push('kind = ?'); args.push(q.kind) }
-    if (q.device_id) { where.push('device_id = ?'); args.push(q.device_id) }
-    if (q.since !== undefined) { where.push('occurred_at >= ?'); args.push(q.since) }
-    if (q.until !== undefined) { where.push('occurred_at <= ?'); args.push(q.until) }
-    const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    const { clause, args } = buildWhere(q)
     return this.db
       .prepare(`SELECT * FROM events ${clause} ORDER BY occurred_at DESC LIMIT ? OFFSET ?`)
       .all(...args, q.limit, q.offset) as unknown as StoredEvent[]
+  }
+
+  async countEvents(f: EventFilter): Promise<number> {
+    const { clause, args } = buildWhere(f)
+    const row = this.db.prepare(`SELECT COUNT(*) c FROM events ${clause}`).get(...args) as { c: number }
+    return Number(row.c)
   }
 
   async setMatchedRules(eventId: string, ruleIds: string[]): Promise<void> {
@@ -482,6 +483,17 @@ interface RawRule extends Omit<RuleRecord, 'enabled'> { enabled: number }
 
 const toChannel = (r: RawChannel): ChannelRecord => ({ ...r, enabled: r.enabled === 1 })
 
+
+/** 只用索引列构造 WHERE。正文与号码是密文，SQL 搜不了。 */
+function buildWhere(f: EventFilter): { clause: string; args: (string | number)[] } {
+  const where: string[] = []
+  const args: (string | number)[] = []
+  if (f.kind) { where.push('kind = ?'); args.push(f.kind) }
+  if (f.device_id) { where.push('device_id = ?'); args.push(f.device_id) }
+  if (f.since !== undefined) { where.push('occurred_at >= ?'); args.push(f.since) }
+  if (f.until !== undefined) { where.push('occurred_at <= ?'); args.push(f.until) }
+  return { clause: where.length ? `WHERE ${where.join(' AND ')}` : '', args }
+}
 
 interface RawDevice extends Omit<DeviceRecord, 'charging'> { charging: number | null }
 const toDevice = (r: RawDevice): DeviceRecord => ({

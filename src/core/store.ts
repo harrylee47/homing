@@ -36,13 +36,17 @@ export interface StoredEvent {
   created_at: number
 }
 
-export interface EventQuery {
-  kind?: EventKind
-  device_id?: string
+/** 只按索引列筛选的条件。正文与号码是密文，只能在内存里过滤。 */
+export interface EventFilter {
+  kind?: EventKind | undefined
+  device_id?: string | undefined
   /** occurred_at 下界（含） */
-  since?: number
+  since?: number | undefined
   /** occurred_at 上界（含） */
-  until?: number
+  until?: number | undefined
+}
+
+export interface EventQuery extends EventFilter {
   limit: number
   offset: number
 }
@@ -230,6 +234,8 @@ export interface Store {
   insertEvent(e: StoredEvent): Promise<InsertEventResult>
   getEvent(id: string): Promise<StoredEvent | null>
   listEvents(q: EventQuery): Promise<StoredEvent[]>
+  /** 满足索引列条件的总数，用于分页。不含正文/号码过滤。 */
+  countEvents(f: EventFilter): Promise<number>
   /** 记录命中的规则 id，事件已入库后回填 */
   setMatchedRules(eventId: string, ruleIds: string[]): Promise<void>
 

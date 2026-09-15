@@ -285,44 +285,121 @@ async function overview() {
 
 // ── 消息 ────────────────────────────────────────────────────
 
+/**
+ * 消息列表。
+ *
+ * 筛选条件放在 URL 查询串里：刷新、前进后退、把链接发给自己都能还原当前视图，
+ * 而不是刷新一下筛选就没了。
+ */
 async function events() {
-  const q = new URLSearchParams(location.search).get('q') || ''
+  const p = new URLSearchParams(location.search)
+  const get = (k, d = '') => p.get(k) ?? d
+  const limit = Number(get('limit', '30'))
+  const offset = Number(get('offset', '0'))
+
+  const devs = await api('/devices').catch(() => ({ devices: [] }))
+  const activeDevs = devs.devices.filter((d) => d.status !== 'revoked')
+
+  const toDateInput = (ts) => {
+    if (!ts) return ''
+    const d = new Date(Number(ts))
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }
+
   render(`
     <h1>消息</h1>
-    <div class="card tight">
-      <input id="q" placeholder="搜索发件人或正文" value="${esc(q)}">
+    <div class="card">
+      <input id="f_q" placeholder="搜索发件人或正文" value="${esc(get('q'))}">
+      <details id="adv" ${['from', 'device', 'kind', 'since', 'until'].some((k) => get(k)) ? 'open' : ''}>
+        <summary class="muted">更多筛选</summary>
+        <label>来源号码</label>
+        <input id="f_from" inputmode="tel" value="${esc(get('from'))}" placeholder="支持部分匹配，如 955">
+        ${activeDevs.length > 1 ? `
+          <label>设备</label>
+          <select id="f_device">
+            <option value="">全部设备</option>
+            ${activeDevs.map((d) => `<option value="${esc(d.id)}"${get('device') === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+          </select>` : ''}
+        <label>类型</label>
+        <select id="f_kind">
+          <option value="">全部</option>
+          <option value="sms"${get('kind') === 'sms' ? ' selected' : ''}>短信</option>
+          <option value="call"${get('kind') === 'call' ? ' selected' : ''}>来电</option>
+        </select>
+        <div style="display:flex;gap:8px">
+          <div class="grow"><label>起始日期</label><input id="f_since" type="date" value="${toDateInput(get('since'))}"></div>
+          <div class="grow"><label>结束日期</label><input id="f_until" type="date" value="${toDateInput(get('until'))}"></div>
+        </div>
+        <div class="btnrow">
+          <button id="f_apply" class="sm">应用筛选</button>
+          <button id="f_clear" class="ghost sm">清空</button>
+        </div>
+      </details>
     </div>
     <div id="list"><div class="loading">加载中…</div></div>`)
 
-  const load = async (query) => {
-    try {
-      const [r, devs] = await Promise.all([
-        api(`/events?limit=50${query ? `&q=${encodeURIComponent(query)}` : ''}`),
-        api('/devices').catch(() => ({ devices: [] })),
-      ])
-      // 单设备时不显示设备名，那是噪音；多设备时不显示就分不清来源
-      const multi = devs.devices.filter((d) => d.status !== 'revoked').length > 1
-      $('#list').innerHTML = r.events.length ? `<div class="card list">${r.events.map((e) => `
+  const buildQuery = (over = {}) => {
+    const q = new URLSearchParams()
+    const vals = {
+      q: $('#f_q').value.trim(),
+      from: $('#f_from')?.value.trim() ?? '',
+      device: $('#f_device')?.value ?? '',
+      kind: $('#f_kind')?.value ?? '',
+      // 结束日期按当天 23:59:59 算，否则选了同一天会查不到任何东西
+      since: $('#f_since')?.value ? new Date(`${$('#f_since').value}T00:00:00`).getTime() : '',
+      until: $('#f_until')?.value ? new Date(`${$('#f_until').value}T23:59:59`).getTime() : '',
+      limit, offset: 0,
+      ...over,
+    }
+    for (const [k, v] of Object.entries(vals)) if (v !== '' && v != null) q.set(k, String(v))
+    return q
+  }
+
+  const apply = (over) => go(`/events?${buildQuery(over).toString()}`)
+  $('#f_apply').onclick = () => apply({})
+  $('#f_clear').onclick = () => go('/events')
+  $('#f_q').onkeydown = (e) => { if (e.key === 'Enter') apply({}) }
+
+  try {
+    const query = new URLSearchParams(location.search)
+    query.set('limit', String(limit))
+    query.set('offset', String(offset))
+    const r = await api(`/events?${query.toString()}`)
+
+    const from = r.total === 0 ? 0 : offset + 1
+    const to = Math.min(offset + limit, r.total)
+    const multi = activeDevs.length > 1
+
+    $('#list').innerHTML = `
+      <div class="card tight row">
+        <span class="muted">${r.total === 0 ? '没有匹配的消息' : `第 ${from}–${to} 条，共 ${r.total} 条`}${r.truncated ? '（结果已截断）' : ''}</span>
+        <select id="f_limit" style="width:auto">
+          ${[30, 50, 100].map((n) => `<option value="${n}"${limit === n ? ' selected' : ''}>每页 ${n}</option>`).join('')}
+        </select>
+      </div>
+      ${r.events.length ? `<div class="card list">${r.events.map((e) => `
         <div class="item" data-id="${esc(e.id)}">
           <div class="row">
             <b class="truncate">${esc(e.from)}</b>
             <span class="muted">${multi ? `${esc(e.device_name)} · ` : ''}${fmt(e.occurred_at)}</span>
           </div>
           <div class="muted truncate">${esc(e.content)}</div>
-        </div>`).join('')}</div>` : '<div class="card muted">没有匹配的消息。</div>'
+        </div>`).join('')}</div>` : ''}
+      ${r.total > limit ? `
+        <div class="card tight row">
+          <button class="ghost sm" id="p_prev" ${offset === 0 ? 'disabled' : ''}>上一页</button>
+          <span class="muted">${Math.floor(offset / limit) + 1} / ${Math.ceil(r.total / limit)}</span>
+          <button class="ghost sm" id="p_next" ${to >= r.total ? 'disabled' : ''}>下一页</button>
+        </div>` : ''}`
 
-      for (const el of $('#list').querySelectorAll('.item')) {
-        el.onclick = () => go(`/events/${el.dataset.id}`)
-      }
-    } catch (e) { fail(e) }
-  }
-
-  let timer
-  $('#q').oninput = (e) => {
-    clearTimeout(timer)
-    timer = setTimeout(() => load(e.target.value.trim()), 300)
-  }
-  load(q)
+    for (const el of $('#list').querySelectorAll('.item')) {
+      el.onclick = () => go(`/events/${el.dataset.id}`)
+    }
+    $('#f_limit').onchange = (e) => apply({ limit: Number(e.target.value), offset: 0 })
+    const prev = $('#p_prev'); if (prev) prev.onclick = () => apply({ offset: Math.max(0, offset - limit) })
+    const next = $('#p_next'); if (next) next.onclick = () => apply({ offset: offset + limit })
+  } catch (e) { fail(e) }
 }
 
 async function eventDetail(id) {

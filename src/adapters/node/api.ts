@@ -29,7 +29,7 @@ import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
 import type { BarkAccess } from './barkproxy.js'
 import { clientIp as resolveClientIp } from './clientip.js'
-import type { Store } from '../../core/store.js'
+import type { EventFilter, Store } from '../../core/store.js'
 
 export interface ApiDeps {
   store: Store
@@ -912,34 +912,74 @@ const maskNumber = (n: string): string =>
 
 // ── 事件 ────────────────────────────────────────────────────
 
+/**
+ * 事件查询。
+ *
+ * 分两层过滤：
+ *  - 索引列（类型、设备、时间范围）走 SQL，能利用索引也能准确计数
+ *  - 正文与号码是密文，SQL 搜不了，只能取出解密后在内存里过滤
+ *
+ * 带关键词或号码过滤时，需要先把候选集全部解密才能知道总数与分页边界，
+ * 因此设了扫描上限：超过就截断并如实告知，而不是给一个错误的总数。
+ */
+const MAX_SCAN = 3000
+
 route('GET', '/api/events', async ({ res, url, deps }) => {
-  const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 200)
-  const offset = Math.max(Number(url.searchParams.get('offset') ?? 0), 0)
-  const kindParam = url.searchParams.get('kind')
-  const q = url.searchParams.get('q')?.trim().toLowerCase()
-  const rows = await deps.store.listEvents({
-    // 有搜索词时多取一些再在内存里过滤：正文是密文，数据库无法直接检索
-    limit: q ? Math.min(limit * 10, 500) : limit, offset,
-    ...(kindParam === 'sms' || kindParam === 'call' || kindParam === 'notification' ? { kind: kindParam } : {}),
-  })
+  const p = url.searchParams
+  const limit = Math.min(Math.max(Number(p.get('limit') ?? 30), 1), 200)
+  const offset = Math.max(Number(p.get('offset') ?? 0), 0)
+
+  const kindParam = p.get('kind')
+  const kind: 'sms' | 'call' | 'notification' | undefined =
+    kindParam === 'sms' || kindParam === 'call' || kindParam === 'notification' ? kindParam : undefined
+  const filter: EventFilter = {
+    ...(kind ? { kind } : {}),
+    ...(p.get('device') ? { device_id: p.get('device')! } : {}),
+    ...(p.get('since') ? { since: Number(p.get('since')) } : {}),
+    ...(p.get('until') ? { until: Number(p.get('until')) } : {}),
+  }
+
+  const q = p.get('q')?.trim().toLowerCase() ?? ''
+  const from = p.get('from')?.trim().toLowerCase() ?? ''
+  const needsDecryptFilter = q !== '' || from !== ''
+
   const deviceNames = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
-  let items = await Promise.all(rows.map(async (e) => ({
-    id: e.id, device_id: e.device_id,
+  const decrypt = async (e: Awaited<ReturnType<typeof deps.store.getEvent>> & object) => ({
+    id: e.id,
+    device_id: e.device_id,
     device_name: deviceNames.get(e.device_id) ?? e.device_id,
     kind: e.kind,
     from: await deps.cipher.decrypt(e.sender_enc),
     content: await deps.cipher.decrypt(e.content_enc),
-    occurred_at: e.occurred_at, received_at: e.received_at,
-    matched_rules: e.matched_rules ? JSON.parse(e.matched_rules) : [],
-  })))
-  // 全文检索在内存里做：落库是密文，SQL 的 LIKE 搜不了。
-  // 数据量到不了瓶颈之前这样最简单，也不会堵死 D1 路径（硬约束②）。
-  if (q) {
-    items = items
-      .filter((e) => e.from.toLowerCase().includes(q) || e.content.toLowerCase().includes(q))
-      .slice(0, limit)
+    occurred_at: e.occurred_at,
+    received_at: e.received_at,
+    matched_rules: e.matched_rules ? (JSON.parse(e.matched_rules) as string[]) : [],
+  })
+
+  // 无需解密过滤时，SQL 直接分页，无论多少数据都是常数开销
+  if (!needsDecryptFilter) {
+    const rows = await deps.store.listEvents({ ...filter, limit, offset })
+    json(res, 200, {
+      events: await Promise.all(rows.map(decrypt)),
+      total: await deps.store.countEvents(filter),
+      limit, offset, truncated: false,
+    })
+    return
   }
-  json(res, 200, { events: items, limit, offset })
+
+  const candidates = await deps.store.listEvents({ ...filter, limit: MAX_SCAN, offset: 0 })
+  const decrypted = await Promise.all(candidates.map(decrypt))
+  const matched = decrypted.filter((e) =>
+    (q === '' || e.content.toLowerCase().includes(q) || e.from.toLowerCase().includes(q)) &&
+    (from === '' || e.from.toLowerCase().includes(from)))
+
+  json(res, 200, {
+    events: matched.slice(offset, offset + limit),
+    total: matched.length,
+    limit, offset,
+    // 如实告知结果可能不全，而不是给一个错误的总数
+    truncated: candidates.length >= MAX_SCAN,
+  })
 }, true, false, 'bot')
 
 // ── 分发 ────────────────────────────────────────────────────
