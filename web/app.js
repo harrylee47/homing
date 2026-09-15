@@ -597,9 +597,16 @@ async function channels() {
     const FORMS = {
       bark: {
         name: '主 Bark',
-        html: `<label>服务端地址</label><input id="f_server" class="mono" placeholder="https://bark.example.com">
-               <label>设备 Key</label><input id="f_key" class="mono">
-               <div class="muted">自建 bark-server。验证码会放进通知标题，长按即可复制，无需打开任何 App。</div>`,
+        html: `<div class="card tight" style="background:var(--bg)">
+                 <b>在 Bark App 里这样设置</b>
+                 <div class="muted" style="margin:6px 0 4px">iOS 装 Bark → 右上角「服务器」→ 填下面这个地址：</div>
+                 <div class="mono wrap" style="font-size:13px;padding:6px 0"><b id="barkurl">${esc(location.origin)}/bark</b></div>
+                 <button class="ghost sm" id="copyurl" type="button">复制地址</button>
+                 <div class="muted" style="margin-top:8px">保存后 App 首页会显示一串设备 Key，填到下面。</div>
+               </div>
+               <label>服务端地址</label><input id="f_server" class="mono" value="${esc(location.origin)}/bark">
+               <label>设备 Key</label><input id="f_key" class="mono" placeholder="Bark App 首页显示的那串">
+               <div class="muted">验证码会放进通知标题，长按即可复制，无需打开任何 App。</div>`,
         collect: () => ({ server: $('#f_server').value.trim(), key: $('#f_key').value.trim() }),
       },
       telegram: {
@@ -621,6 +628,11 @@ async function channels() {
       const t = $('#type').value
       $('#fields').innerHTML = FORMS[t].html
       if (!$('#name').value.trim()) $('#name').value = FORMS[t].name
+      const cp = $('#copyurl')
+      if (cp) cp.onclick = async () => {
+        try { await navigator.clipboard.writeText(`${location.origin}/bark`); toast('已复制') }
+        catch { toast('复制失败，请手动选择') }
+      }
     }
     $('#type').onchange = () => { $('#name').value = ''; paintForm() }
     paintForm()

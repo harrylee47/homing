@@ -17,6 +17,11 @@ export interface NodeConfig {
   adminToken: string
   /** 控制台静态文件目录 */
   webRoot: string
+  /**
+   * 自建 bark-server 的上游地址。设置后网关在 /bark/* 反代它，
+   * 省掉单独建站与申请证书。留空则不启用。
+   */
+  barkUpstream: string | null
   /** 允许的 WS Origin。Agent 不发 Origin，浏览器必发——见 wsserver 的校验逻辑。 */
   baseUrl: string | null
   trustedProxy: string | null
@@ -35,6 +40,7 @@ export function loadConfig(): NodeConfig {
     dek: loadOrCreateDek(dataDir),
     adminToken: loadOrCreateAdminToken(dataDir),
     webRoot: process.env.GW_WEB_ROOT ?? './web',
+    barkUpstream: process.env.GW_BARK_UPSTREAM ?? null,
     baseUrl: process.env.GW_BASE_URL ?? null,
     trustedProxy: process.env.GW_TRUSTED_PROXY ?? null,
   }

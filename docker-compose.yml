@@ -19,6 +19,9 @@ services:
       # 不能写 0.0.0.0，否则 X-Forwarded-For 可伪造，限速与 IP 告警全部失效（计划 §11.6）。
       GW_TRUSTED_PROXY: "172.27.0.0/16"
       GW_BASE_URL: "https://smsgw.of.ci"
+      # 自建 Bark 挂在网关自己的域名下（/bark/*），不必单独建站。
+      # 必须用 compose 服务名：容器里的 127.0.0.1 指向网关自己。
+      GW_BARK_UPSTREAM: "http://bark:8080"
 
     # 生产加固（计划 §12.4）
     read_only: true
@@ -29,6 +32,26 @@ services:
     security_opt:
       - no-new-privileges:true
 
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 自建 Bark 推送服务端。可选：不需要 Bark 就删掉这一段并去掉
+  # GW_BARK_UPSTREAM。注意自建的只是服务端，推送仍走 Apple APNs，
+  # 开源版内置推送凭证，无需自备证书。
+  bark:
+    image: finab/bark-server:latest
+    container_name: bark-server
+    restart: unless-stopped
+    # 不发布端口：只由网关经内部网络访问
+    expose:
+      - "8080"
+    volumes:
+      - ./bark-data:/data
+    environment:
+      TZ: Asia/Tokyo
     logging:
       driver: json-file
       options:

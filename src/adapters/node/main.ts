@@ -10,6 +10,7 @@ import { MemoryHub } from './hub.js'
 import { SqliteStore } from './store.js'
 import { dispatch } from '../../core/notifier.js'
 import { handleApi, isInitialized } from './api.js'
+import { isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
 import { createWsServer, isAllowedAgentOrigin } from './wsserver.js'
 
@@ -72,6 +73,16 @@ const server = createServer((req, res) => {
     })
     return
   }
+  // Bark 反代：不走网关鉴权（Bark App 不会带我们的 token），
+  // 但同样受初始化门禁约束——未配置完成前整台服务都不对外服务。
+  if (cfg.barkUpstream && isBarkPath(req.url)) {
+    void isInitialized(store).then((ready) => {
+      if (!ready) { res.writeHead(403).end(); return }
+      proxyBark(cfg.barkUpstream!, req, res)
+    })
+    return
+  }
+
   void handleApi(req, res, apiDeps).then((handled) => {
     if (handled || res.headersSent) return
     // 非 API 路径交给控制台；深链路由由前端处理（计划 §11.2）

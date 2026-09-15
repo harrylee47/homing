@@ -80,6 +80,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 完整清单见计划 §11.6，M5 验收时逐条核对。
 
+## Bark 是验证码的主通道
+
+Telegram 因封禁风险只能发模糊正文，所以「通知栏直接看到验证码、长按即复制」
+这个核心体验落在 Bark 上（自托管，无封禁风险）。
+
+自建 bark-server 跑在网关自己的 compose 里，**不对外暴露端口**，由网关在
+`/bark/*` 反代（`src/adapters/node/barkproxy.ts`）——省掉单独建站与证书。
+上游地址必须用 compose 服务名，容器里的 `127.0.0.1` 指向网关自己。
+该路径不走网关鉴权（Bark App 不会带 token），但受初始化门禁约束。
+
+Bark 的 level/group/copy 等参数配在**规则的 action 里**而非渠道配置里，
+因为它随消息类型变化：验证码要穿透专注模式，广告短信不该。
+
 ## 与旧系统共存（重要）
 
 目标机器上有一套**正在使用的旧方案**必须保持运行：`frps` 容器（手机端 frpc 在线，为 SmsForwarder 打洞）+ `smsf-bot` 容器（Python + Telegram long polling）。这是当前收验证码的唯一链路，停掉当天就失效。

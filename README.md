@@ -105,6 +105,16 @@ POST   /api/auth/logout
 POST   /api/auth/password          改口令（会使全部会话失效）
 ```
 
+## Bark（可选）
+
+`docker-compose.yml` 里带一个自建 bark-server。它**不对外暴露端口**，由网关在
+`/bark/*` 反代——所以不必为 Bark 单独建站或申请证书。
+
+在 Bark App 里把服务器地址填成 `https://<你的网关域名>/bark` 即可，
+控制台的「渠道 → 新增 Bark」页面会直接显示这个地址并提供复制按钮。
+
+不需要 Bark 就删掉 compose 里的 `bark` 服务并去掉 `GW_BARK_UPSTREAM`。
+
 ## 控制台
 
 零构建的原生 SPA（`web/`），移动端优先——Bark 通知点击后落地的是手机浏览器。
