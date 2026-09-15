@@ -38,6 +38,8 @@ export interface DeliveryResult {
   ok: boolean
   attempts: number
   error: string | null
+  /** 渠道侧消息标识，供「Reply 即回复」建立映射 */
+  ref?: string | undefined
 }
 
 const MAX_ATTEMPTS = 3
@@ -72,9 +74,12 @@ async function sendWithRetry(ch: ChannelConfig, msg: NotifyMessage, opts: Dispat
   let lastError = ''
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      await provider.send(ch.config as never, msg)
+      const r = await provider.send(ch.config as never, msg)
       if (attempt > 1) log.info('渠道重试后成功', { channel: ch.id, type: ch.type, attempt })
-      return { channelId: ch.id, channelType: ch.type, ok: true, attempts: attempt, error: null }
+      return {
+        channelId: ch.id, channelType: ch.type, ok: true, attempts: attempt, error: null,
+        ref: r && typeof r === 'object' ? r.ref : undefined,
+      }
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e)
       const retryable = e instanceof ProviderError ? e.retryable : true

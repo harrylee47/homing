@@ -11,7 +11,7 @@
  * —— 旧系统每 10 秒往日志里打印一次完整 token，是明确的反面教材。
  */
 import { z } from 'zod'
-import { ProviderError, type NotifyMessage, type Provider } from './types.js'
+import { ProviderError, type NotifyMessage, type Provider, type SendResult } from './types.js'
 
 export const TelegramConfig = z.object({
   bot_token: z.string().min(20).max(200),
@@ -35,7 +35,7 @@ export const telegramProvider: Provider<TelegramConfig> = {
   type: 'telegram',
   configSchema: TelegramConfig,
 
-  async send(cfg, msg) {
+  async send(cfg, msg): Promise<SendResult> {
     const res = await fetch(`${cfg.api_base}/bot${cfg.bot_token}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -45,6 +45,11 @@ export const telegramProvider: Provider<TelegramConfig> = {
         parse_mode: 'HTML',
         // high 优先级才出声，普通消息静默送达，避免夜里被广告短信吵醒
         disable_notification: msg.priority !== 'high',
+        // 不放「复制验证码」按钮：按钮文本同样是发给 Telegram 的内容，
+        // 验证码只应存在于 spoiler 里面
+        reply_markup: msg.consoleUrl && msg.eventId
+          ? { inline_keyboard: [[{ text: '🔗 在控制台打开', url: `${msg.consoleUrl.replace(/\/$/, '')}/events/${encodeURIComponent(msg.eventId)}` }]] }
+          : undefined,
       }),
       signal: AbortSignal.timeout(15_000),
     }).catch((e: unknown) => {
@@ -57,6 +62,11 @@ export const telegramProvider: Provider<TelegramConfig> = {
       const retryable = res.status === 429 || res.status >= 500
       throw new ProviderError('telegram', `HTTP ${res.status}: ${detail.slice(0, 200)}`, retryable)
     }
+
+    // 返回 message_id：用户直接引用回复这条推送时，据此反查原事件的发件人
+    const body = (await res.json().catch(() => null)) as { result?: { message_id?: number } } | null
+    const id = body?.result?.message_id
+    return { ref: id != null ? String(id) : undefined }
   },
 }
 

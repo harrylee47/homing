@@ -111,6 +111,23 @@ export interface SessionRecord {
   revoked: boolean
 }
 
+/**
+ * 推送消息 → 事件 的映射，用于「Reply 即回复」。
+ *
+ * 落库而不是放内存 LRU：硬约束④要求进程内状态必须能从存储重建，
+ * 而这个映射一丢，用户引用回复旧消息就会失败——恰恰是最常用的交互。
+ */
+export interface MessageRefRecord {
+  channel_id: string
+  /** 渠道侧的消息标识，如 Telegram 的 message_id */
+  ref: string
+  event_id: string
+  /** 原始发件人，回复时作为收件人 */
+  sender: string
+  device_id: string
+  created_at: number
+}
+
 export interface Store {
   /** 启动时执行迁移。必须幂等。 */
   migrate(): Promise<void>
@@ -138,6 +155,12 @@ export interface Store {
   createPairingCode(p: PairingCodeRecord): Promise<void>
   /** 按哈希取出未使用且未过期的配对码 */
   takePairingCode(codeHash: string, now: number): Promise<PairingCodeRecord | null>
+
+  // 推送消息映射
+  putMessageRef(r: MessageRefRecord): Promise<void>
+  getMessageRef(channelId: string, ref: string): Promise<MessageRefRecord | null>
+  /** 清理过期映射，保留期由调用方决定（计划 §11.4 建议 7 天） */
+  cleanupMessageRefs(before: number): Promise<void>
 
   // 设置（管理员口令哈希、TOTP 密钥、初始化标记）
   getSetting(key: string): Promise<string | null>

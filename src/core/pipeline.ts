@@ -77,6 +77,15 @@ export async function processEvent(
     const results = await dispatch(targets, msg, { retryBaseMs: deps.retryBaseMs })
     const failed = results.filter((r) => !r.ok)
 
+    // 记录消息映射：用户在 Telegram 里引用回复这条推送时，据此反查发件人
+    for (const r of results) {
+      if (!r.ok || !r.ref) continue
+      await deps.store.putMessageRef({
+        channel_id: r.channelId, ref: r.ref, event_id: eventId,
+        sender: e.from, device_id: e.device_id, created_at: Date.now(),
+      }).catch((err: unknown) => log.warn('记录消息映射失败', { error: String(err) }))
+    }
+
     for (const r of results) {
       await deps.store.audit({
         actor: 'notifier',

@@ -129,6 +129,29 @@ POST   /api/auth/password          改口令（会使全部会话失效）
 
 不需要 Bark 就删掉 compose 里的 `bark` 服务并去掉 `GW_BARK_UPSTREAM`。
 
+## Telegram Bot
+
+启用 Telegram 渠道后自动拉起 Bot（long polling，零入站端口）。只响应渠道里
+配置的那个 `chat_id`，其余静默丢弃。
+
+```
+/status            设备状态、电量、今日统计
+/recent [n]        最近 n 条消息
+/search <关键词>    全文检索
+/send <号码> <内容>  发送短信（新号码需二次确认）
+/devices           设备列表
+/rules             规则列表（只读）
+/help
+```
+
+**引用回复任意一条短信推送**，内容就会作为短信发回原发件人——比敲 `/send`
+顺手得多。映射保留 7 天。
+
+Bot 经自己的 REST API 取数，用的是独立的 service token，权限比 Web 会话低
+一档：能看消息与设备、能发短信，**不能改渠道、不能配对设备、不能改规则**。
+Telegram 账号被盗的概率高于控制台口令 + TOTP 被攻破。控制台可单独吊销该
+token（`POST /api/bot/rotate-token`），不影响 Web 会话。
+
 ## 控制台
 
 零构建的原生 SPA（`web/`），移动端优先——Bark 通知点击后落地的是手机浏览器。

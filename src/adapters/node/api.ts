@@ -46,6 +46,8 @@ const S_TOTP = 'totp_secret'
 const S_INITIALIZED = 'initialized'
 /** Bark 反代的对外开放档位：off / push / full。默认 push。 */
 const S_BARK_ACCESS = 'bark_access'
+/** Bot 专用的 service token。权限比 Web 会话低一档，可单独吊销（计划 §11.4）。 */
+const S_BOT_TOKEN = 'bot_service_token'
 
 type Handler = (ctx: Ctx) => Promise<void>
 interface Ctx {
@@ -60,16 +62,27 @@ interface Ctx {
 
 // ── 路由表 ──────────────────────────────────────────────────
 
-/** setup=true 表示这是向导路由，在未初始化时**仅**这些可访问。 */
-interface Route { method: string; pattern: RegExp; keys: string[]; handler: Handler; auth: boolean; setup?: boolean }
+/**
+ * scope 决定谁能访问：
+ * - 'admin'（默认）只有 Web 会话与管理 token
+ * - 'bot' 额外允许 Bot 的 service token
+ *
+ * 权限分级用路由白名单而不是运行时判断：Telegram 账号被盗的概率高于
+ * 控制台口令 + TOTP 被攻破，所以 Bot 不应拥有配置类权限（计划 §11.1）。
+ */
+type Scope = 'admin' | 'bot'
+interface Route {
+  method: string; pattern: RegExp; keys: string[]
+  handler: Handler; auth: boolean; setup?: boolean; scope: Scope
+}
 const routes: Route[] = []
 
-function route(method: string, path: string, handler: Handler, auth = true, setup = false): void {
+function route(method: string, path: string, handler: Handler, auth = true, setup = false, scope: Scope = 'admin'): void {
   const keys: string[] = []
   const pattern = new RegExp(
     '^' + path.replace(/:(\w+)/g, (_m, k: string) => { keys.push(k); return '([^/]+)' }) + '$',
   )
-  routes.push({ method, pattern, keys, handler, auth, setup })
+  routes.push({ method, pattern, keys, handler, auth, setup, scope })
 }
 
 // ── 工具 ────────────────────────────────────────────────────
@@ -243,7 +256,7 @@ route('GET', '/api/devices', async ({ res, deps }) => {
       created_at: d.created_at,
     })),
   })
-})
+}, true, false, 'bot')
 
 route('POST', '/api/devices/pairing-code', async ({ res, body, deps }) => {
   const name = (body as { name?: string })?.name?.trim()
@@ -343,7 +356,7 @@ route('GET', '/api/rules', async ({ res, deps }) => {
       match: JSON.parse(r.match_json), action: JSON.parse(r.action_json), created_at: r.created_at,
     })),
   })
-})
+}, true, false, 'bot')
 
 route('POST', '/api/rules', async ({ res, body, deps }) => {
   const b = body as { id?: string; name?: string; priority?: number; enabled?: boolean; match?: unknown; action?: unknown }
@@ -469,6 +482,24 @@ route('POST', '/api/bark/access', async ({ res, body, deps, ip }) => {
   json(res, 200, { access: v })
 })
 
+// ── Bot service token ───────────────────────────────────────
+
+export async function getOrCreateBotToken(store: Store): Promise<string> {
+  const existing = await store.getSetting(S_BOT_TOKEN)
+  if (existing) return existing
+  const t = generateSessionToken()
+  await store.setSetting(S_BOT_TOKEN, t)
+  return t
+}
+
+/** 吊销并重发。Telegram 账号疑似被盗时用，不影响 Web 会话。 */
+route('POST', '/api/bot/rotate-token', async ({ res, deps, ip }) => {
+  const t = generateSessionToken()
+  await deps.store.setSetting(S_BOT_TOKEN, t)
+  await deps.store.audit({ actor: 'admin', action: 'bot.token_rotate', detail: null, ip, created_at: now() })
+  json(res, 200, { ok: true })
+})
+
 // ── 总览统计 ────────────────────────────────────────────────
 
 route('GET', '/api/stats', async ({ res, deps }) => {
@@ -494,7 +525,7 @@ route('GET', '/api/stats', async ({ res, deps }) => {
     channels: (await deps.store.listChannels()).filter((c) => c.enabled).length,
     rules: (await deps.store.listRules()).filter((r) => r.enabled).length,
   })
-})
+}, true, false, 'bot')
 
 // ── 下行发送 ────────────────────────────────────────────────
 
@@ -553,7 +584,7 @@ route('POST', '/api/outbound', async ({ res, body, deps, ip }) => {
 
   await deps.store.audit({ actor: 'console', action: 'outbound.create', detail: `${id} → ${maskNumber(b.to)}`, ip, created_at: t })
   json(res, 202, { id, status: 'pending' })
-})
+}, true, false, 'bot')
 
 route('GET', '/api/outbound/:id', async ({ res, params, deps }) => {
   const o = await deps.store.getOutbound(params.id!)
@@ -564,7 +595,7 @@ route('GET', '/api/outbound/:id', async ({ res, params, deps }) => {
     sim_slot: o.sim_slot, status: o.status, error: o.error,
     created_at: o.created_at, updated_at: o.updated_at,
   })
-})
+}, true, false, 'bot')
 
 route('GET', '/api/outbound', async ({ res, url, deps }) => {
   const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 200)
@@ -610,7 +641,7 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
       .slice(0, limit)
   }
   json(res, 200, { events: items, limit, offset })
-})
+}, true, false, 'bot')
 
 // ── 分发 ────────────────────────────────────────────────────
 
@@ -630,7 +661,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
     return true
   }
 
-  if (match.auth && !(await checkAuth(req, deps, ip))) {
+  if (match.auth && !(await checkAuth(req, deps, ip, match.scope))) {
     // 未认证一律 404，不返回 401——不确认接口存在（计划 §6.3）
     json(res, 404, { error: 'not found' })
     return true
@@ -665,10 +696,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
  * 会话额外校验 UA 与 IP 段——凭证被盗后换台设备或换个网段就用不了。
  * 每次通过都顺延有效期：30 分钟是「无操作超时」，不是「登录后强制下线」。
  */
-async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string): Promise<boolean> {
+async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string, scope: Scope): Promise<boolean> {
   const h = req.headers.authorization
   if (!h?.startsWith('Bearer ')) return false
   const presented = h.slice(7)
+
+  // Bot 的 service token 只在标记为 bot scope 的路由上有效
+  if (scope === 'bot') {
+    const bot = await deps.store.getSetting(S_BOT_TOKEN)
+    if (bot && timingSafeEqual(presented, bot)) return true
+  }
 
   const sess = await deps.store.getSession(await hashToken(presented))
   if (sess) {

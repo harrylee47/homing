@@ -9,7 +9,9 @@ import { loadConfig } from './config.js'
 import { MemoryHub } from './hub.js'
 import { SqliteStore } from './store.js'
 import { dispatch } from '../../core/notifier.js'
-import { barkAccess, handleApi, isInitialized } from './api.js'
+import { TelegramConfig } from '../../core/providers/telegram.js'
+import { barkAccess, getOrCreateBotToken, handleApi, isInitialized } from './api.js'
+import { TelegramBot } from './bot.js'
 import { isBarkAllowed, isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
 import { createWsServer, isAllowedAgentOrigin } from './wsserver.js'
@@ -129,8 +131,60 @@ server.listen(cfg.port, cfg.host, () => {
   log.info('网关已启动', { host: cfg.host, port: cfg.port, db: cfg.dbPath })
 })
 
+/**
+ * Bot 监管：按启用的 Telegram 渠道拉起 Bot，渠道变动后自动跟随。
+ *
+ * 定期重扫而不是事件驱动：进程内只保留「当前跑着哪些 Bot」这一点状态，
+ * 且它完全由存储里的渠道表决定，重启即可重建（硬约束④）。
+ */
+const bots = new Map<string, TelegramBot>()
+
+async function syncBots(): Promise<void> {
+  if (!(await isInitialized(store))) return
+
+  const wanted = new Map<string, { token: string; chat: string }>()
+  for (const c of await store.listChannels()) {
+    if (!c.enabled || c.type !== 'telegram') continue
+    try {
+      const cfg = TelegramConfig.parse(JSON.parse(await cipher.decrypt(c.config_enc)))
+      wanted.set(c.id, { token: cfg.bot_token, chat: cfg.chat_id })
+    } catch (e) {
+      log.error('Bot 渠道配置不可用，已跳过', { channel_id: c.id, error: String(e) })
+    }
+  }
+
+  for (const [id, bot] of bots) {
+    if (!wanted.has(id)) { bot.stop(); bots.delete(id); log.info('Bot 已停止', { channel_id: id }) }
+  }
+
+  const serviceToken = await getOrCreateBotToken(store)
+  for (const [id, w] of wanted) {
+    if (bots.has(id)) continue
+    const bot = new TelegramBot(
+      { store, apiBase: `http://127.0.0.1:${cfg.port}`, serviceToken },
+      w.token, new Set([w.chat]), id,
+    )
+    bot.start()
+    bots.set(id, bot)
+  }
+}
+
+// 启动后先同步一次，之后每分钟跟随渠道变动
+setTimeout(() => void syncBots(), 2000)
+const botTimer = setInterval(() => void syncBots(), 60_000)
+
+/** 回复映射保留 7 天：超过这个窗口的推送，用户基本不会再去引用回复。 */
+const MESSAGE_REF_TTL_MS = 7 * 24 * 3600 * 1000
+const cleanupTimer = setInterval(() => {
+  void store.cleanupMessageRefs(Date.now() - MESSAGE_REF_TTL_MS)
+  void store.cleanupSessions(Date.now())
+}, 3600_000)
+
 const shutdown = async (sig: string) => {
   log.info('收到信号，正在退出', { sig })
+  clearInterval(botTimer)
+  clearInterval(cleanupTimer)
+  for (const b of bots.values()) b.stop()
   server.close()
   wss.close()
   await store.close()

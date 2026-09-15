@@ -12,6 +12,7 @@ import type {
   EventQuery,
   InsertEventResult,
   OutboundRecord,
+  MessageRefRecord,
   PairingCodeRecord,
   SessionRecord,
   RuleRecord,
@@ -104,6 +105,16 @@ const MIGRATIONS: string[] = [
      revoked    INTEGER NOT NULL DEFAULT 0
    )`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at)`,
+  `CREATE TABLE IF NOT EXISTS message_refs (
+     channel_id TEXT NOT NULL,
+     ref        TEXT NOT NULL,
+     event_id   TEXT NOT NULL,
+     sender     TEXT NOT NULL,
+     device_id  TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     PRIMARY KEY (channel_id, ref)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_msgrefs_time ON message_refs(created_at)`,
 ]
 
 /** 状态机的前进顺序。数字大者为更后的状态，用于拒绝倒退的回执。 */
@@ -304,6 +315,27 @@ export class SqliteStore implements Store {
     this.db
       .prepare('UPDATE outbound SET status = ?, error = ?, updated_at = ? WHERE id = ?')
       .run(status, error, at, id)
+  }
+
+  // ── 推送消息映射 ──────────────────────────────────────
+
+  async putMessageRef(r: MessageRefRecord): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO message_refs (channel_id, ref, event_id, sender, device_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(channel_id, ref) DO UPDATE SET event_id=excluded.event_id, sender=excluded.sender`,
+      )
+      .run(r.channel_id, r.ref, r.event_id, r.sender, r.device_id, r.created_at)
+  }
+
+  async getMessageRef(channelId: string, ref: string): Promise<MessageRefRecord | null> {
+    const row = this.db.prepare('SELECT * FROM message_refs WHERE channel_id = ? AND ref = ?').get(channelId, ref)
+    return row ? (row as unknown as MessageRefRecord) : null
+  }
+
+  async cleanupMessageRefs(before: number): Promise<void> {
+    this.db.prepare('DELETE FROM message_refs WHERE created_at < ?').run(before)
   }
 
   // ── 设置与会话 ────────────────────────────────────────

@@ -2,7 +2,7 @@
 import type { Connection, Hub } from '../hub.js'
 import type {
   ChannelRecord, DeviceRecord, EventQuery, InsertEventResult, OutboundRecord,
-  PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent,
+  MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent,
 } from '../store.js'
 
 /** 与 SQLite 实现保持一致的状态机顺序 */
@@ -57,6 +57,14 @@ export class MemoryStore implements Store {
     if (!p || p.used_at !== null || p.expires_at <= now) return null
     this.pairings.set(hash, { ...p, used_at: now })
     return { ...p, used_at: now }
+  }
+
+  messageRefs = new Map<string, MessageRefRecord>()
+
+  async putMessageRef(r: MessageRefRecord) { this.messageRefs.set(`${r.channel_id}:${r.ref}`, r) }
+  async getMessageRef(c: string, r: string) { return this.messageRefs.get(`${c}:${r}`) ?? null }
+  async cleanupMessageRefs(before: number) {
+    for (const [k, v] of this.messageRefs) if (v.created_at < before) this.messageRefs.delete(k)
   }
 
   settings = new Map<string, string>()

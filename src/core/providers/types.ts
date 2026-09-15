@@ -24,12 +24,17 @@ export interface NotifyMessage {
   options?: Record<string, unknown>
 }
 
+/** 发送结果。ref 是渠道侧的消息标识，用于把用户的回复关联回原事件。 */
+export interface SendResult {
+  ref?: string | undefined
+}
+
 export interface Provider<C = unknown> {
   readonly type: string
   /** 配置结构，用于保存前校验与控制台表单生成 */
   readonly configSchema: z.ZodType<C>
   /** 发送。失败必须抛异常，由 notifier 统一重试。 */
-  send(config: C, msg: NotifyMessage): Promise<void>
+  send(config: C, msg: NotifyMessage): Promise<SendResult | void>
 }
 
 /** 渠道发送失败。message 会写入 audit_log，不得包含短信正文。 */
