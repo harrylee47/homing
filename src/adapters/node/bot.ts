@@ -33,10 +33,14 @@ interface TgUpdate {
   }
 }
 
+/** 同一个 bot token 被另一个进程长轮询时 Telegram 返回的状态码。 */
+const HTTP_CONFLICT = 409
+
 export class TelegramBot {
   private offset = 0
   private running = false
   private channelId = ''
+  private conflictLogged = false
 
   constructor(
     private readonly deps: BotDeps,
@@ -70,7 +74,22 @@ export class TelegramBot {
           )
         }
       } catch (e) {
-        // 网络抖动、Telegram 限流都会走到这里；退避后继续，不要放弃轮询
+        if (e instanceof ConflictError) {
+          // 同一个 token 只能有一个长轮询者。这不是瞬时故障，重试再快也没用，
+          // 且会持续刷日志；只提示一次，然后慢速重试等对方退出。
+          if (!this.conflictLogged) {
+            this.conflictLogged = true
+            log.error(
+              'Bot token 已被另一个进程占用（Telegram 409）。' +
+              '同一个 token 不能同时被两个程序长轮询——请为本网关向 @BotFather 申请独立的 Bot。' +
+              '推送不受影响，仅命令交互不可用。',
+              { channel_id: this.channelId },
+            )
+          }
+          await sleep(60_000)
+          continue
+        }
+        // 网络抖动、Telegram 限流走这里；退避后继续，不要放弃轮询
         log.warn('Bot 轮询失败', { error: String(e) })
         await sleep(5000)
       }
@@ -85,7 +104,10 @@ export class TelegramBot {
       // 比服务端 timeout 多留 10 秒，避免正常的长轮询被当成超时
       signal: AbortSignal.timeout(35_000),
     })
+    if (res.status === HTTP_CONFLICT) throw new ConflictError()
     if (!res.ok) throw new Error(`getUpdates HTTP ${res.status}`)
+    // 恢复正常后允许下次冲突再次提示
+    this.conflictLogged = false
     const body = (await res.json()) as { ok: boolean; result?: TgUpdate[] }
     return body.result ?? []
   }
@@ -205,6 +227,13 @@ export class TelegramBot {
         return r.events.some((e) => e.from === n)
       },
     }
+  }
+}
+
+class ConflictError extends Error {
+  constructor() {
+    super('bot token conflict')
+    this.name = 'ConflictError'
   }
 }
 
