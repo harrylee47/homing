@@ -36,10 +36,29 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
   if (!existsSync(file)) return false
 
   const ext = extname(file)
+  const stat = statSync(file)
+  const lastModified = stat.mtime.toUTCString()
+
+  // 条件请求：内容没变就回 304，既省流量又保证部署后立刻生效
+  const since = req.headers['if-modified-since']
+  if (since && Date.parse(since) >= Math.floor(stat.mtimeMs / 1000) * 1000) {
+    res.writeHead(304, { 'cache-control': 'no-cache', 'last-modified': lastModified })
+    res.end()
+    return true
+  }
+
   const headers: Record<string, string> = {
     'content-type': TYPES[ext] ?? 'application/octet-stream',
-    // 控制台会展示全部短信明文，任何中间层都不应缓存
-    'cache-control': ext === '.html' ? 'no-store' : 'public, max-age=3600',
+    /**
+     * 一律 no-cache（每次校验，不是不缓存）。
+     *
+     * 本项目没有构建步骤，文件名里没有内容哈希，所以长缓存会让部署后
+     * 一小时内都拿到旧代码——改了口令规则、修了 bug 都看不到。
+     * 配合 Last-Modified 回 304，代价只有一个条件请求。
+     * HTML 仍是 no-store：控制台会展示全部短信明文。
+     */
+    'cache-control': ext === '.html' ? 'no-store' : 'no-cache',
+    'last-modified': lastModified,
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
     // 前端不加载任何外部资源，CSP 收到最紧
