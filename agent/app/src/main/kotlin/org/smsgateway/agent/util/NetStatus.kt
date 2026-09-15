@@ -27,19 +27,25 @@ data class NetSnapshot(
     /** 网络是否真的通。连上 WiFi 但没网的情况很常见 */
     val online: Boolean,
 ) {
-    /** 一行人话，给短信指令用。一条短信只有 70 个字，能省则省。 */
+    /**
+     * 一行人话，给短信指令用。一条短信只有 70 个字，能省则省。
+     *
+     * 信号单独说、不挂在「走移动数据」后面：连着 WiFi 时 SIM 卡照样可能没信号，
+     * 而那种情况下短信收不到——恰恰是发指令来问的人最想知道的一条。
+     */
     fun describe(): String = buildString {
         append("WiFi ").append(if (wifi) "开" else "关")
         append("，").append(
             when {
                 type == "wifi" && ssid != null -> "已连 $ssid"
                 type == "wifi" -> "已连 WiFi"
-                type == "cellular" -> "走移动数据" + (signal?.let { "（信号 $it/4）" } ?: "")
+                type == "cellular" -> "走移动数据"
                 type == "none" -> "无网络"
                 else -> "其他网络"
             },
         )
         if (type != "none" && !online) append("（未验证）")
+        if (signal != null) append("，信号 ").append(signal).append("/4")
         if (!carrier.isNullOrBlank()) append("，运营商 ").append(carrier)
     }
 }
@@ -89,12 +95,17 @@ object NetStatus {
      *
      * `signalStrength.level` 从 API 28 起可用，之前的版本没有统一口径的换算
      * （各家 ROM 自己定义），与其给一个不可比的数字不如不给。
+     *
+     * 没插 SIM 卡时 level 会返回 0，和「插了卡但一格都没有」无法区分。
+     * 那会在控制台上报一个红色的「无服务」假警报，所以先确认卡就绪再取值。
      */
     @SuppressLint("MissingPermission")
     private fun signalBars(ctx: Context): Int? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
         return runCatching {
-            ctx.getSystemService(TelephonyManager::class.java)?.signalStrength?.level?.coerceIn(0, 4)
+            val tm = ctx.getSystemService(TelephonyManager::class.java) ?: return null
+            if (tm.simState != TelephonyManager.SIM_STATE_READY) return null
+            tm.signalStrength?.level?.coerceIn(0, 4)
         }.getOrNull()
     }
 }

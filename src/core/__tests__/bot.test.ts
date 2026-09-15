@@ -317,6 +317,57 @@ describe('查询命令', () => {
   })
 })
 
+describe('设备状态要说清楚为什么', () => {
+  const wifiPhone = {
+    id: 'dev_1', name: 'JP-Gateway-01', status: 'online', last_seen_at: Date.now(),
+    battery: 72, charging: false,
+    net: { wifi: true, type: 'wifi', ssid: 'loveyou5', carrier: 'SoftBank', signal: 4, online: true },
+  }
+  const withDevices = (devices: unknown[]) => makeApi({
+    stats: async () => ({
+      devices: devices as never, today: { events: 0, outbound: 0, outbound_failed: 0 }, rules: 0, channels: 0,
+    }),
+  })
+
+  it('连着 WiFi 也要报 SIM 信号 —— 卡没信号时短信照样收不到', async () => {
+    const r = await handleCommand(withDevices([wifiPhone]), '/status')
+    expect(r!.text).toContain('信号')
+    expect(r!.text).toContain('▮▮▮▮')
+    expect(r!.text).toContain('loveyou5')
+    expect(r!.text).toContain('SoftBank')
+  })
+
+  it('没在充电要明说，不能只在充电时才提', async () => {
+    const r = await handleCommand(withDevices([wifiPhone]), '/status')
+    expect(r!.text).toContain('72%')
+    expect(r!.text).toContain('未充电')
+  })
+
+  it('信号弱要标出来', async () => {
+    const weak = { ...wifiPhone, net: { ...wifiPhone.net, signal: 1 } }
+    expect((await handleCommand(withDevices([weak]), '/status'))!.text).toContain('很弱')
+  })
+
+  it('/devices 与 /status 给的细节一样多', async () => {
+    const r = await handleCommand(withDevices([wifiPhone]), '/devices')
+    expect(r!.text).toContain('▮▮▮▮')
+    expect(r!.text).toContain('未充电')
+    expect(r!.text).toContain('SoftBank')
+  })
+
+  it('掉线设备报的是掉线前的状态，要标明', async () => {
+    const off = { ...wifiPhone, status: 'offline' }
+    expect((await handleCommand(withDevices([off]), '/status'))!.text).toContain('掉线前')
+  })
+
+  it('设备没上报网络时不编造', async () => {
+    const bare = { id: 'd', name: 'x', status: 'online', last_seen_at: Date.now(), battery: null }
+    const r = await handleCommand(withDevices([bare]), '/status')
+    expect(r!.text).not.toContain('信号')
+    expect(r!.text).not.toContain('%')
+  })
+})
+
 describe('/sent 发送记录', () => {
   it('列出收件人、状态与失败原因', async () => {
     const r = await handleCommand(makeApi(), '/sent')

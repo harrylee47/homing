@@ -239,6 +239,7 @@ function checkPassword(pw) {
 }
 
 /** 电量显示。充电状态用图标区分，一眼看出插没插上。 */
+/** 已吊销设备的电量。在用的设备走 statusBadges，那里说得更全（含充不充电）。 */
 function battery(d) {
   if (d.battery == null) return ''
   const icon = d.charging === true ? '🔌' : d.battery <= 20 ? '🪫' : '🔋'
@@ -254,27 +255,42 @@ function battery(d) {
  */
 function statusBadges(d) {
   const n = d.net || {}
-  if (!n.type && d.charging !== true) return ''
   const out = []
 
-  // 充电：只有在充电时才高亮，没充电是常态不值得占一个亮色
-  if (d.charging === true) out.push('<span class="badge ok">⚡ 充电中</span>')
-  else if (d.battery != null && d.battery <= 20) out.push(`<span class="badge err">🪫 ${d.battery}%</span>`)
+  // 信号排第一：它和「有没有网」是两件事。手机连着 WiFi、SIM 卡却没信号时，
+  // 短信照样收不到——只看「已连 WiFi」会以为一切正常，而这正是最该被看见的故障。
+  if (n.signal != null) {
+    const lv = Math.max(0, Math.min(4, n.signal))
+    const tone = lv === 0 ? 'err' : lv <= 1 ? 'warn' : 'ok'
+    out.push(`<span class="badge ${tone}">📶 ${'▮'.repeat(lv)}${'▯'.repeat(4 - lv)}${lv <= 1 ? ' 信号弱' : ''}</span>`)
+  }
 
+  // 上网路径
   if (n.type === 'wifi') {
-    out.push(`<span class="badge info">📶 ${n.ssid ? esc(n.ssid) : 'WiFi'}</span>`)
+    out.push(`<span class="badge info">🛜 ${n.ssid ? esc(n.ssid) : 'WiFi'}</span>`)
   } else if (n.type === 'cellular') {
-    const bars = n.signal == null ? '' : ` ${'▮'.repeat(n.signal)}${'▯'.repeat(4 - n.signal)}`
-    // 信号 0-1 格是要出事的前兆，标红
-    out.push(`<span class="badge ${n.signal != null && n.signal <= 1 ? 'warn' : ''}">📱 移动数据${bars}</span>`)
+    out.push('<span class="badge info">📱 移动数据</span>')
   } else if (n.type === 'none') {
     out.push('<span class="badge err">✕ 无网络</span>')
+  } else if (n.type === 'other') {
+    out.push('<span class="badge plain">其他网络</span>')
+  }
+
+  if (n.carrier) out.push(`<span class="badge plain">${esc(n.carrier)}</span>`)
+
+  // 电量总是显示，包括「没在充电」——这台机器要常年插着电，
+  // 「未充电」不是常态而是异常，藏起来等于把最该报的那条藏了。
+  if (d.battery != null) {
+    const tone = d.battery <= 20 ? 'err' : d.charging === true ? 'ok' : d.battery <= 40 ? 'warn' : 'plain'
+    const icon = d.charging === true ? '⚡' : d.battery <= 20 ? '🪫' : '🔋'
+    out.push(`<span class="badge ${tone}">${icon} ${d.battery}%${d.charging === true ? ' 充电中' : d.charging === false ? ' 未充电' : ''}</span>`)
+  } else if (d.charging === true) {
+    out.push('<span class="badge ok">⚡ 充电中</span>')
   }
 
   // WiFi 开着却没走 WiFi：多半是没连上或信号太弱，这种「半好不坏」最容易被忽略
-  if (n.wifi === false && n.type !== 'cellular') out.push('<span class="badge plain">WiFi 已关</span>')
+  if (n.wifi === false && n.type !== 'wifi') out.push('<span class="badge plain">WiFi 已关</span>')
   if (n.type && n.type !== 'none' && n.online === false) out.push('<span class="badge warn">连着但没网</span>')
-  if (n.carrier) out.push(`<span class="badge plain">${esc(n.carrier)}</span>`)
 
   if (out.length === 0) return ''
   // 掉线设备也显示——「掉线前是 1 格信号」正是排查时最想知道的那一句。
@@ -487,7 +503,7 @@ async function overview() {
               <span class="badge ${deviceClass(d.id)}">${esc(d.name)}</span>
               <span class="dot ${d.status}"></span>
             </div>
-            <div class="muted">最后心跳 ${ago(d.last_seen_at)}${battery(d)}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</div>
+            <div class="muted">最后心跳 ${ago(d.last_seen_at)}${d.status === 'revoked' ? battery(d) : ''}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</div>
             ${d.status === 'revoked' ? '' : statusBadges(d)}
           </div>
           <span class="badge ${d.status === 'online' ? 'ok' : d.status === 'revoked' ? 'err' : 'plain'}">${
@@ -1783,7 +1799,7 @@ async function devices() {
             <div class="col grow">
               <div><span class="dot ${d.status}"></span><b>${esc(d.name)}</b></div>
               <span class="muted mono" style="font-size:11px">${esc(d.id)}</span>
-              <span class="muted">心跳 ${ago(d.last_seen_at)}${battery(d)}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</span>
+              <span class="muted">心跳 ${ago(d.last_seen_at)}${d.status === 'revoked' ? battery(d) : ''}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</span>
               ${d.status === 'revoked' ? '' : statusBadges(d)}
             </div>
             <div style="display:flex;gap:6px;flex-direction:column;align-items:flex-end">

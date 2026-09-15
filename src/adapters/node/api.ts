@@ -308,6 +308,16 @@ export function ipPrefix(ip: string): string {
 
 // ── 设备与配对 ──────────────────────────────────────────────
 
+/** 网络状态只用于展示：解析失败就当没有，不要让一条脏数据把整个设备列表打挂。 */
+function parseNet(raw: string | null): unknown {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
 route('GET', '/api/devices', async ({ res, deps }) => {
   const devices = await deps.store.listDevices()
   const online = new Set(deps.hub.onlineDevices())
@@ -317,8 +327,7 @@ route('GET', '/api/devices', async ({ res, deps }) => {
       // 以实际连接状态为准：库里的 status 在服务端异常退出后可能是陈旧的
       status: d.status === 'revoked' ? 'revoked' : online.has(d.id) ? 'online' : 'offline',
       last_seen_at: d.last_seen_at, battery: d.battery, charging: d.charging,
-      // 网络状态只用于展示，解析失败就当没有，不要让整个列表挂掉
-      net: d.net_json ? (JSON.parse(d.net_json) as unknown) : null,
+      net: parseNet(d.net_json),
       // 只给出「有没有、什么时候」，坐标要单独请求并留审计
       has_location: d.location_enc !== null, location_at: d.location_at,
       app_version: d.app_version, created_at: d.created_at,
@@ -1197,8 +1206,7 @@ route('GET', '/api/stats', async ({ res, deps }) => {
       id: d.id, name: d.name,
       status: d.status === 'revoked' ? 'revoked' : online.has(d.id) ? 'online' : 'offline',
       last_seen_at: d.last_seen_at, battery: d.battery, charging: d.charging,
-      // 网络状态只用于展示，解析失败就当没有，不要让整个列表挂掉
-      net: d.net_json ? (JSON.parse(d.net_json) as unknown) : null,
+      net: parseNet(d.net_json),
       app_version: d.app_version,
     })),
     today: {

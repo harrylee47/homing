@@ -222,7 +222,9 @@ h2::before {
 .badge.err { background: var(--pink); }
 .badge.warn { background: var(--yellow); }
 .badge.info { background: var(--cyan); }
-.badge.plain { background: transparent; border-style: dashed; color: var(--muted); }
+/* 次要徽章：靠虚线边框表达「次要」就够了，字还是用正文色。
+   用 --muted 的话 11px 粗体在浅色下是一团灰，正是「有的字看不清」的那类 */
+.badge.plain { background: transparent; border-style: dashed; color: var(--fg); }
 
 /* 类别与设备的配色。语义固定在一处，各页面共用，免得同一个东西两种颜色 */
 .c-sms { background: var(--cyan); }

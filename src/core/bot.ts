@@ -10,13 +10,28 @@
  * 验证码不得单独明文显示（见 providers/telegram.ts 的说明）。
  */
 
+/** /status 与 /devices 用到的设备摘要。 */
+export interface BotStatsDevice {
+  id: string
+  name: string
+  status: string
+  last_seen_at: number | null
+  battery: number | null
+  charging?: boolean | null
+  net?: {
+    wifi?: boolean | null
+    type?: string | null
+    ssid?: string | null
+    carrier?: string | null
+    signal?: number | null
+    online?: boolean | null
+  } | null
+}
+
 /** Bot 可用的接口，就是计划 §11.1 能力矩阵的代码化。 */
 export interface BotApi {
   stats(): Promise<{
-    devices: {
-      id: string; name: string; status: string
-      last_seen_at: number | null; battery: number | null; charging?: boolean | null
-    }[]
+    devices: BotStatsDevice[]
     today: { events: number; outbound: number; outbound_failed: number }
     rules: number
     channels: number
@@ -194,16 +209,48 @@ export async function handleCommand(api: BotApi, text: string): Promise<BotMessa
   }
 }
 
+/**
+ * 设备的一行网络与电量描述。
+ *
+ * **信号格数与上网路径无关，必须单独显示**：手机连着 WiFi、SIM 卡却没信号时，
+ * 短信照样收不到——而只看「已连 WiFi」会以为一切正常。这正是最该被看见的故障。
+ */
+function deviceDetail(d: BotStatsDevice): string[] {
+  const out: string[] = []
+
+  if (d.battery != null) {
+    const icon = d.charging === true ? '🔌' : d.battery <= 20 ? '🪫' : '🔋'
+    out.push(`${icon} ${d.battery}%${d.charging === true ? ' 充电中' : ' 未充电'}`)
+  }
+
+  const n = d.net
+  if (n) {
+    // 信号先说：它决定短信收不收得到
+    if (n.signal != null) {
+      out.push(`📶 信号 ${'▮'.repeat(n.signal)}${'▯'.repeat(4 - n.signal)}${n.signal <= 1 ? ' ⚠️ 很弱' : ''}`)
+    }
+    if (n.type === 'wifi') out.push(`🛜 ${n.ssid ? esc(n.ssid) : 'WiFi'}`)
+    else if (n.type === 'cellular') out.push('📱 移动数据')
+    else if (n.type === 'none') out.push('❌ 无网络')
+    if (n.type && n.type !== 'none' && n.online === false) out.push('⚠️ 连着但没网')
+    if (n.wifi === false && n.type !== 'wifi') out.push('WiFi 已关')
+    if (n.carrier) out.push(esc(n.carrier))
+  }
+  return out
+}
+
 async function status(api: BotApi): Promise<BotMessage> {
   const s = await api.stats()
   const lines = ['<b>状态</b>', '']
   if (s.devices.length === 0) lines.push('还没有设备')
   for (const d of s.devices) {
     const dot = d.status === 'online' ? '🟢' : d.status === 'revoked' ? '🔴' : '⚪️'
-    const batt = d.battery != null
-      ? ` · ${d.charging === true ? '🔌' : d.battery <= 20 ? '🪫' : '🔋'} ${d.battery}%`
-      : ''
-    lines.push(`${dot} ${esc(d.name)} · 心跳 ${ago(d.last_seen_at)}${batt}`)
+    lines.push(`${dot} <b>${esc(d.name)}</b> · 心跳 ${ago(d.last_seen_at)}`)
+    const detail = deviceDetail(d)
+    // 掉线设备照样报，但要标明是掉线前的——那是排查时最想知道的一句
+    if (detail.length > 0) {
+      lines.push(`　${d.status === 'online' ? '' : '掉线前 '}${detail.join(' · ')}`)
+    }
   }
   lines.push('', `今日事件 ${s.today.events} ｜ 发送 ${s.today.outbound} ｜ 失败 ${s.today.outbound_failed}`)
   lines.push(`${s.rules} 条规则 · ${s.channels} 个渠道`)
@@ -214,10 +261,12 @@ async function devices(api: BotApi): Promise<BotMessage> {
   const s = await api.stats()
   if (s.devices.length === 0) return { text: '还没有设备' }
   return {
-    text: ['<b>设备</b>', '', ...s.devices.map((d) =>
-      `${d.status === 'online' ? '🟢' : '⚪️'} ${esc(d.name)}\n<code>${esc(d.id)}</code>\n心跳 ${ago(d.last_seen_at)}` +
-      (d.battery != null ? ` · ${d.charging === true ? '🔌 充电中' : '🔋'} ${d.battery}%` : ''),
-    )].join('\n\n'),
+    text: ['<b>设备</b>', '', ...s.devices.map((d) => {
+      const detail = deviceDetail(d)
+      return `${d.status === 'online' ? '🟢' : d.status === 'revoked' ? '🔴' : '⚪️'} <b>${esc(d.name)}</b>\n` +
+        `<code>${esc(d.id)}</code>\n心跳 ${ago(d.last_seen_at)}` +
+        (detail.length ? `\n${d.status === 'online' ? '' : '掉线前 '}${detail.join(' · ')}` : '')
+    })].join('\n\n'),
   }
 }
 
