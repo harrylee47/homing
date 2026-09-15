@@ -23,7 +23,7 @@ describe('建议规则集：按消息类型分类', () => {
       device_id: 'dev_1', kind: 'notification', from: '中国建设银行',
       content: '您的登录验证码是 662211', occurred_at: Date.now(),
     })
-    expect(r.name ?? r.matched[0]?.name).toBe('应用通知')
+    expect(r.matched[0]?.name).toBe('应用通知')
     expect(r.priority).toBe('high')
   })
 
