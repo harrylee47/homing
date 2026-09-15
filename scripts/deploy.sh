@@ -22,8 +22,11 @@ node scripts/check-core-purity.mjs
 pnpm exec vitest run --reporter=dot 2>&1 | tail -3
 
 echo "── 同步 ──"
+# .env 必须排除：它只存在于服务器上，--delete 会把它删掉，
+# 表现为「部署完容器起不来了，说缺环境变量」
 rsync -az --delete \
   --exclude node_modules --exclude dist --exclude data --exclude bark-data \
+  --exclude .env --exclude Caddyfile --exclude caddy-data \
   --exclude .git --exclude agent --exclude 'docs/dev-plan.md' \
   "$ROOT/" "$HOST:~/sms-gateway/"
 
