@@ -22,3 +22,7 @@ agent/**/build/
 *.jks
 
 .DS_Store
+
+# Gradle
+agent/.gradle/
+agent/local.properties

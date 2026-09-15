@@ -197,12 +197,14 @@ export const EventPayload = z.object({
   sim_slot: z.number().int().min(0).max(3).nullable(),
   extra: z
     .object({
+      // 用 nullish 而非 optional：Kotlin 等语言序列化空值时给的是显式 null，
+      // 而 zod 的 optional 只接受 undefined。协议边界要对两种写法都宽容。
       /** kind=call 时：来电类型 */
-      call_type: z.enum(['incoming', 'missed', 'outgoing']).optional(),
+      call_type: z.enum(['incoming', 'missed', 'outgoing']).nullish(),
       /** kind=notification 时：来源包名 */
-      package: z.string().max(128).optional(),
+      package: z.string().max(128).nullish(),
       /** content 被 MAX_CONTENT_LEN 截断时为 true */
-      truncated: z.boolean().optional(),
+      truncated: z.boolean().nullish(),
     })
     .default({}),
 })

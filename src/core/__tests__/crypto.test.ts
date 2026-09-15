@@ -29,7 +29,7 @@ describe('加密', () => {
   it('密文被篡改即失败（GCM 完整性）', async () => {
     const c = await createCipher(generateDek())
     const blob = await c.encrypt('123456')
-    blob[blob.length - 1] ^= 0xff
+    blob[blob.length - 1] = (blob.at(-1)! ^ 0xff) & 0xff
     await expect(c.decrypt(blob)).rejects.toThrow()
   })
 

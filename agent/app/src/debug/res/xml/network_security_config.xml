@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  仅 debug 构建生效：放行本地开发地址的明文，方便在模拟器/局域网里连未配 TLS 的服务端。
+  release 构建使用 main 下的严格版本，不受影响。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>     <!-- 模拟器访问宿主机 -->
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">192.168.1.200</domain> <!-- 开发机局域网地址 -->
+    </domain-config>
+</network-security-config>

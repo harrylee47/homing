@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 生产构建禁止一切明文流量：短信正文与验证码只能走 TLS（计划 §5.1） -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

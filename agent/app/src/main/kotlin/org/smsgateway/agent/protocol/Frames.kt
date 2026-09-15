@@ -1,0 +1,163 @@
+package org.smsgateway.agent.protocol
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+
+/**
+ * 协议契约的 Kotlin 侧实现。
+ *
+ * **必须与服务端 src/core/protocol.ts 严格对齐**，任何改动要同步两端并递增 VERSION。
+ */
+object Protocol {
+    const val VERSION = 1
+
+    const val DEFAULT_HEARTBEAT_SEC = 30
+    const val DEFAULT_HEARTBEAT_TIMEOUT_SEC = 90
+
+    /** 帧时间戳允许的时钟偏移，超出服务端会拒绝。 */
+    const val CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000L
+
+    const val MAX_CONTENT_LEN = 4096
+
+    /** 本地离线队列上限，超限丢弃最旧并告警。 */
+    const val MAX_PENDING_EVENTS = 5000
+
+    val json = Json {
+        ignoreUnknownKeys = true      // 服务端新增字段不应导致老 Agent 解析失败
+        encodeDefaults = true
+        // 空字段直接省略，不输出 null —— 与服务端 zod schema 的 optional 语义一致
+        explicitNulls = false
+    }
+}
+
+/** 不可重试的错误码：收到后停止重连并提示用户，见 protocol.ts 的 FATAL_ERROR_CODES。 */
+object ErrorCodes {
+    const val AUTH_INVALID_TOKEN = "AUTH_INVALID_TOKEN"
+    const val AUTH_DEVICE_REVOKED = "AUTH_DEVICE_REVOKED"
+    const val AUTH_UNKNOWN_DEVICE = "AUTH_UNKNOWN_DEVICE"
+    const val PROTOCOL_VERSION_UNSUPPORTED = "PROTOCOL_VERSION_UNSUPPORTED"
+
+    val FATAL = setOf(
+        AUTH_INVALID_TOKEN, AUTH_DEVICE_REVOKED,
+        AUTH_UNKNOWN_DEVICE, PROTOCOL_VERSION_UNSUPPORTED,
+    )
+}
+
+// ── 统一信封 ────────────────────────────────────────────────
+
+/**
+ * 收帧用的宽松信封：payload 保持为 JsonElement，按 type 再各自解析。
+ * 这样服务端新增帧类型时老 Agent 只会忽略，而不是崩溃。
+ */
+@Serializable
+data class Envelope(
+    val v: Int,
+    val type: String,
+    @SerialName("msg_id") val msgId: String,
+    val ts: Long,
+    val payload: JsonElement = JsonObject(emptyMap()),
+)
+
+// ── 上行 payload ────────────────────────────────────────────
+
+@Serializable
+data class HelloPayload(
+    @SerialName("device_id") val deviceId: String,
+    val token: String,
+    @SerialName("app_version") val appVersion: String,
+    @SerialName("android_sdk") val androidSdk: Int,
+    val battery: Int,
+    @SerialName("pending_count") val pendingCount: Int,
+)
+
+@Serializable
+data class EventExtra(
+    @SerialName("call_type") val callType: String? = null,
+    val `package`: String? = null,
+    val truncated: Boolean? = null,
+)
+
+@Serializable
+data class EventPayload(
+    val id: String,
+    @SerialName("device_id") val deviceId: String,
+    val kind: String,
+    val from: String,
+    val content: String,
+    /** 事件真实发生时间，不是上报时间。补传时的排序依据。 */
+    @SerialName("occurred_at") val occurredAt: Long,
+    @SerialName("sim_slot") val simSlot: Int?,
+    val extra: EventExtra = EventExtra(),
+)
+
+@Serializable
+data class CmdResultPayload(
+    @SerialName("cmd_id") val cmdId: String,
+    val status: String,
+    val error: String? = null,
+    val detail: JsonElement? = null,
+)
+
+@Serializable
+data class PingPayload(val seq: Long)
+
+@Serializable
+data class PongPayload(
+    val seq: Long,
+    val battery: Int? = null,
+    @SerialName("pending_count") val pendingCount: Int? = null,
+)
+
+// ── 下行 payload ────────────────────────────────────────────
+
+@Serializable
+data class AgentConfig(
+    @SerialName("heartbeat_sec") val heartbeatSec: Int = Protocol.DEFAULT_HEARTBEAT_SEC,
+    @SerialName("heartbeat_timeout_sec") val heartbeatTimeoutSec: Int = Protocol.DEFAULT_HEARTBEAT_TIMEOUT_SEC,
+    @SerialName("capture_notification") val captureNotification: Boolean = false,
+    @SerialName("encrypt_payload") val encryptPayload: Boolean = false,
+    @SerialName("max_batch_size") val maxBatchSize: Int = 50,
+    @SerialName("enabled_kinds") val enabledKinds: List<String> = listOf("sms", "call"),
+)
+
+@Serializable
+data class HelloAckPayload(
+    @SerialName("server_time") val serverTime: Long,
+    val config: AgentConfig,
+    @SerialName("known_event_ids") val knownEventIds: List<String> = emptyList(),
+)
+
+@Serializable
+data class HelloRejectPayload(
+    val code: String,
+    val message: String,
+    @SerialName("retry_after_sec") val retryAfterSec: Int? = null,
+)
+
+@Serializable
+data class EventAckItem(
+    val id: String,
+    /** stored / duplicate / rejected —— 三者都应让本地队列出队 */
+    val status: String,
+    val error: String? = null,
+)
+
+@Serializable
+data class EventAckPayload(val acks: List<EventAckItem>)
+
+@Serializable
+data class CmdPayload(
+    @SerialName("cmd_id") val cmdId: String,
+    val action: String,
+    val args: JsonObject = JsonObject(emptyMap()),
+)
+
+@Serializable
+data class SendSmsArgs(
+    val to: String,
+    val text: String,
+    @SerialName("sim_slot") val simSlot: Int? = null,
+)

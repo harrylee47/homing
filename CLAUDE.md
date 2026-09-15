@@ -118,4 +118,19 @@ M0 技术验证 → M1 最小闭环 → M2 下行发送 → M3 Web 控制台 →
 
 ## 许可证
 
-上游 SmsForwarder 是 GPL-3.0，衍生作品一旦分发即必须以 GPL-3.0 开源。本项目从一开始就按 GPL-3.0（或 AGPL-3.0）规划，服务端与 Agent 同仓同许可。动工第一件事是通读上游 LICENSE 与 NOTICE 并保留原作者版权声明。
+**上游 SmsForwarder 是 BSD 2-Clause，不是计划 §2.1 假设的 GPL-3.0。** 这是宽松许可，无 copyleft 义务，本项目可自由选择许可证。
+
+本项目采用 **AGPL-3.0**（计划 §16 的本意即"表明立场"，此前只是误以为受上游限制）。`NOTICE` 保留 pppscn 的 BSD 版权声明，沿用上游逻辑的文件在头部注明来源。
+
+## 安卓 Agent
+
+采用**新建工程 + 选择性拷贝**，而非在上游 46177 行代码里做减法。原因是上游 App.kt / Core.kt / Room 数据库把 Frpc、Sender、Rule 全串在一起，删比写更容易引入回归。
+
+关键认识：**保活不是上游的代码资产，是一个公开依赖** —— `com.gyf.cactus:cactus:1.1.3-beta13`。上游自己的保活代码仅 App.kt 里约 50 行配置。jcenter 已停服，AAR 随仓库分发（`agent/app/libs/`）以保证构建可复现，其传递依赖（work-runtime、gson）必须显式声明，`files()` 引入拿不到。
+
+两个必须守住的实现约束：
+
+- **只在主进程建立连接**。Cactus 会拉起 `:cactusRemoteService` 独立进程，它同样执行 `Application.onCreate`；不加判断会开出第二条 WS，两个进程按 device_id 互相踢下线，形成无限重连。见 `util/ProcessUtil.kt`。
+- **连接成功后必须等待断开信号再重连**，不能让重连循环直接进入下一轮——同样会自己踢自己。
+
+明文策略：`main` 源集的 network_security_config 完全禁止明文；`debug` 源集单独放行本地开发地址。release 构建不受影响。

@@ -12,7 +12,9 @@ const SECRET_KEYS = new Set([
   'token', 'password', 'secret', 'dek', 'key', 'authorization',
   'bot_token', 'api_key', 'token_hash', 'pairing_code',
 ])
-const CONTENT_KEYS = new Set(['content', 'text', 'body', 'message'])
+// 注意不含 'message'：协议错误、异常说明都用这个字段名，
+// 遮蔽它会让线上问题无法排查。短信正文在本项目里一律叫 content。
+const CONTENT_KEYS = new Set(['content', 'text', 'body'])
 const PHONE_KEYS = new Set(['from', 'to', 'to_number', 'sender', 'phone'])
 
 /** 号码保留前 3 后 2：`138****38` —— 足以人工辨认来源，不足以泄露完整号码。 */

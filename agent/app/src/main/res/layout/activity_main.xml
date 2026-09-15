@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:padding="20dp">
+
+    <LinearLayout
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView android:id="@+id/statusText"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="18sp" android:textStyle="bold"
+            android:paddingBottom="4dp" tools:ignore="MissingPrefix"
+            xmlns:tools="http://schemas.android.com/tools"
+            android:text="未配对" />
+
+        <TextView android:id="@+id/detailText"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="14sp" android:paddingBottom="16dp"
+            android:fontFamily="monospace" android:text="" />
+
+        <View android:layout_width="match_parent" android:layout_height="1dp"
+            android:background="#33888888" android:layout_marginBottom="16dp" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="服务端地址" android:textSize="12sp" />
+        <EditText android:id="@+id/urlInput"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="wss://example.com/ws" android:inputType="textUri"
+            android:autofillHints="" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="设备 ID" android:textSize="12sp" android:paddingTop="8dp" />
+        <EditText android:id="@+id/deviceInput"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="dev_xxxxxxxx" android:inputType="text" android:autofillHints="" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="凭证 Token" android:textSize="12sp" android:paddingTop="8dp" />
+        <EditText android:id="@+id/tokenInput"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="配对时服务端生成" android:inputType="textPassword"
+            android:autofillHints="" />
+
+        <Button android:id="@+id/saveButton"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="保存并连接" />
+
+        <Button android:id="@+id/permButton"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:text="申请权限" />
+
+        <Button android:id="@+id/batteryButton"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:text="加入电池优化白名单" />
+
+    </LinearLayout>
+</ScrollView>
