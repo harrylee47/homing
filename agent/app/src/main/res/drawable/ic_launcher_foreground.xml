@@ -1,8 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  启动图标的前景：卡通信鸽。
+  画布 108，安全区只有中心 72×72 —— 主体缩到 60 再居中，
+  被圆形、方形、水滴各种形状裁切都切不到头。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <group android:scaleX="2.2" android:scaleY="2.2" android:translateX="27" android:translateY="27">
-        <path android:fillColor="#FFFFFF"
-            android:pathData="M20,2L4,2c-1.1,0 -1.99,0.9 -1.99,2L2,22l4,-4h14c1.1,0 2,-0.9 2,-2L22,4c0,-1.1 -0.9,-2 -2,-2zM9,11L7,11L7,9h2v2zM13,11h-2L11,9h2v2zM17,11h-2L15,9h2v2z"/>
+    <group android:scaleX="0.9375" android:scaleY="0.9375"
+           android:translateX="24.00" android:translateY="24.00">
+        <path android:fillColor="#66D9EF" android:strokeColor="#12100E" android:strokeWidth="3"
+              android:strokeLineJoin="round" android:strokeLineCap="round"
+              android:pathData="M47,27 C53,32 52,42 43,47 C34,52 22,49 17,43 L4,47 L12,34 C15,26 25,21 33,21 C40,21 45,23 47,27 Z"/>
+        <path android:fillColor="#FFD93D" android:strokeColor="#12100E" android:strokeWidth="3"
+              android:strokeLineJoin="round" android:strokeLineCap="round"
+              android:pathData="M17,39 C19,28 29,24 38,30 C33,39 25,43 17,39 Z"/>
+        <path android:fillColor="#66D9EF" android:strokeColor="#12100E" android:strokeWidth="3"
+              android:strokeLineJoin="round" android:pathData="M45,10.5 a10.5,10.5 0 1,0 0,21.0 a10.5,10.5 0 1,0 0,-21.0 Z"/>
+        <path android:fillColor="#FFA552" android:strokeColor="#12100E" android:strokeWidth="3"
+              android:strokeLineJoin="round" android:strokeLineCap="round"
+              android:pathData="M54,18 L63,22 L54,26 Z"/>
+        <path android:fillColor="#12100E" android:pathData="M48,15.5 a2.5,2.5 0 1,0 0,5.0 a2.5,2.5 0 1,0 0,-5.0 Z"/>
     </group>
 </vector>

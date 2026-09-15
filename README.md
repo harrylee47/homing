@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo.svg" width="110" alt="Homing">
+</p>
+
 <h1 align="center">Homing</h1>
 
 <p align="center">

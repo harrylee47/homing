@@ -123,6 +123,20 @@ function deviceClass(id) {
   return `c-dev${h % 6}`
 }
 
+/**
+ * 品牌头。只出现在三个地方：登录、首次配置、总览。
+ *
+ * 其余页面不放——那是日常高频操作的地方，每页顶一个 logo 是纯粹的占地方。
+ */
+const brand = (sub = '') => `
+  <div class="brand">
+    <img src="/logo.svg" alt="" width="52" height="52">
+    <div class="col">
+      <b>Homing</b>
+      ${sub ? `<span class="muted">${esc(sub)}</span>` : ''}
+    </div>
+  </div>`
+
 /** 列表项左侧色带的类别。与 style.css 的 .s-* 对应。 */
 const stripeOf = (kind, direction) =>
   direction === 'out' ? 's-out' : `s-${kind}`
@@ -300,7 +314,7 @@ const fail = (e) => render(`<div class="card"><div class="err-text">${esc(e.mess
 async function setup() {
   nav.hidden = true
   render(`
-    <h1>初始配置</h1>
+    ${brand('第一次使用，先做两件事')}
     <div class="steps"><div class="on"></div><div id="s2"></div></div>
     <div class="card">
       <p class="muted">这台服务器将存放你的全部短信内容，包括银行验证码。先设置管理员口令。</p>
@@ -365,7 +379,7 @@ function setupTotp(r) {
 function login() {
   nav.hidden = true
   render(`
-    <h1>登录</h1>
+    ${brand('把消息带到你身边')}
     <div class="card">
       <label>口令</label>
       <input id="pw" type="password" autocomplete="current-password">
@@ -416,7 +430,7 @@ async function overview() {
       </div>`).join('') : '<div class="card muted">还没有设备。到「设备」页生成配对码。</div>'
 
     render(`
-      <h1>总览</h1>
+      ${brand()}
       ${deviceCards}
       <div class="card">
         <div class="stat">

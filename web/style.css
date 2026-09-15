@@ -23,6 +23,15 @@
   --orange: #ffa552;
   --violet: #c9a7ff;
 
+  /*
+   * 压在亮色块上的字色。亮色块（青/黄/薄荷/粉）在深浅两种主题下都是亮的，
+   * 所以它上面的字**永远是深色**，不能跟着主题走。
+   *
+   * 反过来，卡片底色是跟着主题变的，上面的字必须用 --fg——
+   * 写死深色会导致深色模式下「深底配深字」，按钮直接看不见。
+   */
+  --on-bright: #12100e;
+
   --accent: var(--cyan);
   --ok: var(--mint);
   --warn: var(--yellow);
@@ -180,7 +189,7 @@ h2::before {
 }
 .segs a:first-child { border-radius: 8px 0 0 8px; }
 .segs a:last-child { border-right-width: var(--bw); border-radius: 0 8px 8px 0; }
-.segs a.on { background: var(--yellow); color: #12100e; box-shadow: var(--shadow); }
+.segs a.on { background: var(--yellow); color: var(--on-bright); box-shadow: var(--shadow); }
 
 /* ── 状态点与标签 ────────────────────────────────────────── */
 
@@ -190,7 +199,8 @@ h2::before {
   margin-right: 7px; vertical-align: middle;
 }
 .dot.online { background: var(--mint); }
-.dot.offline { background: var(--card); }
+/* 不能用卡片色——那在深浅两种模式下都会和背景糊成一片，只剩一圈描边 */
+.dot.offline { background: color-mix(in srgb, var(--muted) 45%, transparent); }
 .dot.revoked { background: var(--pink); }
 
 .badge {
@@ -226,7 +236,7 @@ h2::before {
 .c-dev4 { background: var(--orange); }
 .c-dev5 { background: var(--violet); }
 /* 深色下亮色块上必须用深色字，否则白字压在薄荷绿上看不清 */
-.badge[class*="c-"], .badge.ok, .badge.err, .badge.warn, .badge.info { color: #12100e; }
+.badge[class*="c-"], .badge.ok, .badge.err, .badge.warn, .badge.info { color: var(--on-bright); }
 
 /* ── 表单 ────────────────────────────────────────────────── */
 
@@ -250,6 +260,26 @@ input:focus, select:focus, textarea:focus {
 }
 textarea { min-height: 96px; resize: vertical; }
 
+/*
+ * 下拉框。系统自带的箭头颜色不跟随我们的配色，深色模式下几乎看不见，
+ * 而且各浏览器长得都不一样。自绘一个，顺便给右侧留出箭头的位置。
+ */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 34px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 16px center, right 11px center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+select.sm { padding-right: 28px; background-position: right 12px center, right 8px center; }
+/* 展开后的选项列表由系统绘制，至少把底色和字色交代清楚 */
+select option { background: var(--card); color: var(--fg); }
+
 label {
   display: block;
   margin: 14px 0 6px;
@@ -262,7 +292,7 @@ label {
 
 button {
   background: var(--accent);
-  color: #12100e;
+  color: var(--on-bright);
   font-weight: 800;
   cursor: pointer;
   box-shadow: var(--shadow);
@@ -271,8 +301,9 @@ button {
 button:hover:not(:disabled) { transform: translate(1px, 1px); box-shadow: 2px 2px 0 var(--line); }
 button:active:not(:disabled) { transform: translate(var(--sx), var(--sx)); box-shadow: 0 0 0 var(--line); }
 button:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
-button.ghost { background: var(--card); }
-button.danger { background: var(--pink); }
+/* ghost 是卡片底色，字色必须跟随主题——写死深色在深色模式下等于隐形 */
+button.ghost { background: var(--card); color: var(--fg); }
+button.danger { background: var(--pink); color: var(--on-bright); }
 button.sm { padding: 7px 12px; font-size: 13px; width: auto; }
 select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
 
@@ -281,6 +312,13 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
 .btnrow a { text-decoration: none; }
 
 /* ── 导航 ────────────────────────────────────────────────── */
+
+/*
+ * `display: flex` 的优先级压过浏览器默认的 `[hidden] { display: none }`
+ * （id 选择器 vs UA 样式表），所以必须显式补一条——
+ * 否则登录页和配置向导底下会露出整条导航栏。
+ */
+#nav[hidden] { display: none; }
 
 #nav {
   position: fixed; left: 0; right: 0; bottom: 0;
@@ -302,7 +340,7 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
 }
 #nav a:last-child { border-right: none; }
 #nav a.active {
-  color: #12100e;
+  color: var(--on-bright);
   background: var(--yellow);
 }
 
@@ -310,7 +348,7 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
 
 .toast {
   position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%);
-  background: var(--yellow); color: #12100e;
+  background: var(--yellow); color: var(--on-bright);
   border: var(--bw) solid var(--line); box-shadow: var(--shadow);
   padding: 10px 16px; border-radius: 8px;
   font-weight: 700; font-size: 14px;
@@ -325,7 +363,7 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
 }
 .err-text:not(:empty) {
   background: var(--pink);
-  color: #12100e;
+  color: var(--on-bright);
   border: var(--bw) solid var(--line);
   border-radius: 8px;
   padding: 8px 10px;
@@ -340,14 +378,14 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
 }
 .stat b { font-size: 24px; font-weight: 800; display: block; line-height: 1.15; font-family: var(--mono); }
 /* 失败数不为 0 时整格变红：这个数字平时是 0，一旦不是就得一眼看见 */
-.stat > div.bad { background: var(--pink); color: #12100e; }
-.stat > div.bad .muted { color: #12100e; }
+.stat > div.bad { background: var(--pink); color: var(--on-bright); }
+.stat > div.bad .muted { color: var(--on-bright); }
 
 .code {
   font-family: var(--mono);
   font-size: 28px; letter-spacing: 6px; font-weight: 700; text-align: center;
   padding: 14px 0; margin: 12px 0;
-  background: var(--yellow); color: #12100e;
+  background: var(--yellow); color: var(--on-bright);
   border: var(--bw) solid var(--line); border-radius: 8px;
   box-shadow: var(--shadow);
 }
@@ -357,7 +395,7 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
 .steps div.on { background: var(--yellow); }
 
 .banner {
-  background: var(--yellow); color: #12100e;
+  background: var(--yellow); color: var(--on-bright);
   border-bottom: var(--bw) solid var(--line);
   padding: 9px 14px; font-size: 13px; font-weight: 700; text-align: center;
 }
@@ -381,7 +419,7 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
   font-size: 13px; font-weight: 600;
   padding: 3px 5px 3px 9px; border-radius: 6px;
-  background: var(--mint); color: #12100e;
+  background: var(--mint); color: var(--on-bright);
   border: var(--bw) solid var(--line);
 }
 .tag span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -392,9 +430,10 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
 .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
 .chips button {
   font-size: 12px; font-weight: 700; padding: 5px 10px; width: auto;
-  border-radius: 6px; background: var(--card); box-shadow: 2px 2px 0 var(--line);
+  border-radius: 6px; background: var(--card); color: var(--fg);
+  box-shadow: 2px 2px 0 var(--line);
 }
-.chips .tag { cursor: pointer; background: var(--card); }
+.chips .tag { cursor: pointer; background: var(--card); color: var(--fg); }
 .chips .tag input { width: auto; }
 
 .preview {
@@ -419,3 +458,14 @@ details > summary::before { content: "▸ "; }
 details[open] > summary::before { content: "▾ "; }
 
 a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+
+/* 品牌头：logo + 名字。只在登录、向导、总览出现 */
+.brand {
+  display: flex; align-items: center; gap: 12px;
+  margin: 2px 0 18px;
+}
+.brand img { flex: none; }
+.brand b {
+  font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1;
+}
+.brand .muted { font-size: 13px; }
