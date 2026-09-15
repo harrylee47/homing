@@ -29,6 +29,10 @@ export interface ApiDeps {
   store: Store
   cipher: Cipher
   hub: Hub
+  /** 自建 bark-server 的内部地址；未部署则为 null */
+  barkUpstream?: string | null
+  /** 对外可访问的 Bark 地址，供 Bark App 填写 */
+  barkPublicUrl?: string | null
   /** 自动化用的长期 token。人使用控制台时走会话，不用它。 */
   adminToken: string
   /** 登录失败达到阈值时的告警回调。计划 §6.3 要求「失败立即告警到 Telegram」。 */
@@ -39,6 +43,8 @@ export interface ApiDeps {
 const S_PASSWORD = 'admin_password_hash'
 const S_TOTP = 'totp_secret'
 const S_INITIALIZED = 'initialized'
+/** Bark 反代是否对外开放。默认关闭——开放等于把推送服务白送给全网。 */
+const S_BARK_PUBLIC = 'bark_public'
 
 type Handler = (ctx: Ctx) => Promise<void>
 interface Ctx {
@@ -426,6 +432,38 @@ route('POST', '/api/rules/seed', async ({ res, body, deps }) => {
 
 /** 服务端本地时区偏移，供规则的 time_window 使用。 */
 const tzOffsetMin = (): number => -new Date().getTimezoneOffset()
+
+// ── Bark 设置 ───────────────────────────────────────────────
+
+export async function isBarkPublic(store: Store): Promise<boolean> {
+  return (await store.getSetting(S_BARK_PUBLIC)) === '1'
+}
+
+route('GET', '/api/bark/info', async ({ res, deps }) => {
+  json(res, 200, {
+    // 网关推送走内部地址，不绕公网；渠道配置里就该填这个
+    upstream: deps.barkUpstream ?? null,
+    // Bark App 里填这个，用于注册与令牌刷新
+    public_url: deps.barkPublicUrl ?? null,
+    public_enabled: await isBarkPublic(deps.store),
+  })
+})
+
+/**
+ * 开关对外开放。
+ *
+ * 典型用法是临时开启：在 Bark App 里完成注册拿到 device key，然后关掉。
+ * 关闭后网关自己的推送不受影响——它走内部地址。
+ */
+route('POST', '/api/bark/public', async ({ res, body, deps, ip }) => {
+  const on = (body as { enabled?: boolean })?.enabled === true
+  await deps.store.setSetting(S_BARK_PUBLIC, on ? '1' : '0')
+  await deps.store.audit({
+    actor: 'admin', action: on ? 'bark.public_on' : 'bark.public_off',
+    detail: null, ip, created_at: now(),
+  })
+  json(res, 200, { public_enabled: on })
+})
 
 // ── 总览统计 ────────────────────────────────────────────────
 

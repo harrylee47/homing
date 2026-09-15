@@ -9,7 +9,7 @@ import { loadConfig } from './config.js'
 import { MemoryHub } from './hub.js'
 import { SqliteStore } from './store.js'
 import { dispatch } from '../../core/notifier.js'
-import { handleApi, isInitialized } from './api.js'
+import { handleApi, isBarkPublic, isInitialized } from './api.js'
 import { isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
 import { createWsServer, isAllowedAgentOrigin } from './wsserver.js'
@@ -54,6 +54,8 @@ async function alertLoginLockout(ip: string, attempts: number): Promise<void> {
 
 const apiDeps = {
   store, cipher, hub, adminToken: cfg.adminToken,
+  barkUpstream: cfg.barkUpstream,
+  barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
 }
 
@@ -76,10 +78,16 @@ const server = createServer((req, res) => {
   // Bark 反代：不走网关鉴权（Bark App 不会带我们的 token），
   // 但同样受初始化门禁约束——未配置完成前整台服务都不对外服务。
   if (cfg.barkUpstream && isBarkPath(req.url)) {
-    void isInitialized(store).then((ready) => {
-      if (!ready) { res.writeHead(403).end(); return }
+    void (async () => {
+      if (!(await isInitialized(store))) { res.writeHead(403).end(); return }
+      if (!(await isBarkPublic(store))) {
+        // 未开放时返回 404 而非 403：不确认这里存在一个 Bark 服务
+        log.debug('Bark 对外访问被拒（未开放）', { ip: req.socket.remoteAddress })
+        res.writeHead(404).end()
+        return
+      }
       proxyBark(cfg.barkUpstream!, req, res)
-    })
+    })()
     return
   }
 

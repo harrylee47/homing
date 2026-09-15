@@ -564,7 +564,10 @@ function ruleEditor(rule, chs) {
 async function channels() {
   render('<div class="loading">加载中…</div>')
   try {
-    const { channels: cs } = await api('/channels')
+    const [{ channels: cs }, bark] = await Promise.all([
+      api('/channels'),
+      api('/bark/info').catch(() => null),
+    ])
     render(`
       <h1>渠道</h1>
       ${cs.length ? `<div class="card list">${cs.map((c) => `
@@ -592,19 +595,45 @@ async function channels() {
         <div id="fields"></div>
         <div class="btnrow"><button id="add">添加</button></div>
         <div id="err" class="err-text"></div>
-      </div>`)
+      </div>
+      ${bark?.upstream ? `
+      <h2>Bark 对外访问</h2>
+      <div class="card">
+        <div class="row">
+          <div class="col grow">
+            <b>${bark.public_enabled ? '已开放' : '已关闭'}</b>
+            <span class="muted">${bark.public_enabled
+              ? '任何知道地址的人都能在这台服务器上注册设备。注册完请关掉。'
+              : '外部无法访问。网关自己的推送走内部地址，不受影响。'}</span>
+          </div>
+          <button class="${bark.public_enabled ? 'danger' : 'ghost'} sm" id="barktoggle">
+            ${bark.public_enabled ? '关闭' : '临时开启'}
+          </button>
+        </div>
+      </div>` : ''}`)
+
+    const bt = $('#barktoggle')
+    if (bt) bt.onclick = async () => {
+      bt.disabled = true
+      try {
+        await api('/bark/public', { method: 'POST', body: { enabled: !bark.public_enabled } })
+        toast(bark.public_enabled ? '已关闭对外访问' : '已开启，注册完记得关掉')
+        channels()
+      } catch (e) { toast(e.message); bt.disabled = false }
+    }
 
     const FORMS = {
       bark: {
         name: '主 Bark',
         html: `<div class="card tight" style="background:var(--bg)">
-                 <b>在 Bark App 里这样设置</b>
-                 <div class="muted" style="margin:6px 0 4px">iOS 装 Bark → 右上角「服务器」→ 填下面这个地址：</div>
-                 <div class="mono wrap" style="font-size:13px;padding:6px 0"><b id="barkurl">${esc(location.origin)}/bark</b></div>
+                 <b>第一步：在 Bark App 里注册</b>
+                 <div class="muted" style="margin:6px 0 4px">需要先在下方「Bark 对外访问」里临时开启，然后 iOS 装 Bark → 右上角「服务器」→ 填：</div>
+                 <div class="mono wrap" style="font-size:13px;padding:6px 0"><b>${esc(bark?.public_url || `${location.origin}/bark`)}</b></div>
                  <button class="ghost sm" id="copyurl" type="button">复制地址</button>
-                 <div class="muted" style="margin-top:8px">保存后 App 首页会显示一串设备 Key，填到下面。</div>
+                 <div class="muted" style="margin-top:8px">App 首页会显示一串设备 Key，填到下面，然后把对外访问关掉。</div>
                </div>
-               <label>服务端地址</label><input id="f_server" class="mono" value="${esc(location.origin)}/bark">
+               <label>推送地址（网关内部使用，不走公网）</label>
+               <input id="f_server" class="mono" value="${esc(bark?.upstream || '')}" placeholder="http://bark:8080">
                <label>设备 Key</label><input id="f_key" class="mono" placeholder="Bark App 首页显示的那串">
                <div class="muted">验证码会放进通知标题，长按即可复制，无需打开任何 App。</div>`,
         collect: () => ({ server: $('#f_server').value.trim(), key: $('#f_key').value.trim() }),
@@ -630,7 +659,7 @@ async function channels() {
       if (!$('#name').value.trim()) $('#name').value = FORMS[t].name
       const cp = $('#copyurl')
       if (cp) cp.onclick = async () => {
-        try { await navigator.clipboard.writeText(`${location.origin}/bark`); toast('已复制') }
+        try { await navigator.clipboard.writeText(bark?.public_url || `${location.origin}/bark`); toast('已复制') }
         catch { toast('复制失败，请手动选择') }
       }
     }

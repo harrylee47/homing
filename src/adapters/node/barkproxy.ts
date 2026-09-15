@@ -2,10 +2,15 @@
  * 把自建 bark-server 挂到网关自己的域名下（/bark/*）。
  *
  * 这样不必为 Bark 单独建站、单独申请证书：Bark App 里填
- * `https://<网关域名>/bark`，推送与注册都经这条路走。
+ * `https://<网关域名>/bark`，注册与令牌刷新经这条路走。
  *
- * 注意这个路径**不能要求网关的鉴权** —— Bark App 不会带我们的 token，
- * 它的凭证是 bark 自己的 device key。
+ * 这个路径**不能要求网关的鉴权** —— Bark App 不会带我们的 token，
+ * 它的凭证是 bark 自己的 device key。代价是任何知道地址的人都能在这台
+ * bark-server 上注册设备、把它当免费推送中转用，因此**默认关闭**，
+ * 由控制台按需临时开启（见 settings 的 bark_public）。
+ *
+ * 网关自己推送不走这条路：渠道配置里的 server 填内部上游地址，
+ * 于是关闭对外开放不会影响自己的通知。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { request } from 'node:http'
