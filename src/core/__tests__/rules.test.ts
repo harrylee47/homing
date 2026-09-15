@@ -175,3 +175,126 @@ describe('模板渲染', () => {
     })).toBe('a {typo}')
   })
 })
+
+describe('发件人匹配（不用写正则）', () => {
+  const ev = (from: string): MatchableEvent => ({
+    device_id: 'dev_1', kind: 'sms', from, content: '正文', occurred_at: Date.now(),
+  })
+  const rule = (sender: unknown): Rule => ({
+    id: 'r1', name: 't', priority: 1, enabled: true,
+    match: RuleMatch.parse({ sender }), action: RuleAction.parse({}),
+  })
+
+  it('包含：多个值之间是 OR', () => {
+    const r = rule({ mode: 'contains', values: ['95533', '95588'] })
+    expect(matchRule(r, ev('+8695533'))).toBe(true)
+    expect(matchRule(r, ev('95588'))).toBe(true)
+    expect(matchRule(r, ev('10086'))).toBe(false)
+  })
+
+  it('等于：整串相等', () => {
+    const r = rule({ mode: 'equals', values: ['95533'] })
+    expect(matchRule(r, ev('95533'))).toBe(true)
+    expect(matchRule(r, ev('+8695533'))).toBe(false)
+  })
+
+  it('尾号：跨国际区号写法仍然命中', () => {
+    const r = rule({ mode: 'suffix', values: ['8000'] })
+    expect(matchRule(r, ev('+8613800138000'))).toBe(true)
+    expect(matchRule(r, ev('13800138001'))).toBe(false)
+  })
+
+  it('开头是', () => {
+    const r = rule({ mode: 'prefix', values: ['106'] })
+    expect(matchRule(r, ev('1069000012345'))).toBe(true)
+    expect(matchRule(r, ev('13800138000'))).toBe(false)
+  })
+
+  it('忽略大小写——发件人可能是 Google 也可能是 GOOGLE', () => {
+    const r = rule({ mode: 'equals', values: ['Google'] })
+    expect(matchRule(r, ev('GOOGLE'))).toBe(true)
+  })
+
+  it('正则模式仍然可用，写错了当不命中而不是崩', () => {
+    expect(matchRule(rule({ mode: 'regex', values: ['^955(33|88)$'] }), ev('95588'))).toBe(true)
+    expect(matchRule(rule({ mode: 'regex', values: ['^(('] }), ev('95588'))).toBe(false)
+  })
+
+  it('值为空视为不限制', () => {
+    expect(matchRule(rule({ mode: 'equals', values: [] }), ev('随便'))).toBe(true)
+  })
+
+  it('老规则的 sender_regex 行为不变', () => {
+    const r: Rule = {
+      id: 'r1', name: 't', priority: 1, enabled: true,
+      match: RuleMatch.parse({ sender_regex: '^95533$' }), action: RuleAction.parse({}),
+    }
+    expect(matchRule(r, ev('95533'))).toBe(true)
+    expect(matchRule(r, ev('95588'))).toBe(false)
+  })
+})
+
+describe('正文排除词', () => {
+  const ev = (content: string): MatchableEvent => ({
+    device_id: 'dev_1', kind: 'sms', from: '95533', content, occurred_at: Date.now(),
+  })
+  const rule = (match: unknown): Rule => ({
+    id: 'r1', name: 't', priority: 1, enabled: true,
+    match: RuleMatch.parse(match), action: RuleAction.parse({}),
+  })
+
+  it('命中排除词即不命中，哪怕包含词也中了', () => {
+    const r = rule({ content_contains: ['验证码'], content_excludes: ['退订'] })
+    expect(matchRule(r, ev('您的验证码是 1234'))).toBe(true)
+    expect(matchRule(r, ev('验证码优惠活动，回复 TD 退订'))).toBe(false)
+  })
+
+  it('只写排除词时其余全部命中', () => {
+    const r = rule({ content_excludes: ['广告'] })
+    expect(matchRule(r, ev('随便什么'))).toBe(true)
+    expect(matchRule(r, ev('这是广告'))).toBe(false)
+  })
+})
+
+describe('控制台提交的规则结构能被接受', () => {
+  // 与 web/app.js 的 collect() 一一对应。这两处漂移的表现是保存时报
+  // 「规则校验失败」，而用户看不出是哪个字段的问题。
+  it('新界面的完整 payload', () => {
+    const m = RuleMatch.safeParse({
+      kind: ['sms', 'notification'],
+      sender: { mode: 'suffix', values: ['8000', '95533'] },
+      sender_regex: null,
+      content_contains: ['验证码'],
+      content_excludes: ['退订'],
+      content_regex: null,
+      device_ids: ['dev_1'],
+      direction: ['in'],
+      time_window: { from: '07:00', to: '23:30' },
+    })
+    expect(m.success).toBe(true)
+    expect(m.data?.sender?.mode).toBe('suffix')
+  })
+
+  it('全部留空也合法——那表示不限制', () => {
+    const m = RuleMatch.safeParse({
+      kind: [], sender: null, sender_regex: null,
+      content_contains: [], content_excludes: [], content_regex: null,
+      device_ids: [], direction: [], time_window: null,
+    })
+    expect(m.success).toBe(true)
+  })
+
+  it('动作里的 Bark 选项', () => {
+    const a = RuleAction.safeParse({
+      channels: ['ch_1'], priority: 'high', extract_code: true,
+      template: '【{sender}】{content}', archive: true, stop_processing: true,
+      bark: { level: 'timeSensitive', group: null, auto_copy_code: true, deep_link: 'event' },
+    })
+    expect(a.success).toBe(true)
+    expect(a.data?.bark?.level).toBe('timeSensitive')
+  })
+
+  it('时段格式写错时明确报错，而不是悄悄忽略', () => {
+    expect(RuleMatch.safeParse({ time_window: { from: '25:00', to: '07:00' } }).success).toBe(false)
+  })
+})

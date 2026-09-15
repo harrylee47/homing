@@ -10,13 +10,38 @@ import { EventKind } from './protocol.js'
 
 // ── 匹配条件 ────────────────────────────────────────────────
 
+/**
+ * 发件人匹配。
+ *
+ * 之所以不只留正则：绝大多数需求是「这几个号码」或「尾号是这个」，
+ * 让人为此手写正则，代价是一个转义符打错就整条规则静默失效——
+ * 而规则失效的表现是「验证码没推过来」，等发现已经晚了。
+ *
+ * 正则仍然保留，作为兜底的高级选项。
+ */
+export const SenderMatch = z.object({
+  mode: z.enum(['contains', 'equals', 'prefix', 'suffix', 'regex']).default('contains'),
+  /** 数组内为 OR。regex 模式只取第一个。 */
+  values: z.array(z.string().max(200)).max(50).default([]),
+})
+export type SenderMatch = z.infer<typeof SenderMatch>
+
 export const RuleMatch = z.object({
   /** 事件类型。空数组视为不限制。 */
   kind: z.array(EventKind).default([]),
-  /** 发件人正则，对整个号码做 test */
+  /** 发件人匹配。空 values 视为不限制。 */
+  sender: SenderMatch.nullish(),
+  /**
+   * 发件人正则（旧字段）。
+   *
+   * 新界面一律写 `sender`，这里只为已有规则保留语义——老规则升级后
+   * 行为必须一模一样，否则「升级当天验证码不推了」。
+   */
   sender_regex: z.string().max(500).nullish(),
   /** 正文包含任一关键词即命中（数组内为 OR） */
   content_contains: z.array(z.string().max(200)).default([]),
+  /** 正文包含其中任一即**不**命中。优先于 content_contains。 */
+  content_excludes: z.array(z.string().max(200)).default([]),
   content_regex: z.string().max(500).nullish(),
   /** 生效时段，HH:MM。from > to 表示跨午夜（如 23:00–07:00） */
   time_window: z
@@ -27,6 +52,13 @@ export const RuleMatch = z.object({
     .nullish(),
   /** 限定设备。空数组视为不限制。 */
   device_ids: z.array(z.string()).default([]),
+  /**
+   * 方向。空数组视为不限制。
+   *
+   * 默认规则都限定为 in：给自己发出去的短信再推一遍验证码是荒谬的，
+   * 但历史记录里仍然要能查到，所以是「不推送」而不是「不采集」。
+   */
+  direction: z.array(z.enum(['in', 'out'])).default([]),
 })
 export type RuleMatch = z.infer<typeof RuleMatch>
 
@@ -68,6 +100,8 @@ export interface MatchableEvent {
   from: string
   content: string
   occurred_at: number
+  /** 缺省按 in 处理 */
+  direction?: 'in' | 'out' | undefined
 }
 
 // ── 匹配 ────────────────────────────────────────────────────
@@ -83,9 +117,20 @@ export function matchRule(rule: Rule, e: MatchableEvent, tzOffsetMin = 0): boole
 
   if (m.kind.length > 0 && !m.kind.includes(e.kind)) return false
   if (m.device_ids.length > 0 && !m.device_ids.includes(e.device_id)) return false
+  if (m.direction.length > 0 && !m.direction.includes(e.direction ?? 'in')) return false
+
+  if (m.sender && m.sender.values.length > 0) {
+    if (!matchSender(m.sender, e.from)) return false
+  }
 
   if (m.sender_regex) {
     if (!safeTest(m.sender_regex, e.from)) return false
+  }
+
+  // 排除词先判：一条「验证码」规则往往还要排掉营销短信里的「验证码」二字，
+  // 放在包含判断之后就得在两处都写逻辑
+  if (m.content_excludes.length > 0) {
+    if (m.content_excludes.some((k) => e.content.includes(k))) return false
   }
 
   if (m.content_contains.length > 0) {
@@ -102,6 +147,28 @@ export function matchRule(rule: Rule, e: MatchableEvent, tzOffsetMin = 0): boole
   }
 
   return true
+}
+
+/**
+ * 发件人匹配。除 regex 外一律忽略大小写——短信发件人可能是
+ * 「Google」也可能是「GOOGLE」，让用户为此纠结毫无意义。
+ */
+export function matchSender(m: SenderMatch, from: string): boolean {
+  if (m.mode === 'regex') {
+    const p = m.values[0]
+    return p ? safeTest(p, from) : true
+  }
+  const f = from.toLowerCase()
+  return m.values.some((raw) => {
+    const v = raw.trim().toLowerCase()
+    if (!v) return false
+    switch (m.mode) {
+      case 'equals': return f === v
+      case 'prefix': return f.startsWith(v)
+      case 'suffix': return f.endsWith(v)
+      default: return f.includes(v)
+    }
+  })
 }
 
 /**

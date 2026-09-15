@@ -1,7 +1,7 @@
 /** 测试用的内存 Store 与 Hub。行为要与 SQLite 实现保持一致，尤其是幂等语义。 */
 import type { Connection, Hub } from '../hub.js'
 import type {
-  ChannelRecord, DeviceRecord, EventFilter, EventQuery, InsertEventResult, OutboundRecord,
+  ChannelRecord, DeviceRecord, EventFilter, EventQuery, InsertEventResult, OutboundFilter, OutboundRecord,
   MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord,
 } from '../store.js'
 
@@ -48,9 +48,10 @@ export class MemoryStore implements Store {
       .filter((e) =>
         (!f.kind || e.kind === f.kind) &&
         (!f.device_id || e.device_id === f.device_id) &&
+        (!f.direction || (e.direction ?? 'in') === f.direction) &&
         (f.since === undefined || e.occurred_at >= f.since) &&
         (f.until === undefined || e.occurred_at <= f.until))
-      .sort((a, b) => b.occurred_at - a.occurred_at)
+      .sort((a, b) => b.occurred_at - a.occurred_at || b.id.localeCompare(a.id))
   }
   async setMatchedRules(id: string, ruleIds: string[]) {
     const e = this.events.get(id)
@@ -129,8 +130,18 @@ export class MemoryStore implements Store {
 
   async createOutbound(o: OutboundRecord) { this.outbound.set(o.id, o) }
   async getOutbound(id: string) { return this.outbound.get(id) ?? null }
-  async listOutbound(limit: number, offset: number) {
-    return [...this.outbound.values()].sort((a, b) => b.created_at - a.created_at).slice(offset, offset + limit)
+  async listOutbound(limit: number, offset: number, filter?: OutboundFilter) {
+    return this.filteredOutbound(filter).slice(offset, offset + limit)
+  }
+  async countOutbound(filter?: OutboundFilter) {
+    return this.filteredOutbound(filter).length
+  }
+  private filteredOutbound(f?: OutboundFilter) {
+    return [...this.outbound.values()]
+      .filter((o) => (!f?.device_id || o.device_id === f.device_id)
+        && (!f?.status || o.status === f.status)
+        && (!f?.to || o.to_number.includes(f.to)))
+      .sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id))
   }
   async advanceOutbound(id: string, status: OutboundRecord['status'], error: string | null, at: number) {
     const o = this.outbound.get(id)

@@ -24,7 +24,7 @@ export const SEED_RULES: SeedSpec[] = [
     name: '验证码',
     priority: 10,
     match: {
-      kind: ['sms'],
+      kind: ['sms'], direction: ['in'],
       content_contains: [
         '验证码', '校验码', '动态码', '动态密码', '识别码', '验证代码',
         '確認コード', '認証番号', 'ワンタイム',
@@ -43,7 +43,7 @@ export const SEED_RULES: SeedSpec[] = [
     name: '广告推广',
     priority: 20,
     match: {
-      kind: ['sms'],
+      kind: ['sms'], direction: ['in'],
       content_contains: [
         '退订', '回T', '回复T', 'TD退订', '拒收请回复',
         '优惠', '折扣', '促销', '特惠', '抢购', '秒杀', '限时',
@@ -60,7 +60,7 @@ export const SEED_RULES: SeedSpec[] = [
     // 普通：两者都不是。正常推送但不打扰；不提取验证码，避免把订单号当成码。
     name: '普通短信',
     priority: 100,
-    match: { kind: ['sms'] },
+    match: { kind: ['sms'], direction: ['in'] },
     action: {
       priority: 'normal', extract_code: false,
       template: '【{sender}】{content}', archive: true, stop_processing: true,
@@ -81,18 +81,43 @@ export const SEED_RULES: SeedSpec[] = [
     },
   },
   {
+    // 自己发出去的短信只归档不推送：给自己刚发的短信再推一遍验证码是荒谬的，
+    // 但历史里要能查到「这条验证码我转给谁了」
+    name: '已发送短信',
+    priority: 95,
+    match: { kind: ['sms'], direction: ['out'] },
+    action: {
+      priority: 'normal', extract_code: false,
+      template: '→ {sender}：{content}', archive: true, stop_processing: true,
+    },
+  },
+  {
     name: '来电',
     priority: 110,
-    match: { kind: ['call'] },
+    // 限定收到的：自己打出去的电话没必要再推一条通知回来
+    match: { kind: ['call'], direction: ['in'] },
     action: {
       priority: 'normal', extract_code: false,
       template: '{content}：{sender}', archive: true, stop_processing: true,
       bark: { level: 'active', group: '来电', auto_copy_code: false, deep_link: 'compose' },
     },
   },
+  {
+    // 去电：自己拨出去的，只进通话记录，不推送——你本来就知道自己打了谁
+    name: '去电',
+    priority: 115,
+    match: { kind: ['call'], direction: ['out'] },
+    action: {
+      priority: 'normal', extract_code: false,
+      template: '{content}：{sender}', archive: true, stop_processing: true,
+    },
+  },
 ]
 
-/** 展开为可直接求值的规则。channels 由调用方注入——广告那条恒为空。 */
+/** 只归档、不推送的规则。channels 必须保持为空，否则「只归档」就失效了。 */
+const ARCHIVE_ONLY = new Set(['广告推广', '已发送短信', '去电'])
+
+/** 展开为可直接求值的规则。channels 由调用方注入。 */
 export function buildSeedRules(channelIds: string[], idFor: (i: number) => string): Rule[] {
   return SEED_RULES.map((s, i) => {
     const action = RuleAction.parse(s.action)
@@ -102,8 +127,50 @@ export function buildSeedRules(channelIds: string[], idFor: (i: number) => strin
       priority: s.priority,
       enabled: true,
       match: RuleMatch.parse(s.match),
-      // 广告规则的 channels 必须保持为空，否则「只归档」就失效了
-      action: { ...action, channels: s.name === '广告推广' ? [] : channelIds },
+      action: { ...action, channels: ARCHIVE_ONLY.has(s.name) ? [] : channelIds },
     }
   })
+}
+
+/**
+ * 预置规则集的版本号。
+ *
+ * 加了新的预置规则就 +1。老部署在启动时按它补齐缺失的规则——否则
+ * 「已发送短信只归档不推送」这类新语义只对新装的人生效，老用户会
+ * 莫名其妙地收到自己发出去的短信的推送。
+ */
+export const SEED_RULES_VERSION = 4
+
+/**
+ * 相对现有规则缺了哪几条预置规则。
+ *
+ * 按**名字**判断存在与否：id 是随机的，名字才是用户认得出的东西。
+ * 只补不改——用户改过的同名规则原样保留。
+ */
+export function missingSeedRules(
+  existingNames: Iterable<string>,
+  channelIds: string[],
+  idFor: (i: number) => string,
+): Rule[] {
+  const have = new Set(existingNames)
+  return buildSeedRules(channelIds, idFor).filter((r) => !have.has(r.name))
+}
+
+/**
+ * 老规则缺失的 direction 该补成什么。
+ *
+ * direction 这个字段是后加的，在它之前建的规则存的是「不限制方向」——
+ * 于是一条自己发出去的、正文里带「验证码」三个字的短信，会先命中优先级 10 的
+ * 「验证码」规则并被高优先级推回来，根本轮不到优先级 95 的「已发送短信」。
+ *
+ * 这里只认**名字还是预置名、且整个 direction 键都不存在**的规则：
+ * 那说明它是在这个字段存在之前建的，补上的正是预置规则一直以来的本意。
+ * 用户自己改过方向（哪怕改成空数组）的一律不动。
+ */
+export function missingDirection(name: string, match: Record<string, unknown>): ('in' | 'out')[] | null {
+  if ('direction' in match) return null
+  const seed = SEED_RULES.find((s) => s.name === name)
+  if (!seed) return null
+  const want = (seed.match as { direction?: ('in' | 'out')[] }).direction
+  return want && want.length > 0 ? want : null
 }

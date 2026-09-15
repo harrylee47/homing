@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { evaluate, extractCode, type MatchableEvent } from '../rules.js'
-import { buildSeedRules } from '../seeds.js'
+import { evaluate, extractCode, matchRule, RuleMatch, type MatchableEvent } from '../rules.js'
+import { buildSeedRules, missingDirection, missingSeedRules, SEED_RULES } from '../seeds.js'
 
 const rules = buildSeedRules(['ch_bark', 'ch_tg'], (i) => `seed_${i}`)
 
@@ -12,10 +12,45 @@ const classify = (content: string, kind: MatchableEvent['kind'] = 'sms') => {
 }
 
 describe('建议规则集：按消息类型分类', () => {
-  it('五条规则，顺序即语义', () => {
-    expect(rules.map((r) => r.name)).toEqual(['验证码', '广告推广', '普通短信', '应用通知', '来电'])
-    expect(rules.map((r) => r.priority)).toEqual([10, 20, 100, 90, 110])
+  it('六条规则，顺序即语义', () => {
+    expect(rules.map((r) => r.name)).toEqual(['验证码', '广告推广', '普通短信', '应用通知', '已发送短信', '来电', '去电'])
     expect(rules.every((r) => r.action.stop_processing)).toBe(true)
+    // 优先级决定匹配顺序，名字顺序只是定义顺序
+    const byPriority = [...rules].sort((a, b) => a.priority - b.priority).map((r) => r.name)
+    expect(byPriority).toEqual(['验证码', '广告推广', '应用通知', '已发送短信', '普通短信', '来电', '去电'])
+  })
+
+  describe('已发送短信', () => {
+    const outgoing = (content: string) => evaluate(rules, {
+      device_id: 'dev_1', kind: 'sms', from: '13800138000',
+      content, occurred_at: Date.now(), direction: 'out' as const,
+    })
+
+    it('自己发出去的短信只归档不推送 —— 给刚发的短信再推一遍验证码是荒谬的', () => {
+      const r = outgoing('您的验证码是 123456')
+      expect(r.matched[0]?.name).toBe('已发送短信')
+      expect(r.channels).toEqual([])
+    })
+
+    it('收到的同样内容仍然走验证码规则', () => {
+      const r = evaluate(rules, {
+        device_id: 'dev_1', kind: 'sms', from: '95533',
+        content: '您的验证码是 123456', occurred_at: Date.now(), direction: 'in' as const,
+      })
+      expect(r.matched[0]?.name).toBe('验证码')
+    })
+
+    it('不带 direction 的事件按收到处理 —— 兼容老 Agent', () => {
+      const r = evaluate(rules, {
+        device_id: 'dev_1', kind: 'sms', from: '95533',
+        content: '您的验证码是 123456', occurred_at: Date.now(),
+      })
+      expect(r.matched[0]?.name).toBe('验证码')
+    })
+
+    it('发出去的广告短信也只归档，不会被广告规则抢走', () => {
+      expect(outgoing('退订回复T').matched[0]?.name).toBe('已发送短信')
+    })
   })
 
   it('应用通知走独立规则，不被短信规则捕获', () => {
@@ -167,5 +202,84 @@ describe('按设备分流', () => {
         content: '验证码 123456', occurred_at: Date.now(),
       }).matched[0]!.name).toBe('验证码')
     }
+  })
+})
+
+describe('老部署补齐预置规则', () => {
+  it('只补缺的，已有的同名规则不动', () => {
+    const missing = missingSeedRules(['验证码', '普通短信', '来电'], ['ch_1'], (i) => `r${i}`)
+    expect(missing.map((r) => r.name)).toEqual(['广告推广', '应用通知', '已发送短信', '去电'])
+  })
+
+  it('补进来的「已发送短信」仍然是只归档', () => {
+    const r = missingSeedRules([], ['ch_1'], (i) => `r${i}`).find((x) => x.name === '已发送短信')!
+    expect(r.action.channels).toEqual([])
+    expect(r.action.archive).toBe(true)
+  })
+
+  it('补进来的「应用通知」要带上渠道，否则等于没通知', () => {
+    const r = missingSeedRules([], ['ch_1', 'ch_2'], (i) => `r${i}`).find((x) => x.name === '应用通知')!
+    expect(r.action.channels).toEqual(['ch_1', 'ch_2'])
+  })
+
+  it('一条都不缺时返回空', () => {
+    const all = SEED_RULES.map((s) => s.name)
+    expect(missingSeedRules(all, ['ch_1'], (i) => `r${i}`)).toEqual([])
+  })
+})
+
+describe('给老规则补方向限制', () => {
+  it('整个 direction 键都没有的预置规则要补上', () => {
+    expect(missingDirection('验证码', { kind: ['sms'], content_contains: ['验证码'] })).toEqual(['in'])
+  })
+
+  it('用户已经设过方向的不动——哪怕设的是空数组', () => {
+    expect(missingDirection('验证码', { direction: [] })).toBeNull()
+    expect(missingDirection('验证码', { direction: ['out'] })).toBeNull()
+  })
+
+  it('不是预置名字的规则不碰', () => {
+    expect(missingDirection('我自己的规则', { kind: ['sms'] })).toBeNull()
+  })
+
+  it('预置规则本身就不限制方向的（应用通知）不补', () => {
+    expect(missingDirection('应用通知', { kind: ['notification'] })).toBeNull()
+  })
+
+  it('补上之后，自己发出去的验证码短信不再命中「验证码」规则', () => {
+    const [seed] = buildSeedRules(['ch_1'], () => 'r1')
+    // 模拟老库里那条没有 direction 键的规则
+    const { direction: _drop, ...legacy } = seed!.match
+    const rule = {
+      ...seed!,
+      match: RuleMatch.parse({ ...legacy, direction: missingDirection('验证码', legacy) ?? [] }),
+    }
+    const out: MatchableEvent = {
+      device_id: 'dev_1', kind: 'sms', from: '13800138000',
+      content: '我的验证码是 123456', occurred_at: Date.now(), direction: 'out',
+    }
+    expect(matchRule(rule, out)).toBe(false)
+    expect(matchRule(rule, { ...out, direction: 'in' })).toBe(true)
+  })
+})
+
+describe('去电只进记录，不推送', () => {
+  const call = (direction: 'in' | 'out'): MatchableEvent => ({
+    device_id: 'dev_1', kind: 'call', from: '13800138000',
+    content: direction === 'out' ? '已拨出 · 通话 1分20秒' : '未接来电',
+    occurred_at: Date.now(), direction,
+  })
+
+  it('自己打出去的电话不推送，但要归档', () => {
+    const r = evaluate(rules, call('out'))
+    expect(r.matched.map((x) => x.name)).toEqual(['去电'])
+    expect(r.channels).toEqual([])
+    expect(r.archive).toBe(true)
+  })
+
+  it('来电照常推送', () => {
+    const r = evaluate(rules, call('in'))
+    expect(r.matched.map((x) => x.name)).toEqual(['来电'])
+    expect(r.channels.length).toBeGreaterThan(0)
   })
 })

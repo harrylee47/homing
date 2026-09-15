@@ -12,6 +12,7 @@ import type {
   DeviceRecord,
   EventQuery,
   InsertEventResult,
+  OutboundFilter,
   OutboundRecord,
   MessageRefRecord,
   EventFilter,
@@ -54,6 +55,7 @@ const MIGRATIONS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_events_time ON events(occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_id, occurred_at DESC)`,
+  `ALTER TABLE events ADD COLUMN direction TEXT`,
   `CREATE TABLE IF NOT EXISTS channels (
      id         TEXT PRIMARY KEY,
      type       TEXT NOT NULL,
@@ -143,6 +145,22 @@ const OUTBOUND_RANK: Record<string, number> = {
   pending: 0, accepted: 1, sent: 2, delivered: 3, failed: 4,
 }
 
+/**
+ * 发送记录的 WHERE 拼装。收件人是明文列，模糊匹配用 LIKE——号码里不会出现
+ * % 与 _ 之外的通配语义，但仍要转义，否则用户输入 % 会变成「查全部」。
+ */
+function outboundWhere(f?: OutboundFilter): { where: string; args: (string | number)[] } {
+  const parts: string[] = []
+  const args: (string | number)[] = []
+  if (f?.device_id) { parts.push('device_id = ?'); args.push(f.device_id) }
+  if (f?.status) { parts.push('status = ?'); args.push(f.status) }
+  if (f?.to) {
+    parts.push("to_number LIKE ? ESCAPE '\\'")
+    args.push(`%${f.to.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
+  }
+  return { where: parts.length ? `WHERE ${parts.join(' AND ')}` : '', args }
+}
+
 export class SqliteStore implements Store {
   private readonly db: DatabaseSync
 
@@ -223,11 +241,11 @@ export class SqliteStore implements Store {
     const r = this.db
       .prepare(
         `INSERT OR IGNORE INTO events
-           (id, device_id, kind, sender_enc, content_enc, enc_ver, occurred_at, received_at, matched_rules, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, device_id, kind, direction, sender_enc, content_enc, enc_ver, occurred_at, received_at, matched_rules, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        e.id, e.device_id, e.kind, e.sender_enc, e.content_enc,
+        e.id, e.device_id, e.kind, e.direction, e.sender_enc, e.content_enc,
         e.enc_ver, e.occurred_at, e.received_at, e.matched_rules, e.created_at,
       )
     return Number(r.changes) > 0 ? 'stored' : 'duplicate'
@@ -241,7 +259,9 @@ export class SqliteStore implements Store {
   async listEvents(q: EventQuery): Promise<StoredEvent[]> {
     const { clause, args } = buildWhere(q)
     return this.db
-      .prepare(`SELECT * FROM events ${clause} ORDER BY occurred_at DESC LIMIT ? OFFSET ?`)
+      // id 做次序补充：occurred_at 相同时 SQLite 不保证稳定顺序，
+      // 翻页就会出现「同一条出现两次、另一条从没出现」
+      .prepare(`SELECT * FROM events ${clause} ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?`)
       .all(...args, q.limit, q.offset) as unknown as StoredEvent[]
   }
 
@@ -341,10 +361,17 @@ export class SqliteStore implements Store {
     return row ? (row as unknown as OutboundRecord) : null
   }
 
-  async listOutbound(limit: number, offset: number): Promise<OutboundRecord[]> {
+  async listOutbound(limit: number, offset: number, filter?: OutboundFilter): Promise<OutboundRecord[]> {
+    const { where, args } = outboundWhere(filter)
     return this.db
-      .prepare('SELECT * FROM outbound ORDER BY created_at DESC LIMIT ? OFFSET ?')
-      .all(limit, offset) as unknown as OutboundRecord[]
+      .prepare(`SELECT * FROM outbound ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+      .all(...args, limit, offset) as unknown as OutboundRecord[]
+  }
+
+  async countOutbound(filter?: OutboundFilter): Promise<number> {
+    const { where, args } = outboundWhere(filter)
+    const r = this.db.prepare(`SELECT COUNT(*) AS n FROM outbound ${where}`).get(...args) as { n: number }
+    return r.n
   }
 
   /**
@@ -497,6 +524,9 @@ function buildWhere(f: EventFilter): { clause: string; args: (string | number)[]
   const args: (string | number)[] = []
   if (f.kind) { where.push('kind = ?'); args.push(f.kind) }
   if (f.device_id) { where.push('device_id = ?'); args.push(f.device_id) }
+  // 升级前入库的记录 direction 为 NULL，语义上就是「收到的」
+  if (f.direction === 'in') where.push("(direction = 'in' OR direction IS NULL)")
+  else if (f.direction === 'out') where.push("direction = 'out'")
   if (f.since !== undefined) { where.push('occurred_at >= ?'); args.push(f.since) }
   if (f.until !== undefined) { where.push('occurred_at <= ?'); args.push(f.until) }
   return { clause: where.length ? `WHERE ${where.join(' AND ')}` : '', args }

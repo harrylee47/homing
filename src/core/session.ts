@@ -33,7 +33,7 @@ export interface SessionDeps {
   /** 查询类指令的结果回调（如 get_location）。 */
   onQueryResult?: ((cmdId: string, ok: boolean, detail: Record<string, unknown> | null, error: string | null) => void) | undefined
   /** 事件入库后的后续处理（规则匹配 + 推送）。测试可替换为空实现。 */
-  onStored?: (eventId: string, e: { device_id: string; kind: EventKindT; from: string; content: string; occurred_at: number }) => void
+  onStored?: (eventId: string, e: { device_id: string; kind: EventKindT; from: string; content: string; occurred_at: number; direction?: 'in' | 'out'; imported?: boolean }) => void
 }
 
 /** 会话对适配层的指令：发若干帧，可选随后关闭连接。 */
@@ -43,6 +43,14 @@ export interface SessionAction {
 }
 
 const NONE: SessionAction = { send: [] }
+
+/**
+ * 历史导入去重的时间窗。
+ *
+ * 取 5 秒：同一条记录在两条采集路径上的时间差最多几百毫秒，5 秒足够宽；
+ * 而「同号码、同内容、5 秒内的两条独立记录」现实中几乎不存在。
+ */
+const DEDUP_WINDOW_MS = 5000
 
 /** WS 关闭码：4001 认证失败，4002 协议错误。1000 为正常关闭。 */
 export const CLOSE_AUTH_FAILED = 4001
@@ -213,6 +221,13 @@ export class DeviceSession {
       return this.ackEvent(e.id, 'rejected', 'device_id 与连接不符')
     }
 
+    // 历史导入：同一条记录可能已经被实时捕获过，而两条路径的 id 不一样，
+    // 按 id 的幂等去重挡不住。这里按「同设备 + 同类型 + 时间几乎相同 + 内容一致」再挡一道。
+    if (e.extra.imported === true && (await this.isDuplicateImport(e))) {
+      log.info('历史导入命中已有记录，跳过', { event_id: e.id, occurred_at: e.occurred_at })
+      return this.ackEvent(e.id, 'duplicate')
+    }
+
     let result: InsertEventResult
     try {
       const ts = this.now()
@@ -220,6 +235,7 @@ export class DeviceSession {
         id: e.id,
         device_id: e.device_id,
         kind: e.kind,
+        direction: e.extra.direction ?? 'in',
         sender_enc: await this.deps.cipher.encrypt(e.from),
         content_enc: await this.deps.cipher.encrypt(e.content),
         enc_ver: 1,
@@ -250,6 +266,8 @@ export class DeviceSession {
       handler(e.id, {
         device_id: e.device_id, kind: e.kind, from: e.from,
         content: e.content, occurred_at: e.occurred_at,
+        direction: e.extra.direction ?? 'in',
+        imported: e.extra.imported === true,
       })
     }
 
@@ -258,12 +276,41 @@ export class DeviceSession {
 
   private readonly defaultOnStored = (
     eventId: string,
-    e: { device_id: string; kind: EventKindT; from: string; content: string; occurred_at: number },
+    e: { device_id: string; kind: EventKindT; from: string; content: string; occurred_at: number; direction?: 'in' | 'out'; imported?: boolean },
   ): void => {
     void processEvent(
       { store: this.deps.store, cipher: this.deps.cipher, baseUrl: this.deps.baseUrl ?? null },
       eventId, e,
     )
+  }
+
+  /**
+   * 这条要导入的记录是不是已经在库里了。
+   *
+   * 只在导入路径上做：取前后两秒窗口内的同设备同类型事件解开比对。
+   * 窗口很窄，所以候选通常是 0～2 条，解密开销可以忽略；允许几秒误差是因为
+   * 手机本地库里的 date 与广播到达时刻并不严格相等（来电尤其明显：
+   * 通话记录记的是响铃开始，广播能拿到的最早也是同一刻但仍有毫秒级差）。
+   */
+  private async isDuplicateImport(e: EventPayload): Promise<boolean> {
+    const rows = await this.deps.store.listEvents({
+      device_id: e.device_id,
+      kind: e.kind,
+      since: e.occurred_at - DEDUP_WINDOW_MS,
+      until: e.occurred_at + DEDUP_WINDOW_MS,
+      limit: 20,
+      offset: 0,
+    }).catch(() => [])
+
+    for (const row of rows) {
+      if (row.id === e.id) return true
+      const [from, content] = await Promise.all([
+        this.deps.cipher.decrypt(row.sender_enc),
+        this.deps.cipher.decrypt(row.content_enc),
+      ])
+      if (from === e.from && content === e.content) return true
+    }
+    return false
   }
 
   private ackEvent(id: string, status: 'stored' | 'duplicate' | 'rejected', error: string | null = null): SessionAction {

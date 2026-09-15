@@ -19,17 +19,18 @@ import { log } from '../../core/logging.js'
 import { dispatch, PROVIDERS, type ChannelConfig } from '../../core/notifier.js'
 import { createPairing, redeemPairing } from '../../core/pairing.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
-import type { DownstreamFrame } from '../../core/protocol.js'
+import { SmsCommandConfig, type DownstreamFrame } from '../../core/protocol.js'
 import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
-import { Schedule, describe as describeSchedule } from '../../core/schedule.js'
+import { DEFAULT_TIMEZONE, Schedule, describe as describeSchedule, formatWallTime, offsetMs } from '../../core/schedule.js'
 import { BATTERY_SETTING_KEY, loadBatteryConfig } from '../../core/monitor.js'
 import { parseTask, taskNextRun, type ParsedTask } from '../../core/tasks.js'
 import { toSvg } from '../../core/qr.js'
+import { scanMatches } from '../../core/search.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
 import type { BarkAccess } from './barkproxy.js'
 import { clientIp as resolveClientIp } from './clientip.js'
-import type { EventFilter, Store } from '../../core/store.js'
+import type { EventFilter, OutboundRecord, Store } from '../../core/store.js'
 
 export interface ApiDeps {
   store: Store
@@ -39,6 +40,8 @@ export interface ApiDeps {
   barkUpstream?: string | null
   /** 对外可访问的 Bark 地址，供 Bark App 填写 */
   barkPublicUrl?: string | null
+  /** 控制台自己的对外地址，用于生成配对二维码里的 WS 地址 */
+  baseUrl?: string | null
   /** 自动化用的长期 token。人使用控制台时走会话，不用它。 */
   adminToken: string
   /** 登录失败达到阈值时的告警回调。计划 §6.3 要求「失败立即告警到 Telegram」。 */
@@ -51,6 +54,9 @@ export interface ApiDeps {
   locateDevice?: ((deviceId: string) => Promise<{ ok: boolean; location?: unknown; error?: string }>) | undefined
   /** 让设备列出已安装应用 */
   listApps?: ((deviceId: string) => Promise<{ ok: boolean; apps?: unknown; error?: string }>) | undefined
+  /** 让设备导入本机已有的历史短信与通话 */
+  importHistory?: ((deviceId: string, since: number | null, limit: number) =>
+    Promise<{ ok: boolean; result?: unknown; error?: string }>) | undefined
   /** 断开全部设备连接，迫使它们重连并拉取新配置 */
   reconnectDevices?: (() => void) | undefined
   /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
@@ -305,11 +311,39 @@ route('GET', '/api/devices', async ({ res, deps }) => {
   })
 }, true, false, 'bot')
 
+/**
+ * 配对二维码里的内容。
+ *
+ * 自定义 scheme 而不是裸 URL：Agent 扫到它能一次拿到「连哪台服务器」和
+ * 「配对码是什么」两件事，用户一个字都不用打——手打 wss 地址和一串
+ * 区分大小写的配对码，是整个接入流程里最容易出错的一步。
+ */
+export const pairPayload = (wsUrl: string, code: string): string =>
+  `smsgw://pair?url=${encodeURIComponent(wsUrl)}&code=${encodeURIComponent(code)}`
+
+/** 控制台地址推导 Agent 的 WS 地址：https://host → wss://host/ws */
+function wsUrlFrom(baseUrl: string | null | undefined): string | null {
+  if (!baseUrl) return null
+  const u = baseUrl.trim().replace(/\/+$/, '')
+  if (u.startsWith('https://')) return `wss://${u.slice(8)}/ws`
+  if (u.startsWith('http://')) return `ws://${u.slice(7)}/ws`
+  return null
+}
+
 route('POST', '/api/devices/pairing-code', async ({ res, body, deps }) => {
   const name = (body as { name?: string })?.name?.trim()
   if (!name) return json(res, 400, { error: '缺少 name' })
   const r = await createPairing(deps.store, name)
-  json(res, 200, { code: r.code, expires_at: r.expires_at, ttl_sec: Math.round((r.expires_at - now()) / 1000) })
+  const ws = wsUrlFrom(deps.baseUrl)
+  json(res, 200, {
+    code: r.code,
+    expires_at: r.expires_at,
+    ttl_sec: Math.round((r.expires_at - now()) / 1000),
+    ws_url: ws,
+    // 没配 GW_BASE_URL 时不给二维码：与其给一个指向 localhost 的错地址，
+    // 不如让用户手输——错的二维码比没有二维码更难排查
+    qr: ws ? toSvg(pairPayload(ws, r.code), { cell: 4 }) : null,
+  })
 })
 
 /**
@@ -588,14 +622,18 @@ route('POST', '/api/rules/test', async ({ res, body, deps }) => {
 
   const rows = await deps.store.listEvents({ limit: Math.min(b.limit ?? 50, 200), offset: 0 })
   const devNames = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
+  const tz = await timezone(deps.store)
   const results = await Promise.all(rows.map(async (e) => {
     const ev = {
       device_id: e.device_id, kind: e.kind,
       from: await deps.cipher.decrypt(e.sender_enc),
       content: await deps.cipher.decrypt(e.content_enc),
       occurred_at: e.occurred_at,
+      // 试跑必须带上方向，否则限定「本机发出」的规则在这里永远是未命中，
+      // 而实际运行时却会命中——试跑跟真实行为不一致比没有试跑更糟
+      direction: e.direction ?? ('in' as const),
     }
-    const hit = matchRule(rule, ev, tzOffsetMin())
+    const hit = matchRule(rule, ev, safeOffsetMin(e.occurred_at, tz))
     const code = hit && rule.action.extract_code ? extractCode(ev.content) : null
     return {
       id: e.id, from: ev.from, content: ev.content, kind: e.kind,
@@ -605,7 +643,9 @@ route('POST', '/api/rules/test', async ({ res, body, deps }) => {
       preview: hit
         ? render(rule.action.template, {
             sender: ev.from, content: ev.content, code: code ?? '',
-            time: new Date(e.occurred_at).toISOString(), device: e.device_id,
+            // 与 pipeline 保持一致：{time} 是设置时区里的墙上时间，{device} 是设备名
+            time: safeWallTime(e.occurred_at, tz),
+            device: devNames.get(e.device_id) ?? e.device_id,
           })
         : null,
     }
@@ -634,8 +674,19 @@ route('POST', '/api/rules/seed', async ({ res, body, deps }) => {
   json(res, 200, { created: seeds.length })
 })
 
-/** 服务端本地时区偏移，供规则的 time_window 使用。 */
-const tzOffsetMin = (): number => -new Date().getTimezoneOffset()
+/**
+ * 设置里那个时区在该时刻的偏移。
+ *
+ * 不用服务端本地时区：容器跑在 UTC，而用户设的是 Asia/Tokyo，
+ * 用本地时区算会让「夜间不打扰」整整错开 9 小时。
+ */
+function safeOffsetMin(epoch: number, tz: string): number {
+  try { return offsetMs(epoch, tz) / 60_000 } catch { return 0 }
+}
+
+function safeWallTime(epoch: number, tz: string): string {
+  try { return formatWallTime(epoch, tz) } catch { return formatWallTime(epoch, 'UTC') }
+}
 
 // ── Bark 设置 ───────────────────────────────────────────────
 
@@ -658,6 +709,9 @@ route('GET', '/api/bark/info', async ({ res, deps }) => {
     upstream: deps.barkUpstream ?? null,
     // 其它服务与 Bark App 用这个
     public_url: deps.barkPublicUrl ?? null,
+    // Bark App 的「添加服务器」支持扫码，内容就是服务器地址本身。
+    // 手打一个带路径的 https 地址是这一步最容易出错的地方。
+    qr: deps.barkPublicUrl ? toSvg(deps.barkPublicUrl, { cell: 4 }) : null,
     access: await barkAccess(deps.store),
   })
 })
@@ -782,8 +836,12 @@ route('POST', '/api/tasks/:id/test', async ({ res, params, deps, ip }) => {
 
 const S_NOTIFY_CAPTURE = 'notification_capture'
 
-export interface NotifyCaptureConfig { enabled: boolean; packages: string[] }
-export const DEFAULT_NOTIFY_CAPTURE: NotifyCaptureConfig = { enabled: false, packages: [] }
+export interface NotifyCaptureConfig {
+  enabled: boolean
+  scope: 'all' | 'selected'
+  packages: string[]
+}
+export const DEFAULT_NOTIFY_CAPTURE: NotifyCaptureConfig = { enabled: false, scope: 'selected', packages: [] }
 
 export async function loadNotifyCapture(store: Store): Promise<NotifyCaptureConfig> {
   const raw = await store.getSetting(S_NOTIFY_CAPTURE)
@@ -792,7 +850,8 @@ export async function loadNotifyCapture(store: Store): Promise<NotifyCaptureConf
     const p = JSON.parse(raw) as Partial<NotifyCaptureConfig>
     return {
       enabled: p.enabled === true,
-      packages: Array.isArray(p.packages) ? p.packages.filter((x) => typeof x === 'string').slice(0, 100) : [],
+      scope: p.scope === 'all' ? 'all' : 'selected',
+      packages: Array.isArray(p.packages) ? p.packages.filter((x) => typeof x === 'string').slice(0, 200) : [],
     }
   } catch {
     return DEFAULT_NOTIFY_CAPTURE
@@ -807,22 +866,48 @@ route('POST', '/api/notify-capture', async ({ res, body, deps, ip }) => {
   const b = body as Partial<NotifyCaptureConfig>
   const cfg: NotifyCaptureConfig = {
     enabled: b.enabled === true,
+    scope: b.scope === 'all' ? 'all' : 'selected',
     packages: Array.isArray(b.packages)
-      ? [...new Set(b.packages.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 128))].slice(0, 100)
+      ? [...new Set(b.packages.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 128))].slice(0, 200)
       : [],
   }
-  if (cfg.enabled && cfg.packages.length === 0) {
-    // 空白名单等于不捕获，直接拒绝比让用户以为开了却没反应好
-    return json(res, 400, { error: '启用时至少要选一个应用，否则不会捕获任何通知' })
+  if (cfg.enabled && cfg.scope === 'selected' && cfg.packages.length === 0) {
+    // 选择模式下空白名单等于不捕获，直接拒绝比让用户以为开了却没反应好
+    return json(res, 400, { error: '「仅选定应用」模式下至少要选一个，否则不会捕获任何通知' })
   }
   await deps.store.setSetting(S_NOTIFY_CAPTURE, JSON.stringify(cfg))
   await deps.store.audit({
     actor: 'admin', action: 'notify_capture.set',
-    detail: cfg.enabled ? `${cfg.packages.length} 个应用` : '已停用', ip, created_at: now(),
+    detail: !cfg.enabled ? '已停用' : cfg.scope === 'all' ? '全部应用' : `${cfg.packages.length} 个应用`,
+    ip, created_at: now(),
   })
   // 配置变更后立刻重连设备，让新配置马上生效而不是等下次握手
   if (deps.reconnectDevices) deps.reconnectDevices()
   json(res, 200, { ok: true })
+})
+
+/**
+ * 导入手机里已有的历史短信与通话。
+ *
+ * 实时捕获只能看见「启用之后」发生的事，装网关之前的记录躺在手机本地。
+ * 导入的记录只归档不推送——几千条旧短信照常推送就是几千条通知。
+ */
+route('POST', '/api/devices/:id/import-history', async ({ res, params, body, deps, ip }) => {
+  if (!deps.importHistory) return json(res, 500, { error: '未接入' })
+  const b = body as { days?: number; limit?: number }
+  const days = Number(b?.days)
+  // days<=0 或没给表示不限时间
+  const since = Number.isFinite(days) && days > 0 ? now() - days * 86_400_000 : null
+  const limit = Math.min(Math.max(Number(b?.limit) || 1000, 1), 5000)
+
+  const r = await deps.importHistory(params.id!, since, limit)
+  if (!r.ok) return json(res, 502, { error: r.error ?? '导入失败' })
+  await deps.store.audit({
+    actor: 'admin', action: 'device.import_history',
+    detail: `${params.id} ${since ? `最近 ${days} 天` : '全部'} 上限 ${limit}`,
+    ip, created_at: now(),
+  })
+  json(res, 200, r.result)
 })
 
 /** 让设备列出已安装应用，供控制台挑选。 */
@@ -831,6 +916,58 @@ route('POST', '/api/devices/:id/apps', async ({ res, params, deps }) => {
   const r = await deps.listApps(params.id!)
   if (!r.ok) return json(res, 502, { error: r.error ?? '查询失败' })
   json(res, 200, r.apps)
+})
+
+// ── 短信指令 ────────────────────────────────────────────────
+
+const S_SMS_COMMAND = 'sms_command'
+
+const DEFAULT_SMS_COMMAND: SmsCommandConfig = {
+  enabled: false, secret: '', allow_numbers: [], reply: true,
+}
+
+export async function loadSmsCommand(store: Store): Promise<SmsCommandConfig> {
+  const raw = await store.getSetting(S_SMS_COMMAND)
+  if (!raw) return DEFAULT_SMS_COMMAND
+  const p = SmsCommandConfig.safeParse(JSON.parse(raw))
+  return p.success ? p.data : DEFAULT_SMS_COMMAND
+}
+
+/** 口令由服务端生成：用户自己起的口令挡不住穷举，而这条链路上口令是唯一凭证。 */
+const newSecret = (): string =>
+  Array.from(crypto.getRandomValues(new Uint8Array(9)))
+    .map((b) => SECRET_ALPHABET[b % SECRET_ALPHABET.length])
+    .join('')
+// 去掉 0/O/1/l/I：口令要靠手打进短信，形近字符会让人白试几次
+const SECRET_ALPHABET = 'abcdefghjkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+route('GET', '/api/sms-command', async ({ res, deps }) => {
+  json(res, 200, await loadSmsCommand(deps.store))
+})
+
+route('POST', '/api/sms-command', async ({ res, body, deps, ip }) => {
+  const b = body as Partial<SmsCommandConfig> & { regenerate?: boolean }
+  const cur = await loadSmsCommand(deps.store)
+  const cfg: SmsCommandConfig = {
+    enabled: b.enabled === true,
+    secret: b.regenerate || !cur.secret ? newSecret() : cur.secret,
+    allow_numbers: Array.isArray(b.allow_numbers)
+      ? [...new Set(b.allow_numbers
+          .filter((x): x is string => typeof x === 'string')
+          .map((x) => x.replace(/[\s-]/g, ''))
+          .filter((x) => x.length > 0 && x.length <= 32))].slice(0, 20)
+      : cur.allow_numbers,
+    reply: b.reply !== false,
+  }
+  await deps.store.setSetting(S_SMS_COMMAND, JSON.stringify(cfg))
+  await deps.store.audit({
+    actor: 'admin', action: 'sms_command.set',
+    // 口令本身不写进审计
+    detail: `${cfg.enabled ? '启用' : '停用'}${b.regenerate ? '，已重置口令' : ''}，白名单 ${cfg.allow_numbers.length} 个`,
+    ip, created_at: now(),
+  })
+  if (deps.reconnectDevices) deps.reconnectDevices()
+  json(res, 200, cfg)
 })
 
 // ── 电量告警 ────────────────────────────────────────────────
@@ -862,7 +999,7 @@ route('POST', '/api/battery-alerts', async ({ res, body, deps, ip }) => {
 
 const S_TIMEZONE = 'timezone'
 /** 默认东京：这套系统的典型场景就是人在日本、卡在国内。 */
-const DEFAULT_TZ = 'Asia/Tokyo'
+const DEFAULT_TZ = DEFAULT_TIMEZONE
 
 export async function timezone(store: Store): Promise<string> {
   return (await store.getSetting(S_TIMEZONE)) ?? DEFAULT_TZ
@@ -985,12 +1122,31 @@ route('GET', '/api/outbound/:id', async ({ res, params, deps }) => {
   })
 }, true, false, 'bot')
 
+const OUTBOUND_STATUS = new Set(['pending', 'accepted', 'sent', 'delivered', 'failed'])
+
+/**
+ * 网关自己发出去的短信记录。
+ *
+ * 与 /api/events 不同，这里的筛选全部走 SQL：收件人号码是明文列，
+ * 只有正文是密文——而按正文搜发件记录几乎没有场景，就不做了。
+ */
 route('GET', '/api/outbound', async ({ res, url, deps }) => {
-  const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 200)
-  const offset = Math.max(Number(url.searchParams.get('offset') ?? 0), 0)
-  const rows = await deps.store.listOutbound(limit, offset)
+  const q = url.searchParams
+  const limit = Math.min(Math.max(Number(q.get('limit') ?? 50), 1), 200)
+  const offset = Math.max(Number(q.get('offset') ?? 0), 0)
+  const status = q.get('status')
+  const filter = {
+    device_id: q.get('device') || null,
+    status: status && OUTBOUND_STATUS.has(status) ? (status as OutboundRecord['status']) : null,
+    to: q.get('to')?.trim() || null,
+  }
+  const [rows, total] = await Promise.all([
+    deps.store.listOutbound(limit, offset, filter),
+    deps.store.countOutbound(filter),
+  ])
   const names = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
   json(res, 200, {
+    total,
     outbound: await Promise.all(rows.map(async (o) => ({
       id: o.id, device_id: o.device_id, device_name: names.get(o.device_id) ?? o.device_id,
       to: o.to_number,
@@ -998,7 +1154,7 @@ route('GET', '/api/outbound', async ({ res, url, deps }) => {
       status: o.status, error: o.error, created_at: o.created_at, updated_at: o.updated_at,
     }))),
   })
-})
+}, true, false, 'bot')
 
 /** 审计日志里不写完整号码。 */
 const maskNumber = (n: string): string =>
@@ -1016,7 +1172,49 @@ const maskNumber = (n: string): string =>
  * 带关键词或号码过滤时，需要先把候选集全部解密才能知道总数与分页边界，
  * 因此设了扫描上限：超过就截断并如实告知，而不是给一个错误的总数。
  */
-const MAX_SCAN = 3000
+/**
+ * 关键词检索的扫描预算。
+ *
+ * 号码与正文是密文，SQL 搜不了，只能逐条解密后在内存里过滤。实测（node:crypto，
+ * 本机）10 万条约 1.1 秒，所以真正的约束不是「能不能扫」而是「一次请求愿意花多久」。
+ *
+ * 分批扫 + 时间预算，而不是一刀切的条数上限：条数上限会让「几个月前那条」
+ * 永远搜不到，而且用户看不出为什么。搜不完时如实返回搜到了哪一天，
+ * 让人能点「继续往更早搜」。
+ */
+const SCAN_BATCH = 2000
+const SCAN_BUDGET_MS = 1500
+const SCAN_ROW_CAP = 20_000
+/** 深搜：用户明确要求往前翻时放宽，代价是这一次请求慢几秒 */
+const DEEP_BUDGET_MS = 8000
+const DEEP_ROW_CAP = 200_000
+
+/**
+ * 单条事件。
+ *
+ * 控制台原先是拉最近 200 条再在前端找——Bark 通知点进来的是几天前那条时，
+ * 就会显示「消息不存在」。而 Bark 深链恰恰是这个项目最主要的入口。
+ */
+route('GET', '/api/events/:id', async ({ res, params, deps }) => {
+  const e = await deps.store.getEvent(params.id!)
+  if (!e) return json(res, 404, { error: '消息不存在或已删除' })
+  const dev = await deps.store.getDevice(e.device_id)
+  const ruleNames = new Map((await deps.store.listRules()).map((r) => [r.id, r.name]))
+  json(res, 200, {
+    id: e.id,
+    device_id: e.device_id,
+    device_name: dev?.name ?? e.device_id,
+    kind: e.kind,
+    direction: e.direction,
+    from: await deps.cipher.decrypt(e.sender_enc),
+    content: await deps.cipher.decrypt(e.content_enc),
+    occurred_at: e.occurred_at,
+    received_at: e.received_at,
+    matched_rules: e.matched_rules
+      ? (JSON.parse(e.matched_rules) as string[]).map((id) => ruleNames.get(id) ?? id)
+      : [],
+  })
+}, true, false, 'bot')
 
 route('GET', '/api/events', async ({ res, url, deps }) => {
   const p = url.searchParams
@@ -1029,6 +1227,7 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
   const filter: EventFilter = {
     ...(kind ? { kind } : {}),
     ...(p.get('device') ? { device_id: p.get('device')! } : {}),
+    ...(p.get('direction') === 'in' || p.get('direction') === 'out' ? { direction: p.get('direction') as 'in' | 'out' } : {}),
     ...(p.get('since') ? { since: Number(p.get('since')) } : {}),
     ...(p.get('until') ? { until: Number(p.get('until')) } : {}),
   }
@@ -1038,6 +1237,8 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
   const needsDecryptFilter = q !== '' || from !== ''
 
   const deviceNames = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
+  // 命中规则存的是 id，直接显示等于让人对着一串 rule_3f2a... 猜是哪条
+  const ruleNames = new Map((await deps.store.listRules()).map((r) => [r.id, r.name]))
   const decrypt = async (e: Awaited<ReturnType<typeof deps.store.getEvent>> & object) => ({
     id: e.id,
     device_id: e.device_id,
@@ -1047,7 +1248,10 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
     content: await deps.cipher.decrypt(e.content_enc),
     occurred_at: e.occurred_at,
     received_at: e.received_at,
-    matched_rules: e.matched_rules ? (JSON.parse(e.matched_rules) as string[]) : [],
+    direction: e.direction,
+    matched_rules: e.matched_rules
+      ? (JSON.parse(e.matched_rules) as string[]).map((id) => ruleNames.get(id) ?? id)
+      : [],
   })
 
   // 无需解密过滤时，SQL 直接分页，无论多少数据都是常数开销
@@ -1061,18 +1265,36 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
     return
   }
 
-  const candidates = await deps.store.listEvents({ ...filter, limit: MAX_SCAN, offset: 0 })
-  const decrypted = await Promise.all(candidates.map(decrypt))
-  const matched = decrypted.filter((e) =>
-    (q === '' || e.content.toLowerCase().includes(q) || e.from.toLowerCase().includes(q)) &&
-    (from === '' || e.from.toLowerCase().includes(from)))
+  const deep = p.get('deep') === '1'
+  // 扫到哪一天为止：界面用它告诉用户「更早的还没搜」
+  let scannedTo: number | null = null
+
+  const r = await scanMatches(
+    async (skip, take) => {
+      const rows = await deps.store.listEvents({ ...filter, limit: take, offset: skip })
+      if (rows.length > 0) scannedTo = rows[rows.length - 1]!.occurred_at
+      return Promise.all(rows.map(decrypt))
+    },
+    (e) =>
+      (q === '' || e.content.toLowerCase().includes(q) || e.from.toLowerCase().includes(q)) &&
+      (from === '' || e.from.toLowerCase().includes(from)),
+    {
+      offset, limit,
+      batch: SCAN_BATCH,
+      budgetMs: deep ? DEEP_BUDGET_MS : SCAN_BUDGET_MS,
+      rowCap: deep ? DEEP_ROW_CAP : SCAN_ROW_CAP,
+    },
+  )
 
   json(res, 200, {
-    events: matched.slice(offset, offset + limit),
-    total: matched.length,
+    events: r.page,
+    // 没扫完时这是「目前找到的条数」，不是总数——界面上要说清楚
+    total: r.total,
     limit, offset,
-    // 如实告知结果可能不全，而不是给一个错误的总数
-    truncated: candidates.length >= MAX_SCAN,
+    scanned: r.scanned,
+    scanned_to: scannedTo,
+    exhausted: r.exhausted,
+    truncated: !r.exhausted,
   })
 }, true, false, 'bot')
 

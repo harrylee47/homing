@@ -6,6 +6,7 @@ import android.content.Intent
 import android.provider.Telephony
 import kotlinx.coroutines.launch
 import org.smsgateway.agent.App
+import org.smsgateway.agent.command.SmsCommandHandler
 import org.smsgateway.agent.db.PendingEvent
 import org.smsgateway.agent.protocol.Protocol
 import org.smsgateway.agent.util.Log
@@ -21,6 +22,10 @@ import java.util.UUID
  * 分发链路（原为 WorkManager + SendWorker）已替换为本地队列 + WS 上报。
  */
 class SmsReceiver : BroadcastReceiver() {
+
+    private companion object {
+        @Volatile private var handler: SmsCommandHandler? = null
+    }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION &&
@@ -44,6 +49,9 @@ class SmsReceiver : BroadcastReceiver() {
                 truncated = true
             }
 
+            // 指令短信里带着口令，绝不能进转发链路——一转就把口令推到 Telegram 了
+            if (commandHandler(context).handle(from, content)) return
+
             val app = App.get()
             val event = PendingEvent(
                 id = "evt_${UUID.randomUUID()}",
@@ -62,6 +70,11 @@ class SmsReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             Log.e("短信解析失败", e)
         }
+    }
+
+    /** 限速器要跨多条短信记账，处理器必须是单例。 */
+    private fun commandHandler(ctx: Context): SmsCommandHandler = synchronized(SmsReceiver::class.java) {
+        handler ?: SmsCommandHandler(ctx.applicationContext).also { handler = it }
     }
 
     /** 只有 subscription 相对靠谱，取不到就报 null，由服务端展示为未知。 */

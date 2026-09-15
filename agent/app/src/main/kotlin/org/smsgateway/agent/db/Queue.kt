@@ -2,6 +2,7 @@ package org.smsgateway.agent.db
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
 
 /**
  * 离线事件队列。
@@ -22,6 +23,10 @@ data class PendingEvent(
     val callType: String?,
     val pkg: String?,
     val truncated: Boolean,
+    /** in=收到，out=这台设备发出的。默认 in，兼容升级前入队的旧记录 */
+    val direction: String = "in",
+    /** 历史导入的记录。服务端见到它只归档不推送 */
+    val imported: Boolean = false,
     /** 入队时间，仅用于排查 */
     val queuedAt: Long,
 )
@@ -47,17 +52,36 @@ interface EventDao {
     suspend fun dropOldest(n: Int)
 }
 
-@Database(entities = [PendingEvent::class], version = 1, exportSchema = false)
+@Database(entities = [PendingEvent::class], version = 3, exportSchema = false)
 abstract class AgentDatabase : RoomDatabase() {
     abstract fun events(): EventDao
 
     companion object {
         @Volatile private var instance: AgentDatabase? = null
 
+        /**
+         * 加 direction 列的迁移。
+         *
+         * 不用 fallbackToDestructiveMigration：那会在升级时清空队列，
+         * 而队列里可能正躺着断网期间收到的验证码。
+         */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE pending_events ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'")
+            }
+        }
+
+        /** 加 imported 列的迁移。历史导入的记录只归档不推送，这个标记要跟着事件走。 */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE pending_events ADD COLUMN imported INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun get(ctx: Context): AgentDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 ctx.applicationContext, AgentDatabase::class.java, "agent.db",
-            ).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
         }
     }
 }

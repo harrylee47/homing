@@ -29,6 +29,8 @@ export interface StoredEvent {
   id: string
   device_id: string
   kind: EventKind
+  /** in=收到，out=设备发出。老记录为 null，按 in 处理 */
+  direction: 'in' | 'out' | null
   sender_enc: Uint8Array
   content_enc: Uint8Array
   enc_ver: number
@@ -43,6 +45,8 @@ export interface StoredEvent {
 export interface EventFilter {
   kind?: EventKind | undefined
   device_id?: string | undefined
+  /** 收/发方向。老记录 direction 为 NULL，按 'in' 处理 */
+  direction?: 'in' | 'out' | undefined
   /** occurred_at 下界（含） */
   since?: number | undefined
   /** occurred_at 上界（含） */
@@ -108,6 +112,15 @@ export interface OutboundRecord {
   error: string | null
   created_at: number
   updated_at: number
+}
+
+
+/** 发送记录的筛选条件。收件人号码是明文列，可以直接走 SQL。 */
+export interface OutboundFilter {
+  device_id?: string | null
+  status?: OutboundRecord['status'] | null
+  /** 收件人号码的部分匹配 */
+  to?: string | null
 }
 
 /** 会话。token 只存哈希；绑定 UA 与 IP 段，减少凭证被盗后异地复用（计划 §6.3）。 */
@@ -221,7 +234,9 @@ export interface Store {
   // 发送任务
   createOutbound(o: OutboundRecord): Promise<void>
   getOutbound(id: string): Promise<OutboundRecord | null>
-  listOutbound(limit: number, offset: number): Promise<OutboundRecord[]>
+  listOutbound(limit: number, offset: number, filter?: OutboundFilter): Promise<OutboundRecord[]>
+  /** 分页要的总数。过滤条件与 listOutbound 一致。 */
+  countOutbound(filter?: OutboundFilter): Promise<number>
   /**
    * 状态机推进。只允许前进不允许后退：delivered 之后再收到 sent 必须忽略，
    * 因为多段短信的回执顺序不保证。

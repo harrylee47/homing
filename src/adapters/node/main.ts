@@ -13,14 +13,15 @@ import { dispatch } from '../../core/notifier.js'
 import { runTask as runOneTask, tick as tasksTick, type ParsedTask } from '../../core/tasks.js'
 import { checkDevices } from '../../core/monitor.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
-import { AppListResult, LocationResult, type DownstreamFrame } from '../../core/protocol.js'
+import { AppListResult, ImportResult, LocationResult, type DownstreamFrame } from '../../core/protocol.js'
 import { PROVIDERS } from '../../core/notifier.js'
 import { TelegramConfig } from '../../core/providers/telegram.js'
-import { barkAccess, getOrCreateBotToken, handleApi, isInitialized, loadNotifyCapture, timezone } from './api.js'
+import { barkAccess, getOrCreateBotToken, handleApi, isInitialized, loadNotifyCapture, loadSmsCommand, timezone } from './api.js'
 import { TelegramBot } from './bot.js'
 import { isBarkAllowed, isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
 import { createWsServer, isAllowedAgentOrigin } from './wsserver.js'
+import { missingDirection, missingSeedRules, SEED_RULES_VERSION } from '../../core/seeds.js'
 
 /**
  * 强制优先使用 IPv4。
@@ -38,6 +39,76 @@ const cfg = loadConfig()
 const store = new SqliteStore(cfg.dbPath)
 await store.migrate()
 
+await backfillSeedRules()
+
+/**
+ * 老部署补齐新增的预置规则。
+ *
+ * 不补的话，「已发送短信只归档不推送」这类新语义只对新装的人生效——
+ * 老用户升级后会突然收到自己发出去的短信的推送。
+ *
+ * 只补不改，且只做一次：版本号记在 settings 里，用户之后删掉哪条就是哪条，
+ * 下次启动不会再长回来。
+ */
+// 函数声明而不是 const：backfillSeedRules 在声明之前就被调用，
+// const 会落进 TDZ，启动直接崩
+function newId(prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`
+}
+
+async function backfillSeedRules(): Promise<void> {
+  const cur = Number(await store.getSetting('seed_rules_version') ?? 0)
+  if (cur >= SEED_RULES_VERSION) return
+
+  const existing = await store.listRules()
+  // 一条规则都没有说明还没走过向导，交给向导去种，这里只记版本
+  if (existing.length > 0) {
+    // 新规则跟着现有规则的渠道走：用户已经选好推给谁了，不该再问一遍
+    const channels = [...new Set(existing.flatMap((r) => {
+      try { return (JSON.parse(r.action_json) as { channels?: string[] }).channels ?? [] }
+      catch { return [] }
+    }))]
+    const t = Date.now()
+    const missing = missingSeedRules(existing.map((r) => r.name), channels, () => newId('rule'))
+    for (const r of missing) {
+      await store.upsertRule({
+        id: r.id, name: r.name, priority: r.priority, enabled: true,
+        match_json: JSON.stringify(r.match), action_json: JSON.stringify(r.action), created_at: t,
+      })
+    }
+    // 补齐后加字段的默认值（见 missingDirection 的注释）
+    const fixed: string[] = []
+    for (const row of existing) {
+      let match: Record<string, unknown>
+      try { match = JSON.parse(row.match_json) as Record<string, unknown> } catch { continue }
+      const dir = missingDirection(row.name, match)
+      if (!dir) continue
+      await store.upsertRule({
+        id: row.id, name: row.name, priority: row.priority, enabled: row.enabled,
+        match_json: JSON.stringify({ ...match, direction: dir }),
+        action_json: row.action_json, created_at: row.created_at,
+      })
+      fixed.push(row.name)
+    }
+    if (fixed.length > 0) {
+      log.info('已为预置规则补上方向限制', { names: fixed })
+      await store.audit({
+        actor: 'system', action: 'rules.direction_backfill',
+        detail: fixed.join('、'), ip: null, created_at: t,
+      })
+    }
+
+    if (missing.length > 0) {
+      log.info('已补齐新增的预置规则', { names: missing.map((r) => r.name) })
+      await store.audit({
+        actor: 'system', action: 'rules.seed_backfill',
+        detail: missing.map((r) => r.name).join('、'), ip: null, created_at: t,
+      })
+    }
+  }
+  await store.setSetting('seed_rules_version', String(SEED_RULES_VERSION))
+}
+
 const cipher = await createCipher(cfg.dek)
 const hub = new MemoryHub()
 const wss = createWsServer({
@@ -47,12 +118,19 @@ const wss = createWsServer({
   onQueryResult,
   // 每次握手都按当前设置生成配置，Agent 不持久化业务配置（计划 §2.3）
   agentConfig: async () => {
-    const n = await loadNotifyCapture(store)
+    const [n, c] = await Promise.all([loadNotifyCapture(store), loadSmsCommand(store)])
     return {
       ...DEFAULT_AGENT_CONFIG,
+      sms_command: c,
       capture_notification: n.enabled,
+      notification_scope: n.scope,
       notification_packages: n.packages,
-      enabled_kinds: n.enabled ? ['sms', 'call', 'notification'] as const : ['sms', 'call'] as const,
+      // 短信指令的执行回执也走 notification 这条通道上报，所以它开着的时候
+      // 同样要放行——否则 Agent 会在 drain 里按 enabled_kinds 把回执丢掉，
+      // 表现为「指令执行了、短信也回了，但控制台上什么都没有」
+      enabled_kinds: n.enabled || c.enabled
+        ? ['sms', 'call', 'notification'] as const
+        : ['sms', 'call'] as const,
     }
   },
 })
@@ -100,10 +178,13 @@ function onQueryResult(cmdId: string, ok: boolean, detail: Record<string, unknow
 
 /** 通用的查询类指令：下发后等回执或超时。 */
 async function queryDevice(
-  deviceId: string, action: 'get_location' | 'list_apps', timeoutMs: number,
+  deviceId: string,
+  action: 'get_location' | 'list_apps' | 'import_history',
+  timeoutMs: number,
+  args: Record<string, string> = {},
 ): Promise<{ ok: boolean; detail: Record<string, unknown> | null; error: string | null }> {
   const cmdId = `cmd_${crypto.randomUUID()}`
-  const frame = makeFrame('cmd', { cmd_id: cmdId, action, args: {} }) as DownstreamFrame
+  const frame = makeFrame('cmd', { cmd_id: cmdId, action, args }) as DownstreamFrame
   if (!hub.send(deviceId, frame)) return { ok: false, detail: null, error: '设备离线' }
 
   return new Promise((resolve) => {
@@ -140,6 +221,25 @@ async function listApps(deviceId: string): Promise<{ ok: boolean; apps?: unknown
 }
 
 /**
+ * 让设备把本机已有的历史短信与通话导进来。
+ *
+ * 超时给得很宽：几千条记录要逐行读游标再入队，慢是正常的。
+ * 真正的导入是异步的——Agent 先落本地队列，再按既有的补传节奏发上来，
+ * 所以这里的返回值只是「读了多少条」，不代表已经全部入库。
+ */
+async function importHistory(
+  deviceId: string, since: number | null, limit: number,
+): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+  const args: Record<string, string> = { limit: String(limit) }
+  if (since !== null) args.since = String(since)
+  const r = await queryDevice(deviceId, 'import_history', 120_000, args)
+  if (!r.ok) return { ok: false, error: r.error ?? '导入失败' }
+  const parsed = ImportResult.safeParse(r.detail)
+  if (!parsed.success) return { ok: false, error: '设备返回的导入结果格式不正确' }
+  return { ok: true, result: parsed.data }
+}
+
+/**
  * 断开全部设备，迫使它们重连并拉取新配置。
  *
  * 配置只在握手时下发，改完不重连就要等到下次断线才生效——
@@ -160,8 +260,10 @@ const apiDeps = {
   runTask: (task: ParsedTask) => runTaskNow(task),
   locateDevice,
   listApps,
+  importHistory,
   reconnectDevices,
   barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
+  baseUrl: cfg.baseUrl,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
   onUnknownIpLogin: (ip: string) => void (async () => {
     const channels = await liveChannels()

@@ -84,8 +84,16 @@ export const FATAL_ERROR_CODES: readonly ErrorCode[] = [
 /** epoch 毫秒 */
 const Timestamp = z.number().int().nonnegative()
 
-/** 设备端生成的事件 id，格式 `evt_<uuid-v4>`，服务端据此幂等去重。 */
-export const EventId = z.string().regex(/^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+/**
+ * 设备端生成的事件 id，服务端据此幂等去重。两种形态：
+ *
+ * - `evt_<uuid-v4>`：实时捕获。随机即可，重复上报靠 id 相同来去重。
+ * - `evt_imp_<sms|call>_<手机本地行号>`：历史导入。**必须是确定的**——
+ *   重复点一次导入不该产生重复记录，而随机 id 做不到这件事。
+ */
+export const EventId = z.string().regex(
+  /^evt_(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|imp_(?:sms|call)_\d{1,19})$/,
+)
 /** 指令 id，格式 `cmd_<uuid-v4>`。 */
 export const CmdId = z.string().regex(/^cmd_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
 /** 设备 id，服务端配对时生成。 */
@@ -96,6 +104,7 @@ export type EventKind = z.infer<typeof EventKind>
 
 export const CmdAction = z.enum([
   'send_sms', 'query_status', 'reboot_service', 'sync_config', 'get_location', 'list_apps',
+  'import_history',
 ])
 export type CmdAction = z.infer<typeof CmdAction>
 
@@ -140,25 +149,62 @@ export const HelloPayload = z.object({
  * 服务端下发的运行配置。Agent 不持久化业务配置，每次握手以此为准
  * （计划 §5.3：Agent 无状态）。
  */
+/**
+ * 短信指令配置。
+ *
+ * 口令放在短信正文里明文传输——这是这条链路的物理限制，没有别的办法：
+ * 人在外面只能手打一条短信，算不了签名。因此防线放在别处：
+ *  - 口令是服务端生成的随机串，不是用户自己起的
+ *  - 可选的号码白名单作为第二道（主叫号码可伪造，所以只能是「之一」）
+ *  - 限速 + 失败锁定，挡住穷举
+ *  - 能力最小化：只查状态、重连、定位，**不含发短信**，
+ *    伪造成功也偷不走验证码，只能知道手机还活着
+ *  - 每次执行都推送告警，被人试了你立刻知道
+ */
+export const SmsCommandConfig = z.object({
+  enabled: z.boolean(),
+  /** 口令。服务端生成，8–32 位，区分大小写 */
+  secret: z.string().max(32),
+  /** 允许下指令的号码（部分匹配，空 = 不限制） */
+  allow_numbers: z.array(z.string().max(32)).max(20).default([]),
+  /** 是否用短信回复结果。关掉就只推到渠道——但那需要网络，而网络可能正是坏的那一环 */
+  reply: z.boolean().default(true),
+})
+export type SmsCommandConfig = z.infer<typeof SmsCommandConfig>
+
 export const AgentConfig = z.object({
   heartbeat_sec: z.number().int().min(5).max(300),
   heartbeat_timeout_sec: z.number().int().min(10).max(900),
   /** 是否启用通知捕获（NotificationListenerService） */
   capture_notification: z.boolean(),
   /**
-   * 要捕获的应用包名白名单。
+   * 捕获范围。
    *
-   * **空数组表示一条都不捕获**，而不是全捕获——手机上几十个应用每天产生
-   * 成百上千条通知，全捕获等于把网关变成噪音源，重要的验证码反而被淹没。
-   * 由服务端下发，Agent 不持久化（计划 §2.3 Agent 无状态）。
+   * - all：全部应用，**包括以后新装的**，不用回来更新列表
+   * - selected：只捕获 notification_packages 里的应用
+   *
+   * 两种模式各有代价：all 省心但噪音大（手机上几十个应用每天产生成百上千条
+   * 通知），selected 精准但装了新应用要回来加。让用户自己选。
    */
-  notification_packages: z.array(z.string().max(128)).max(100).default([]),
+  notification_scope: z.enum(['all', 'selected']).default('selected'),
+  /** notification_scope=selected 时的包名白名单 */
+  notification_packages: z.array(z.string().max(128)).max(200).default([]),
   /** v2 端到端模式开关，v1 恒为 false（计划 §3.1 决策二） */
   encrypt_payload: z.boolean(),
   /** 单次补传最大批量，避免重连瞬间打爆服务端 */
   max_batch_size: z.number().int().min(1).max(200),
   /** 允许上报的事件类型，服务端可动态收窄 */
   enabled_kinds: z.array(EventKind).min(1),
+  /**
+   * 短信指令。
+   *
+   * 唯一一处 Agent 必须落盘的业务配置（其余都是内存，见计划 §2.3）：
+   * 这个功能存在的意义就是「手机联不上服务端时还能问出状态」，
+   * 如果配置只在内存里，重启后就废了——而重启恰恰是最需要它的时刻。
+   */
+  sms_command: SmsCommandConfig.default({
+    enabled: false, secret: '', allow_numbers: [], reply: true,
+  }),
 })
 export type AgentConfig = z.infer<typeof AgentConfig>
 
@@ -166,11 +212,22 @@ export const DEFAULT_AGENT_CONFIG: AgentConfig = {
   heartbeat_sec: DEFAULT_HEARTBEAT_SEC,
   heartbeat_timeout_sec: DEFAULT_HEARTBEAT_TIMEOUT_SEC,
   capture_notification: false,
+  notification_scope: 'selected',
   notification_packages: [],
   encrypt_payload: false,
   max_batch_size: 50,
   enabled_kinds: ['sms', 'call'],
+  sms_command: { enabled: false, secret: '', allow_numbers: [], reply: true },
 }
+
+/** 历史导入的结果，随 cmd_result 的 detail 回传。 */
+export const ImportResult = z.object({
+  sms: z.number().int().min(0),
+  calls: z.number().int().min(0),
+  /** 因缺权限被跳过的类别数 */
+  skipped: z.number().int().min(0).default(0),
+})
+export type ImportResult = z.infer<typeof ImportResult>
 
 /** 服务端 → Agent：握手成功。 */
 export const HelloAckPayload = z.object({
@@ -236,6 +293,20 @@ export const EventPayload = z.object({
       package: z.string().max(128).nullish(),
       /** content 被 MAX_CONTENT_LEN 截断时为 true */
       truncated: z.boolean().nullish(),
+      /**
+       * 方向。in=收到，out=这台设备发出的。
+       *
+       * 手机上手动发的短信也会被捕获，否则「这条验证码我转给谁了」
+       * 在历史里查不到。缺省按 in 处理，兼容不上报该字段的老 Agent。
+       */
+      direction: z.enum(['in', 'out']).nullish(),
+      /**
+       * 历史导入：这条是网关启用**之前**手机里就有的记录。
+       *
+       * 必须区分出来——导入几千条旧短信时如果照常走推送，
+       * 等于把几千条通知一次性砸到你手机上。导入的只归档、不推送。
+       */
+      imported: z.boolean().nullish(),
     })
     .default({}),
 })
