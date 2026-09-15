@@ -108,3 +108,47 @@ describe('建议规则集：按消息类型分类', () => {
     })
   })
 })
+
+describe('按设备分流', () => {
+  it('限定设备的规则只对该设备生效', () => {
+    const scoped = buildSeedRules(['ch_a'], (i) => `s_${i}`).map((r) =>
+      r.name === '验证码' ? { ...r, match: { ...r.match, device_ids: ['dev_jp'] } } : r,
+    )
+    const ev = (device_id: string): MatchableEvent => ({
+      device_id, kind: 'sms', from: '95533',
+      content: '【建设银行】您的验证码是 123456', occurred_at: Date.now(),
+    })
+
+    expect(evaluate(scoped, ev('dev_jp')).matched[0]!.name).toBe('验证码')
+    // 另一台设备落到普通短信，而不是被验证码规则捕获
+    expect(evaluate(scoped, ev('dev_cn')).matched[0]!.name).toBe('普通短信')
+  })
+
+  it('两台设备各走各的渠道', () => {
+    const base = buildSeedRules([], (i) => `s_${i}`)
+    const jp = { ...base[0]!, id: 'r_jp', priority: 5,
+      match: { ...base[0]!.match, device_ids: ['dev_jp'] },
+      action: { ...base[0]!.action, channels: ['ch_bark_jp'] } }
+    const cn = { ...base[0]!, id: 'r_cn', priority: 6,
+      match: { ...base[0]!.match, device_ids: ['dev_cn'] },
+      action: { ...base[0]!.action, channels: ['ch_tg_cn'] } }
+    const rules = [jp, cn, ...base.slice(1)]
+
+    const ev = (device_id: string): MatchableEvent => ({
+      device_id, kind: 'sms', from: '95533',
+      content: '验证码 123456', occurred_at: Date.now(),
+    })
+    expect(evaluate(rules, ev('dev_jp')).channels).toEqual(['ch_bark_jp'])
+    expect(evaluate(rules, ev('dev_cn')).channels).toEqual(['ch_tg_cn'])
+  })
+
+  it('不限定设备的规则对所有设备生效', () => {
+    const rules = buildSeedRules(['ch_a'], (i) => `s_${i}`)
+    for (const dev of ['dev_a', 'dev_b', 'dev_c']) {
+      expect(evaluate(rules, {
+        device_id: dev, kind: 'sms', from: 'x',
+        content: '验证码 123456', occurred_at: Date.now(),
+      }).matched[0]!.name).toBe('验证码')
+    }
+  })
+})

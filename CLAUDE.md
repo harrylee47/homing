@@ -93,6 +93,14 @@ Telegram 因封禁风险只能发模糊正文，所以「通知栏直接看到�
 Bark 的 level/group/copy 等参数配在**规则的 action 里**而非渠道配置里，
 因为它随消息类型变化：验证码要穿透专注模式，广告短信不该。
 
+## 多设备分流
+
+按设备分流**只走规则的 `match.device_ids`**，不要给渠道加设备绑定——两套并行的分流机制在冲突时行为不可预期。渠道保持全局。
+
+通知里的设备名只在**有多台未吊销设备时**才带（`pipeline.ts` 里判断）。单设备下每条都缀设备名是噪音，多设备下不缀就分不清验证码来自哪张卡。同一判断也用在消息列表、Bot 的 /recent 与 /search。
+
+回复时必须用原事件所属的设备（`message_refs.device_id`）：多卡场景下从别的卡发回去，对方看到的是陌生号码。
+
 ## 部署
 
 用 `pnpm run deploy:arm`（`scripts/deploy.sh`），不要手敲 rsync + docker compose。

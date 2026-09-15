@@ -549,6 +549,7 @@ route('POST', '/api/rules/test', async ({ res, body, deps }) => {
   }
 
   const rows = await deps.store.listEvents({ limit: Math.min(b.limit ?? 50, 200), offset: 0 })
+  const devNames = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
   const results = await Promise.all(rows.map(async (e) => {
     const ev = {
       device_id: e.device_id, kind: e.kind,
@@ -560,6 +561,7 @@ route('POST', '/api/rules/test', async ({ res, body, deps }) => {
     const code = hit && rule.action.extract_code ? extractCode(ev.content) : null
     return {
       id: e.id, from: ev.from, content: ev.content, kind: e.kind,
+      device_name: devNames.get(e.device_id) ?? e.device_id,
       occurred_at: e.occurred_at, matched: hit,
       code,
       preview: hit

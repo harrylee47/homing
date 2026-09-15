@@ -433,7 +433,10 @@ function trackOutbound(id) {
 async function rules() {
   render('<div class="loading">加载中…</div>')
   try {
-    const [{ rules: rs }, { channels: chs }] = await Promise.all([api('/rules'), api('/channels')])
+    const [{ rules: rs }, { channels: chs }, { devices: devs }] = await Promise.all([
+      api('/rules'), api('/channels'), api('/devices'),
+    ])
+    const activeDevs = devs.filter((d) => d.status !== 'revoked')
 
     render(`
       <h1>规则</h1>
@@ -454,6 +457,9 @@ async function rules() {
             <div class="col grow">
               <b>${esc(r.name)}</b>
               <span class="muted">优先级 ${r.priority} · ${r.action.channels.length} 个渠道${r.action.extract_code ? ' · 提取验证码' : ''}</span>
+              ${r.match.device_ids?.length
+                ? `<span class="muted">仅限 ${r.match.device_ids.map((id) => esc(activeDevs.find((d) => d.id === id)?.name || id)).join('、')}</span>`
+                : ''}
               ${r.dangling_channels?.length ? '<span class="badge err">推送目标已失效，命中后不会送达</span>' : ''}
             </div>
             <span class="badge ${r.enabled ? 'ok' : ''}">${r.enabled ? '启用' : '停用'}</span>
@@ -461,7 +467,7 @@ async function rules() {
         </div>`).join('')}</div>` : '<div class="card muted">还没有规则，当前全部走兜底。</div>'}
       <div class="btnrow"><button id="add">新建规则</button></div>`)
 
-    $('#add').onclick = () => ruleEditor(null, chs)
+    $('#add').onclick = () => ruleEditor(null, chs, activeDevs)
     const seedBtn = $('#seed')
     if (seedBtn) seedBtn.onclick = async () => {
       seedBtn.disabled = true
@@ -472,12 +478,12 @@ async function rules() {
       } catch (e) { toast(e.message); seedBtn.disabled = false }
     }
     for (const el of app.querySelectorAll('.item')) {
-      el.onclick = () => ruleEditor(rs.find((r) => r.id === el.dataset.id), chs)
+      el.onclick = () => ruleEditor(rs.find((r) => r.id === el.dataset.id), chs, activeDevs)
     }
   } catch (e) { fail(e) }
 }
 
-function ruleEditor(rule, chs) {
+function ruleEditor(rule, chs, devs = []) {
   const r = rule || {
     id: null, name: '', priority: 100, enabled: true,
     match: { kind: [], sender_regex: null, content_contains: [], content_regex: null, device_ids: [] },
@@ -502,6 +508,15 @@ function ruleEditor(rule, chs) {
       </select>
       <label>发件人正则</label><input id="sender" class="mono" value="${esc(r.match.sender_regex || '')}" placeholder="^(95533|95588)$">
       <label>正文包含（逗号分隔，任一命中即可）</label><input id="contains" value="${esc((r.match.content_contains || []).join(','))}" placeholder="验证码,动态密码">
+
+      <label>限定设备</label>
+      ${devs.length > 1 ? `
+        <div class="muted">不勾选表示不限制。勾选后这条规则只对选中的设备生效——
+        不同卡走不同渠道就靠这里，给每张卡各建一条规则即可。</div>
+        ${devs.map((d) => `<label style="display:flex;gap:8px;align-items:center;margin:6px 0">
+          <input type="checkbox" data-dev="${esc(d.id)}" style="width:auto"${(r.match.device_ids || []).includes(d.id) ? ' checked' : ''}>
+          <span>${esc(d.name)} <span class="muted">${d.status === 'online' ? '在线' : '离线'}</span></span></label>`).join('')}
+      ` : `<div class="muted">当前只有 ${devs.length} 台设备，无需限定。多设备时这里可以让不同的卡走不同的渠道。</div>`}
     </div>
     <h2>动作</h2>
     <div class="card">
@@ -535,7 +550,7 @@ function ruleEditor(rule, chs) {
       sender_regex: $('#sender').value.trim() || null,
       content_contains: $('#contains').value.split(',').map((x) => x.trim()).filter(Boolean),
       content_regex: null,
-      device_ids: [],
+      device_ids: [...app.querySelectorAll('[data-dev]')].filter((c) => c.checked).map((c) => c.dataset.dev),
     },
     action: {
       channels: [...app.querySelectorAll('[data-ch]')].filter((c) => c.checked).map((c) => c.dataset.ch),
@@ -570,6 +585,7 @@ function ruleEditor(rule, chs) {
               <b class="truncate">${esc(x.from)}</b>
               <span class="badge ${x.matched ? 'ok' : ''}">${x.matched ? '命中' : '未命中'}</span>
             </div>
+            ${x.device_name ? `<div class="muted" style="font-size:12px">${esc(x.device_name)}</div>` : ''}
             <div class="muted truncate">${esc(x.content)}</div>
             ${x.matched ? `<div class="muted wrap" style="margin-top:4px">→ ${esc(x.preview)}${x.code ? ` <span class="badge ok">${esc(x.code)}</span>` : ''}</div>` : ''}
           </div>`).join('')}</div>`
