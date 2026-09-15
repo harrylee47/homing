@@ -20,7 +20,8 @@ import { dispatch, PROVIDERS, type ChannelConfig } from '../../core/notifier.js'
 import { createPairing, redeemPairing } from '../../core/pairing.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import type { DownstreamFrame } from '../../core/protocol.js'
-import { evaluate, extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
+import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
+import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
 import type { Store } from '../../core/store.js'
 
@@ -407,62 +408,17 @@ route('POST', '/api/rules/test', async ({ res, body, deps }) => {
   })
 })
 
-/**
- * 一键写入建议的初始规则集（计划 §8.3）。
- *
- * 空规则表虽然能靠兜底工作，但所有短信一视同仁——广告和银行验证码同样打扰。
- * 给一组能直接用的起点，比让用户对着空列表自己琢磨强。
- */
+/** 一键写入建议的初始规则集。规则定义在 core/seeds.ts，两端共用同一份语义。 */
 route('POST', '/api/rules/seed', async ({ res, body, deps }) => {
   const chIds = ((body as { channels?: string[] })?.channels ?? []).filter(Boolean)
   if (chIds.length === 0) return json(res, 400, { error: '请先选择至少一个渠道' })
 
   const t = now()
-  const seeds = [
-    {
-      id: newId('rule'), name: '银行验证码', priority: 10,
-      match: { kind: ['sms'], sender_regex: '^(95\d{3}|106\d+|1065\d+)$', content_contains: ['验证码', '动态密码', '校验码'] },
-      action: {
-        channels: chIds, priority: 'high', extract_code: true,
-        template: '【{sender}】{content}', archive: true, stop_processing: true,
-        bark: { level: 'timeSensitive', group: '验证码', auto_copy_code: true, deep_link: 'event' },
-      },
-    },
-    {
-      id: newId('rule'), name: '政务与运营商', priority: 20,
-      match: { kind: ['sms'], sender_regex: '^(10086|10010|10000|12306|12345)$' },
-      action: {
-        channels: chIds, priority: 'normal', extract_code: true,
-        template: '【{sender}】{content}', archive: true, stop_processing: true,
-        bark: { level: 'active', group: '运营商', auto_copy_code: true, deep_link: 'event' },
-      },
-    },
-    {
-      // 只归档不推送：广告短信的价值在于「需要时能查到」，而不是打扰
-      id: newId('rule'), name: '推广过滤', priority: 50,
-      match: { kind: ['sms'], content_contains: ['退订', '回T退订', '优惠', '折扣', '促销', '点击链接'] },
-      action: {
-        channels: [], priority: 'normal', extract_code: false,
-        template: '【{sender}】{content}', archive: true, stop_processing: true,
-      },
-    },
-    {
-      id: newId('rule'), name: '来电通知', priority: 60,
-      match: { kind: ['call'] },
-      action: {
-        channels: chIds, priority: 'normal', extract_code: false,
-        template: '{content}：{sender}', archive: true, stop_processing: true,
-        bark: { level: 'active', group: '来电', auto_copy_code: false, deep_link: 'compose' },
-      },
-    },
-  ]
-
+  const seeds = buildSeedRules(chIds, () => newId('rule'))
   for (const r of seeds) {
-    const m = RuleMatch.parse(r.match)
-    const a = RuleAction.parse(r.action)
     await deps.store.upsertRule({
       id: r.id, name: r.name, priority: r.priority, enabled: true,
-      match_json: JSON.stringify(m), action_json: JSON.stringify(a), created_at: t,
+      match_json: JSON.stringify(r.match), action_json: JSON.stringify(r.action), created_at: t,
     })
   }
   json(res, 200, { created: seeds.length })

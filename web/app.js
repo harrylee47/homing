@@ -416,7 +416,12 @@ async function rules() {
       <p class="muted">按优先级从小到大匹配。没有规则命中时走兜底：推送到全部启用渠道并归档。</p>
       ${!rs.length && chs.length ? `<div class="card">
         <b>还没有规则</b>
-        <p class="muted">可以一键写入一组建议规则：银行验证码高优先级 + 自动提取、政务运营商正常推送、推广短信只归档不打扰、来电单独分组。之后随时可改。</p>
+        <p class="muted">可以一键写入四条建议规则，按顺序匹配：<br>
+        <b>验证码</b> 高优先级、自动提取、穿透专注模式<br>
+        <b>广告推广</b> 只归档不推送<br>
+        <b>普通短信</b> 前两者都不是，正常推送<br>
+        <b>来电</b> 单独分组，点击可预填回复<br>
+        之后随时可改。</p>
         <div class="btnrow"><button id="seed" class="sm">写入建议规则</button></div>
       </div>` : ''}
       ${rs.length ? `<div class="card list">${rs.map((r) => `
