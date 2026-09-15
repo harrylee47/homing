@@ -1,0 +1,24 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 运行时数据与密钥 —— 永不入库
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Android
+agent/local.properties
+agent/.gradle/
+agent/build/
+agent/**/build/
+*.keystore
+*.jks
+
+.DS_Store
