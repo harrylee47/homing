@@ -31,7 +31,7 @@ describe('会话状态机', () => {
     store = new MemoryStore()
     store.devices.set(DEVICE, {
       id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
-      status: 'offline', last_seen_at: null, battery: null,
+      status: 'offline', last_seen_at: null, battery: null, charging: null,
       app_version: null, created_at: NOW,
     })
     session = new DeviceSession({

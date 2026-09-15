@@ -70,6 +70,13 @@ function checkPassword(pw) {
   return null
 }
 
+/** 电量显示。充电状态用图标区分，一眼看出插没插上。 */
+function battery(d) {
+  if (d.battery == null) return ''
+  const icon = d.charging === true ? '🔌' : d.battery <= 20 ? '🪫' : '🔋'
+  return ` · ${icon} ${d.battery}%`
+}
+
 function toast(msg) {
   const el = document.createElement('div')
   el.className = 'toast'
@@ -101,6 +108,7 @@ const routes = [
   [/^\/events$/, events],
   [/^\/compose$/, compose],
   [/^\/rules$/, rules],
+  [/^\/tasks$/, tasks],
   [/^\/channels$/, channels],
   [/^\/devices$/, devices],
   [/^\/settings$/, settings],
@@ -246,7 +254,7 @@ async function overview() {
         <div class="row">
           <div class="col grow">
             <div><span class="dot ${d.status}"></span><b>${esc(d.name)}</b></div>
-            <div class="muted">最后心跳 ${ago(d.last_seen_at)}${d.battery != null ? ` · 电量 ${d.battery}%` : ''}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</div>
+            <div class="muted">最后心跳 ${ago(d.last_seen_at)}${battery(d)}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</div>
           </div>
           <span class="badge ${d.status === 'online' ? 'ok' : d.status === 'revoked' ? 'err' : ''}">${
             d.status === 'online' ? '在线' : d.status === 'revoked' ? '已吊销' : '离线'}</span>
@@ -883,7 +891,7 @@ async function devices() {
             <div class="col grow">
               <div><span class="dot ${d.status}"></span><b>${esc(d.name)}</b></div>
               <span class="muted mono" style="font-size:11px">${esc(d.id)}</span>
-              <span class="muted">心跳 ${ago(d.last_seen_at)}${d.battery != null ? ` · ${d.battery}%` : ''}</span>
+              <span class="muted">心跳 ${ago(d.last_seen_at)}${battery(d)}</span>
             </div>
             ${d.status !== 'revoked' ? `<button class="danger sm" data-revoke="${esc(d.id)}">吊销</button>` : '<span class="badge err">已吊销</span>'}
           </div>
@@ -924,7 +932,25 @@ async function settings() {
       <span>通知渠道</span>
       <a href="/channels"><button class="ghost sm">管理</button></a>
     </div>
-    <div id="ka"></div>
+    <h2>计划任务</h2>
+    <div class="card tight row">
+      <div class="col grow">
+        <span>定时发送短信</span>
+        <span class="muted">保号、提醒等。每张卡各建一个任务。</span>
+      </div>
+      <a href="/tasks"><button class="ghost sm">管理</button></a>
+    </div>
+
+    <div id="battery"></div>
+
+    <h2>时区</h2>
+    <div class="card">
+      <p class="muted">计划任务按这个时区的墙上时间执行。服务端跑在 UTC，不设对的话「每天 9 点」会差几个小时。</p>
+      <input id="tz" class="mono" placeholder="Asia/Tokyo">
+      <div class="btnrow"><button id="tz_save" class="sm">保存</button></div>
+      <div id="tz_err" class="err-text"></div>
+    </div>
+
     <h2>修改口令</h2>
     <div class="card">
       <label>当前口令</label><input id="old" type="password" autocomplete="current-password">
@@ -957,7 +983,8 @@ async function settings() {
     go('/login')
   }
 
-  void paintKeepAlive()
+  void paintBattery()
+  void paintTimezone()
 
   $('#chpw').onclick = async () => {
     // 两次输入一致再校验强度：口令改错又无找回流程，等于把自己锁在门外
@@ -987,130 +1014,253 @@ async function settings() {
  * 国内号码长期零消费 + 异地漫游可能被停机，而停机是静默的——
  * 到你需要验证码那天才会发现。
  */
-async function paintKeepAlive() {
-  const box = $('#ka')
-  if (!box) return
-  let data, devs
+async function paintTimezone() {
+  const el = $('#tz')
+  if (!el) return
   try {
-    ;[data, devs] = await Promise.all([api('/keepalive'), api('/devices').catch(() => ({ devices: [] }))])
+    const r = await api('/timezone')
+    el.value = r.timezone
   } catch { return }
+  $('#tz_save').onclick = async () => {
+    try {
+      await api('/timezone', { method: 'POST', body: { timezone: el.value.trim() } })
+      toast('已保存')
+    } catch (e) { $('#tz_err').textContent = e.message }
+  }
+}
 
-  const activeDevs = devs.devices.filter((d) => d.status !== 'revoked')
+/** 电量告警：阈值为 0 表示关闭该项。 */
+async function paintBattery() {
+  const box = $('#battery')
+  if (!box) return
+  let c
+  try { c = await api('/battery-alerts') } catch { return }
+
+  box.innerHTML = `
+    <h2>电量告警</h2>
+    <div class="card">
+      <p class="muted">电量耗尽关机后验证码完全收不到，而且不会有任何告警——因为告警也要靠设备上报。阈值填 0 表示关闭该项。</p>
+      <label>低于多少电量时告警（%）</label>
+      <input id="bt_low" type="number" min="0" max="100" value="${c.low}">
+      <label>充电到多少时提醒拔电（%）</label>
+      <input id="bt_full" type="number" min="0" max="100" value="${c.full}">
+      <div class="muted">长期保持满电会加速电池老化。这台机器常年插电，填 90 左右比较合适；不需要就填 0。</div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <input type="checkbox" id="bt_chg" style="width:auto"${c.notify_charging_change ? ' checked' : ''}>
+        <span>充电状态变化时通知</span>
+      </label>
+      <div class="muted">插拔电源是日常操作，开了会比较吵，默认关闭。</div>
+      <div class="btnrow"><button id="bt_save" class="sm">保存</button></div>
+      <div id="bt_err" class="err-text"></div>
+    </div>`
+
+  $('#bt_save').onclick = async () => {
+    try {
+      await api('/battery-alerts', {
+        method: 'POST',
+        body: {
+          low: Number($('#bt_low').value),
+          full: Number($('#bt_full').value),
+          notify_charging_change: $('#bt_chg').checked,
+        },
+      })
+      toast('已保存')
+      paintBattery()
+    } catch (e) { $('#bt_err').textContent = e.message }
+  }
+}
+
+// ── 计划任务 ────────────────────────────────────────────────
+
+async function tasks() {
+  render('<div class="loading">加载中…</div>')
+  try {
+    const [{ tasks: ts, timezone }, { devices: devs }] = await Promise.all([
+      api('/tasks'), api('/devices'),
+    ])
+    const activeDevs = devs.filter((d) => d.status !== 'revoked')
+    const fmtTs = (t) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—')
+    const devName = (id) => (id ? (activeDevs.find((d) => d.id === id)?.name || id) : '任意在线设备')
+
+    render(`
+      <h1>计划任务</h1>
+      <p class="muted">定时发送短信。最常见的用法是<b>保号</b>——国内号码长期零消费加异地漫游可能被停机，
+      而停机不会有任何提示。每张卡各建一个任务：保号针对的是具体号码，用别的卡发等于没保。</p>
+      ${ts.length ? `<div class="card list">${ts.map((t) => `
+        <div class="item" data-id="${esc(t.id)}">
+          <div class="row">
+            <div class="col grow">
+              <b>${esc(t.name)}</b>
+              <span class="muted">${esc(t.schedule_text)} · ${esc(devName(t.device_id))} → ${esc(t.to || '未设置')}</span>
+              <span class="muted">下次 ${t.enabled ? fmtTs(t.next_run_at) : '未启用'}</span>
+            </div>
+            <div class="col" style="align-items:flex-end;gap:4px">
+              <span class="badge ${t.enabled ? 'ok' : ''}">${t.enabled ? '启用' : '停用'}</span>
+              ${t.fail_count > 0 ? `<span class="badge err">失败 ${t.fail_count} 次</span>` : ''}
+            </div>
+          </div>
+        </div>`).join('')}</div>` : '<div class="card muted">还没有任务。</div>'}
+      <div class="btnrow"><button id="add">新建任务</button></div>
+      <div class="muted" style="margin-top:8px">时区：${esc(timezone)}（在设置页修改）</div>`)
+
+    $('#add').onclick = () => taskEditor(null, activeDevs)
+    for (const el of app.querySelectorAll('.item')) {
+      el.onclick = () => taskEditor(ts.find((t) => t.id === el.dataset.id), activeDevs)
+    }
+  } catch (e) { fail(e) }
+}
+
+function taskEditor(task, devs) {
+  const t = task || {
+    id: null, name: '保号', enabled: false,
+    device_id: devs.length === 1 ? devs[0].id : '',
+    to: '', text: '保号',
+    schedule: { type: 'interval', days: 30 },
+    last_run_at: null, next_run_at: null, fail_count: 0, last_status: null,
+  }
+  const sc = t.schedule || { type: 'interval', days: 30 }
   const toLocalInput = (ts) => {
     if (!ts) return ''
     const d = new Date(ts)
     const pad = (n) => String(n).padStart(2, '0')
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
   }
-  const fmtTs = (ts) => (ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—')
+  const fmtTs = (x) => (x ? new Date(x).toLocaleString('zh-CN', { hour12: false }) : '—')
+  const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
-  // 任务在内存里编辑，点保存才整体提交
-  let tasks = data.tasks.map((t) => ({ ...t }))
+  render(`
+    <h1>${task ? '编辑任务' : '新建任务'}</h1>
+    <div class="card">
+      <label>名称</label><input id="t_name" value="${esc(t.name)}">
+      <label>启用</label>
+      <select id="t_on">
+        <option value="1"${t.enabled ? ' selected' : ''}>启用</option>
+        <option value="0"${t.enabled ? '' : ' selected'}>停用</option>
+      </select>
+      <label>用哪台设备发</label>
+      <select id="t_dev">
+        <option value=""${!t.device_id ? ' selected' : ''}>任意在线设备${devs.length > 1 ? '（多设备下不建议）' : ''}</option>
+        ${devs.map((d) => `<option value="${esc(d.id)}"${t.device_id === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+      </select>
+      <label>收件人</label><input id="t_to" inputmode="tel" value="${esc(t.to || '')}">
+      <label>内容</label><input id="t_text" value="${esc(t.text || '')}">
+    </div>
 
-  const paint = () => {
-    box.innerHTML = `
-      <h2>保号任务</h2>
-      <div class="card">
-        <p class="muted">定期发一条短信产生使用记录。国内号码长期零消费加异地漫游可能被停机，
-        而停机不会有任何提示——到你需要验证码那天才会发现。<b>每张卡各建一个任务</b>：
-        保号针对的是具体号码，用别的卡发等于没保。</p>
-      </div>
-      ${tasks.map((t, i) => `
-        <div class="card">
-          <div class="row">
-            <b>任务 ${i + 1}</b>
-            <button class="danger sm" data-ka-del="${i}">删除</button>
-          </div>
-          <label>启用</label>
-          <select data-ka="enabled" data-i="${i}">
-            <option value="1"${t.enabled ? ' selected' : ''}>启用</option>
-            <option value="0"${t.enabled ? '' : ' selected'}>停用</option>
-          </select>
-          <label>用哪台设备发</label>
-          <select data-ka="device_id" data-i="${i}">
-            <option value=""${!t.device_id ? ' selected' : ''}>任意在线设备${activeDevs.length > 1 ? '（多设备下不建议）' : ''}</option>
-            ${activeDevs.map((d) => `<option value="${esc(d.id)}"${t.device_id === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
-          </select>
-          <label>目标号码</label>
-          <input data-ka="to" data-i="${i}" inputmode="tel" value="${esc(t.to || '')}" placeholder="发给自己的另一个号码即可">
-          <label>内容</label>
-          <input data-ka="text" data-i="${i}" value="${esc(t.text)}">
-          <label>每隔多少天发一次</label>
-          <input data-ka="interval_days" data-i="${i}" type="number" min="1" max="365" value="${t.interval_days}">
-          <label>首次执行时间</label>
-          <input data-ka="first_run_at" data-i="${i}" type="datetime-local" value="${toLocalInput(t.first_run_at)}">
-          <div class="muted">留空表示保存后立即开始第一次。</div>
+    <h2>执行时间</h2>
+    <div class="card">
+      <label>重复方式</label>
+      <select id="t_type">
+        <option value="interval"${sc.type === 'interval' ? ' selected' : ''}>每隔 N 天</option>
+        <option value="daily"${sc.type === 'daily' ? ' selected' : ''}>每天</option>
+        <option value="weekly"${sc.type === 'weekly' ? ' selected' : ''}>每周</option>
+        <option value="monthly"${sc.type === 'monthly' ? ' selected' : ''}>每月</option>
+        <option value="yearly"${sc.type === 'yearly' ? ' selected' : ''}>每年</option>
+        <option value="once"${sc.type === 'once' ? ' selected' : ''}>仅一次</option>
+      </select>
+      <div id="t_sched"></div>
+    </div>
 
-          <div class="card tight" style="background:var(--bg);margin-top:12px">
-            <div class="row"><span class="muted">上次执行</span><span>${fmtTs(t.last_run_at)}</span></div>
-            <div class="row"><span class="muted">下次执行</span><span>${t.enabled ? fmtTs(t.next_due_at) : '未启用'}</span></div>
-            ${t.consecutive_failures > 0 ? `<div class="row"><span class="muted">连续失败</span><span class="badge err">${t.consecutive_failures} 次</span></div>` : ''}
-          </div>
-          <div class="btnrow">
-            <button class="ghost sm" data-ka-test="${esc(t.id)}" ${t.to ? '' : 'disabled'}>立即测试发送</button>
-          </div>
-          <div class="muted" data-ka-result="${esc(t.id)}" style="margin-top:6px"></div>
-        </div>`).join('')}
-      <div class="btnrow">
-        <button id="ka_add" class="ghost sm">新增任务</button>
-        <button id="ka_save" class="sm">保存全部</button>
-      </div>
-      <div id="ka_err" class="err-text"></div>`
+    ${task ? `<div class="card tight">
+      <div class="row"><span class="muted">上次执行</span><span>${fmtTs(t.last_run_at)}${t.last_status ? ` · ${t.last_status === 'ok' ? '成功' : '失败'}` : ''}</span></div>
+      <div class="row"><span class="muted">下次执行</span><span>${t.enabled ? fmtTs(t.next_run_at) : '未启用'}</span></div>
+    </div>` : ''}
 
-    for (const el of box.querySelectorAll('[data-ka]')) {
-      el.onchange = () => {
-        const t = tasks[Number(el.dataset.i)]
-        const k = el.dataset.ka
-        if (k === 'enabled') t.enabled = el.value === '1'
-        else if (k === 'interval_days') t.interval_days = Number(el.value)
-        else if (k === 'first_run_at') t.first_run_at = el.value ? new Date(el.value).getTime() : null
-        else t[k] = el.value
-      }
-    }
+    <div class="btnrow">
+      <button id="t_save">保存</button>
+      ${task ? '<button class="ghost sm" id="t_test">立即测试发送</button>' : ''}
+      ${task ? '<button class="danger sm" id="t_del">删除</button>' : ''}
+      <button class="ghost sm" id="t_back">返回</button>
+    </div>
+    <div id="t_err" class="err-text"></div>
+    <div id="t_result" class="muted" style="margin-top:6px"></div>`)
 
-    for (const b of box.querySelectorAll('[data-ka-del]')) {
-      b.onclick = () => { tasks.splice(Number(b.dataset.kaDel), 1); paint() }
-    }
-
-    $('#ka_add').onclick = () => {
-      tasks.push({
-        id: `ka_${Date.now()}`, enabled: false,
-        device_id: activeDevs.length === 1 ? activeDevs[0].id : '',
-        to: '', text: '保号', interval_days: 30, first_run_at: null,
-        last_run_at: null, next_due_at: null, consecutive_failures: 0,
-      })
-      paint()
-    }
-
-    $('#ka_save').onclick = async () => {
-      try {
-        await api('/keepalive', { method: 'POST', body: { tasks } })
-        toast('已保存')
-        paintKeepAlive()
-      } catch (e) { $('#ka_err').textContent = e.message }
-    }
-
-    // 配好之后必须能当场验证链路：保号失败是静默的
-    for (const b of box.querySelectorAll('[data-ka-test]')) {
-      b.onclick = async () => {
-        const id = b.dataset.kaTest
-        const out = box.querySelector(`[data-ka-result="${id}"]`)
-        out.textContent = '发送中…（未保存的修改不会生效，请先保存）'
-        b.disabled = true
-        try {
-          const r = await api(`/keepalive/${id}/test`, { method: 'POST' })
-          out.innerHTML = r.sent
-            ? '<span class="badge ok">已下发，到发送记录里看状态机流转</span>'
-            : `<span class="badge err">${esc(r.reason || '失败')}</span>`
-        } catch (e) {
-          out.innerHTML = `<span class="badge err">${esc(e.message)}</span>`
-        }
-        b.disabled = false
-      }
+  const paintSched = () => {
+    const type = $('#t_type').value
+    const time = sc.time || '09:00'
+    const box = $('#t_sched')
+    if (type === 'interval') {
+      box.innerHTML = `<label>每隔多少天</label><input id="s_days" type="number" min="1" max="3650" value="${sc.days || 30}">
+        <div class="muted">从上次执行时间往后推。新建的任务会立即执行第一次。</div>`
+    } else if (type === 'once') {
+      box.innerHTML = `<label>执行时刻</label><input id="s_at" type="datetime-local" value="${toLocalInput(sc.at)}">
+        <div class="muted">执行一次后任务自动停用。</div>`
+    } else if (type === 'daily') {
+      box.innerHTML = `<label>每天几点</label><input id="s_time" type="time" value="${time}">`
+    } else if (type === 'weekly') {
+      box.innerHTML = `<label>星期几（可多选）</label>
+        ${WD.map((n, i) => `<label style="display:flex;gap:8px;align-items:center;margin:4px 0">
+          <input type="checkbox" data-wd="${i}" style="width:auto"${(sc.weekdays || []).includes(i) ? ' checked' : ''}><span>${n}</span></label>`).join('')}
+        <label>几点</label><input id="s_time" type="time" value="${time}">`
+    } else if (type === 'monthly') {
+      box.innerHTML = `<label>每月几号（逗号分隔，可多个）</label>
+        <input id="s_days_of_month" value="${(sc.days || [1]).join(',')}">
+        <div class="muted">超出当月天数的日期会落到当月最后一天，例如 31 号在 2 月执行于 28/29 号。</div>
+        <label>几点</label><input id="s_time" type="time" value="${time}">`
+    } else {
+      box.innerHTML = `<label>几月</label><input id="s_month" type="number" min="1" max="12" value="${sc.month || 1}">
+        <label>几号</label><input id="s_day" type="number" min="1" max="31" value="${sc.day || 1}">
+        <label>几点</label><input id="s_time" type="time" value="${time}">`
     }
   }
+  $('#t_type').onchange = paintSched
+  paintSched()
 
-  paint()
+  const collectSchedule = () => {
+    const type = $('#t_type').value
+    if (type === 'interval') return { type, days: Number($('#s_days').value) }
+    if (type === 'once') return { type, at: $('#s_at').value ? new Date($('#s_at').value).getTime() : 0 }
+    const time = $('#s_time').value
+    if (type === 'daily') return { type, time }
+    if (type === 'weekly') {
+      return { type, time, weekdays: [...app.querySelectorAll('[data-wd]')].filter((c) => c.checked).map((c) => Number(c.dataset.wd)) }
+    }
+    if (type === 'monthly') {
+      return { type, time, days: $('#s_days_of_month').value.split(',').map((x) => Number(x.trim())).filter((x) => x >= 1 && x <= 31) }
+    }
+    return { type, time, month: Number($('#s_month').value), day: Number($('#s_day').value) }
+  }
+
+  $('#t_back').onclick = () => go('/tasks')
+
+  $('#t_save').onclick = async () => {
+    try {
+      await api('/tasks', {
+        method: 'POST',
+        body: {
+          ...(t.id ? { id: t.id } : {}),
+          name: $('#t_name').value.trim(),
+          enabled: $('#t_on').value === '1',
+          device_id: $('#t_dev').value,
+          to: $('#t_to').value.trim(),
+          text: $('#t_text').value,
+          schedule: collectSchedule(),
+        },
+      })
+      toast('已保存')
+      go('/tasks')
+    } catch (e) { $('#t_err').textContent = e.message }
+  }
+
+  if (task) {
+    // 配好之后必须能当场验证链路：定时任务失败是静默的
+    $('#t_test').onclick = async () => {
+      $('#t_result').textContent = '发送中…（未保存的修改不会生效，请先保存）'
+      $('#t_test').disabled = true
+      try {
+        const r = await api(`/tasks/${t.id}/test`, { method: 'POST' })
+        $('#t_result').innerHTML = r.sent
+          ? '<span class="badge ok">已下发，到发送记录里看状态机流转</span>'
+          : `<span class="badge err">${esc(r.reason || '失败')}</span>`
+      } catch (e) { $('#t_result').innerHTML = `<span class="badge err">${esc(e.message)}</span>` }
+      $('#t_test').disabled = false
+    }
+    $('#t_del').onclick = async () => {
+      if (!confirm(`删除任务「${t.name}」？`)) return
+      await api(`/tasks/${t.id}`, { method: 'DELETE' })
+      toast('已删除')
+      go('/tasks')
+    }
+  }
 }
 
 // ── 启动 ────────────────────────────────────────────────────

@@ -10,13 +10,13 @@ import { loadConfig } from './config.js'
 import { MemoryHub } from './hub.js'
 import { SqliteStore } from './store.js'
 import { dispatch } from '../../core/notifier.js'
-import { runTask as runKeepAliveTask, tick as keepAliveTick, type KeepAliveTask } from '../../core/keepalive.js'
+import { runTask as runOneTask, tick as tasksTick, type ParsedTask } from '../../core/tasks.js'
 import { checkDevices } from '../../core/monitor.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import type { DownstreamFrame } from '../../core/protocol.js'
 import { PROVIDERS } from '../../core/notifier.js'
 import { TelegramConfig } from '../../core/providers/telegram.js'
-import { barkAccess, getOrCreateBotToken, handleApi, isInitialized } from './api.js'
+import { barkAccess, getOrCreateBotToken, handleApi, isInitialized, timezone } from './api.js'
 import { TelegramBot } from './bot.js'
 import { isBarkAllowed, isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
@@ -76,8 +76,8 @@ const apiDeps = {
   store, cipher, hub, adminToken: cfg.adminToken,
   barkUpstream: cfg.barkUpstream,
   trustedProxy: cfg.trustedProxy,
-  // apiDeps 在 keepAliveDeps 之前定义，用函数包一层避免 TDZ
-  runKeepAliveTask: (task: KeepAliveTask) => runOneKeepAlive(task),
+  // apiDeps 在 taskDeps 之前定义，用函数包一层避免 TDZ
+  runTask: (task: ParsedTask) => runTaskNow(task),
   barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
   onUnknownIpLogin: (ip: string) => void (async () => {
@@ -245,40 +245,6 @@ const monitorTimer = setInterval(() => {
   }).catch((e: unknown) => log.error('掉线检测异常', { error: String(e) }))
 }, 60_000)
 
-/**
- * 保号任务的依赖。抽出来是因为控制台的「立即测试」要复用同一条路径——
- * 测试走的和定时执行不是两套代码，否则测得通不代表定时能通。
- */
-const keepAliveDeps = () => ({
-    store,
-    onlineDevices: () => hub.onlineDevices(),
-    deviceName: (id: string) => deviceNameCache.get(id) ?? id,
-    send: async (deviceId: string, to: string, text: string) => {
-      const id = `cmd_${crypto.randomUUID()}`
-      const t = Date.now()
-      await store.createOutbound({
-        id, device_id: deviceId, to_number: to,
-        content_enc: await cipher.encrypt(text), sim_slot: null,
-        status: 'pending', error: null, created_at: t, updated_at: t,
-      })
-      const frame = makeFrame('cmd', {
-        cmd_id: id, action: 'send_sms', args: { to, text, sim_slot: null },
-      }, t) as DownstreamFrame
-      if (hub.send(deviceId, frame)) return true
-      await store.advanceOutbound(id, 'failed', '设备离线', Date.now())
-      return false
-    },
-    alert: async (title: string, body: string) => {
-      const channels = await liveChannels()
-      if (channels.length === 0) return
-      const { dispatch } = await import('../../core/notifier.js')
-      await dispatch(channels, {
-        title, body, priority: 'high' as const, code: null, eventId: '',
-        occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
-      })
-    },
-  })
-
 /** 设备名缓存，仅用于告警文案；取不到就退回 id，不值得为它阻塞。 */
 const deviceNameCache = new Map<string, string>()
 const refreshDeviceNames = async () => {
@@ -286,17 +252,55 @@ const refreshDeviceNames = async () => {
 }
 void refreshDeviceNames()
 
-const runOneKeepAlive = async (task: KeepAliveTask) => {
+/**
+ * 计划任务的依赖。抽出来是因为控制台的「立即测试」要复用同一条路径——
+ * 测试走的和定时执行不是两套代码，否则测得通不代表定时能通。
+ */
+const taskDeps = async () => ({
+  store,
+  timezone: await timezone(store),
+  onlineDevices: () => hub.onlineDevices(),
+  deviceName: (id: string) => deviceNameCache.get(id) ?? id,
+  send: async (deviceId: string, to: string, text: string) => {
+    const id = `cmd_${crypto.randomUUID()}`
+    const t = Date.now()
+    await store.createOutbound({
+      id, device_id: deviceId, to_number: to,
+      content_enc: await cipher.encrypt(text), sim_slot: null,
+      status: 'pending', error: null, created_at: t, updated_at: t,
+    })
+    const frame = makeFrame('cmd', {
+      cmd_id: id, action: 'send_sms', args: { to, text, sim_slot: null },
+    }, t) as DownstreamFrame
+    if (hub.send(deviceId, frame)) return true
+    await store.advanceOutbound(id, 'failed', '设备离线', Date.now())
+    return false
+  },
+  alert: async (title: string, body: string) => {
+    const channels = await liveChannels()
+    if (channels.length === 0) return
+    const { dispatch } = await import('../../core/notifier.js')
+    await dispatch(channels, {
+      title, body, priority: 'high' as const, code: null, eventId: '',
+      occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
+    })
+  },
+})
+
+const runTaskNow = async (task: ParsedTask) => {
   await refreshDeviceNames()
-  return runKeepAliveTask(keepAliveDeps(), task, true)
+  return runOneTask(await taskDeps(), task, true)
 }
 
-/** 每小时检查一次是否到期。排期基于绝对时刻，服务端短暂停机不会漏掉。 */
-const keepAliveTimer = setInterval(() => {
+/**
+ * 每分钟检查一次。不能用小时粒度：「每天 09:00」这类排期需要分钟精度，
+ * 小时粒度会把它变成「每天 09:00 到 10:00 之间的某个时刻」。
+ */
+const taskTimer = setInterval(() => {
   void refreshDeviceNames()
-    .then(() => keepAliveTick(keepAliveDeps()))
-    .catch((e: unknown) => log.error('保号任务异常', { error: String(e) }))
-}, 3600_000)
+    .then(async () => tasksTick(await taskDeps(), (enc) => cipher.decrypt(enc)))
+    .catch((e: unknown) => log.error('计划任务异常', { error: String(e) }))
+}, 60_000)
 
 /** 回复映射保留 7 天：超过这个窗口的推送，用户基本不会再去引用回复。 */
 const MESSAGE_REF_TTL_MS = 7 * 24 * 3600 * 1000
@@ -310,7 +314,7 @@ const shutdown = async (sig: string) => {
   clearInterval(botTimer)
   clearInterval(cleanupTimer)
   clearInterval(monitorTimer)
-  clearInterval(keepAliveTimer)
+  clearInterval(taskTimer)
   for (const b of bots.values()) b.stop()
   server.close()
   wss.close()

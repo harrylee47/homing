@@ -70,6 +70,8 @@ data class HelloPayload(
     @SerialName("app_version") val appVersion: String,
     @SerialName("android_sdk") val androidSdk: Int,
     val battery: Int,
+    /** 是否正在充电 */
+    val charging: Boolean,
     @SerialName("pending_count") val pendingCount: Int,
 )
 
@@ -108,6 +110,7 @@ data class PingPayload(val seq: Long)
 data class PongPayload(
     val seq: Long,
     val battery: Int? = null,
+    val charging: Boolean? = null,
     @SerialName("pending_count") val pendingCount: Int? = null,
 )
 

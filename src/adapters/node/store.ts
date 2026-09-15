@@ -16,6 +16,7 @@ import type {
   MessageRefRecord,
   PairingCodeRecord,
   SessionRecord,
+  TaskRecord,
   RuleRecord,
   Store,
   StoredEvent,
@@ -32,6 +33,9 @@ const MIGRATIONS: string[] = [
      app_version  TEXT,
      created_at   INTEGER NOT NULL
    )`,
+  // 增量迁移：老库没有这一列。SQLite 没有 IF NOT EXISTS 形式的 ADD COLUMN，
+  // 由 migrate() 捕获重复添加的错误
+  `ALTER TABLE devices ADD COLUMN charging INTEGER`,
   `CREATE TABLE IF NOT EXISTS events (
      id            TEXT PRIMARY KEY,
      device_id     TEXT NOT NULL REFERENCES devices(id),
@@ -116,6 +120,19 @@ const MIGRATIONS: string[] = [
      PRIMARY KEY (channel_id, ref)
    )`,
   `CREATE INDEX IF NOT EXISTS idx_msgrefs_time ON message_refs(created_at)`,
+  `CREATE TABLE IF NOT EXISTS tasks (
+     id            TEXT PRIMARY KEY,
+     name          TEXT NOT NULL,
+     enabled       INTEGER NOT NULL DEFAULT 0,
+     device_id     TEXT NOT NULL DEFAULT '',
+     to_number     TEXT NOT NULL DEFAULT '',
+     content_enc   BLOB NOT NULL,
+     schedule_json TEXT NOT NULL,
+     last_run_at   INTEGER,
+     last_status   TEXT,
+     fail_count    INTEGER NOT NULL DEFAULT 0,
+     created_at    INTEGER NOT NULL
+   )`,
 ]
 
 /** 状态机的前进顺序。数字大者为更后的状态，用于拒绝倒退的回执。 */
@@ -141,25 +158,37 @@ export class SqliteStore implements Store {
   }
 
   async migrate(): Promise<void> {
-    for (const sql of MIGRATIONS) this.db.exec(sql)
+    for (const sql of MIGRATIONS) {
+      try {
+        this.db.exec(sql)
+      } catch (e) {
+        // ALTER TABLE ADD COLUMN 在列已存在时报错，这是幂等迁移的正常路径；
+        // 其余错误必须抛出，否则表结构不全会在运行时以更难懂的方式炸掉
+        const msg = String(e)
+        if (sql.startsWith('ALTER TABLE') && msg.includes('duplicate column')) continue
+        throw e
+      }
+    }
   }
 
   async getDevice(id: string): Promise<DeviceRecord | null> {
     const row = this.db.prepare('SELECT * FROM devices WHERE id = ?').get(id)
-    return row ? (row as unknown as DeviceRecord) : null
+    return row ? toDevice(row as unknown as RawDevice) : null
   }
 
   async listDevices(): Promise<DeviceRecord[]> {
-    return this.db.prepare('SELECT * FROM devices ORDER BY created_at').all() as unknown as DeviceRecord[]
+    const rows = this.db.prepare('SELECT * FROM devices ORDER BY created_at').all() as unknown as RawDevice[]
+    return rows.map(toDevice)
   }
 
   async createDevice(d: DeviceRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO devices (id, name, token_hash, status, last_seen_at, battery, app_version, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO devices (id, name, token_hash, status, last_seen_at, battery, charging, app_version, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(d.id, d.name, d.token_hash, d.status, d.last_seen_at, d.battery, d.app_version, d.created_at)
+      .run(d.id, d.name, d.token_hash, d.status, d.last_seen_at, d.battery,
+        d.charging === null ? null : d.charging ? 1 : 0, d.app_version, d.created_at)
   }
 
   async touchDevice(
@@ -169,7 +198,12 @@ export class SqliteStore implements Store {
     const cols = Object.keys(patch) as (keyof typeof patch)[]
     if (cols.length === 0) return
     const set = cols.map((c) => `${c} = ?`).join(', ')
-    const vals = cols.map((c) => patch[c] as string | number | null)
+    const vals = cols.map((c) => {
+      const v = patch[c]
+      // SQLite 没有布尔类型
+      if (typeof v === 'boolean') return v ? 1 : 0
+      return v as string | number | null
+    })
     this.db.prepare(`UPDATE devices SET ${set} WHERE id = ?`).run(...vals, id)
   }
 
@@ -325,6 +359,46 @@ export class SqliteStore implements Store {
       .run(status, error, at, id)
   }
 
+  // ── 计划任务 ──────────────────────────────────────────
+
+  async listTasks(): Promise<TaskRecord[]> {
+    const rows = this.db.prepare('SELECT * FROM tasks ORDER BY created_at').all() as unknown as (Omit<TaskRecord, 'enabled'> & { enabled: number })[]
+    return rows.map((r) => ({ ...r, enabled: r.enabled === 1 }))
+  }
+
+  async getTask(id: string): Promise<TaskRecord | null> {
+    const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as
+      | (Omit<TaskRecord, 'enabled'> & { enabled: number }) | undefined
+    return row ? { ...row, enabled: row.enabled === 1 } : null
+  }
+
+  async upsertTask(t: TaskRecord): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO tasks (id, name, enabled, device_id, to_number, content_enc, schedule_json, last_run_at, last_status, fail_count, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, enabled=excluded.enabled,
+           device_id=excluded.device_id, to_number=excluded.to_number,
+           content_enc=excluded.content_enc, schedule_json=excluded.schedule_json`,
+      )
+      .run(t.id, t.name, t.enabled ? 1 : 0, t.device_id, t.to_number, t.content_enc,
+        t.schedule_json, t.last_run_at, t.last_status, t.fail_count, t.created_at)
+  }
+
+  async deleteTask(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
+  }
+
+  async setTaskEnabled(id: string, enabled: boolean): Promise<void> {
+    this.db.prepare('UPDATE tasks SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
+  }
+
+  async updateTaskRun(id: string, p: { last_run_at: number; last_status: 'ok' | 'failed'; fail_count: number }): Promise<void> {
+    this.db
+      .prepare('UPDATE tasks SET last_run_at = ?, last_status = ?, fail_count = ? WHERE id = ?')
+      .run(p.last_run_at, p.last_status, p.fail_count, id)
+  }
+
   // ── 推送消息映射 ──────────────────────────────────────
 
   async putMessageRef(r: MessageRefRecord): Promise<void> {
@@ -407,3 +481,9 @@ interface RawChannel extends Omit<ChannelRecord, 'enabled'> { enabled: number }
 interface RawRule extends Omit<RuleRecord, 'enabled'> { enabled: number }
 
 const toChannel = (r: RawChannel): ChannelRecord => ({ ...r, enabled: r.enabled === 1 })
+
+
+interface RawDevice extends Omit<DeviceRecord, 'charging'> { charging: number | null }
+const toDevice = (r: RawDevice): DeviceRecord => ({
+  ...r, charging: r.charging === null || r.charging === undefined ? null : r.charging === 1,
+})

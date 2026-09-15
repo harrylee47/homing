@@ -207,6 +207,7 @@ class WsClient(
             appVersion = BuildConfig.VERSION_NAME,
             androidSdk = android.os.Build.VERSION.SDK_INT,
             battery = battery(),
+            charging = isCharging(),
             pendingCount = _pending.value,
         )
         webSocket.send(frame("hello", hello))
@@ -259,7 +260,7 @@ class WsClient(
 
             "ping" -> {
                 val p = Protocol.json.decodeFromJsonElement(PingPayload.serializer(), env.payload)
-                webSocket.send(frame("pong", PongPayload(p.seq, battery(), _pending.value)))
+                webSocket.send(frame("pong", PongPayload(p.seq, battery(), isCharging(), _pending.value)))
             }
 
             "cmd" -> {
@@ -367,6 +368,18 @@ class WsClient(
     private fun battery(): Int {
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
         return bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.coerceIn(0, 100) ?: 0
+    }
+
+    /**
+     * 是否在充电。
+     *
+     * 用 BatteryManager.isCharging 而不是解析 ACTION_BATTERY_CHANGED 的粘性广播：
+     * 后者要注册一个 receiver、解析 EXTRA_PLUGGED，还得处理「充满后停止充电但
+     * 仍插着电源」的边界，而这个 API 直接给出结论。
+     */
+    private fun isCharging(): Boolean {
+        val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+        return runCatching { bm?.isCharging == true }.getOrDefault(false)
     }
 }
 

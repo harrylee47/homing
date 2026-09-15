@@ -15,6 +15,8 @@ export interface DeviceRecord {
   status: 'online' | 'offline' | 'revoked'
   last_seen_at: number | null
   battery: number | null
+  /** 是否在充电。null 表示设备未上报（老版本 Agent） */
+  charging: boolean | null
   app_version: string | null
   created_at: number
 }
@@ -128,6 +130,28 @@ export interface MessageRefRecord {
   created_at: number
 }
 
+/**
+ * 计划任务。
+ *
+ * 用独立表而不是塞进 settings 的 JSON：任务有状态（上次执行、失败计数）
+ * 且会增删改，塞在一个 JSON 里每次都要整体读写，并发下容易互相覆盖。
+ */
+export interface TaskRecord {
+  id: string
+  name: string
+  enabled: boolean
+  /** 空串表示任意在线设备，仅适用于单设备部署 */
+  device_id: string
+  to_number: string
+  content_enc: Uint8Array
+  /** JSON，结构见 schedule.ts 的 Schedule */
+  schedule_json: string
+  last_run_at: number | null
+  last_status: 'ok' | 'failed' | null
+  fail_count: number
+  created_at: number
+}
+
 export interface Store {
   /** 启动时执行迁移。必须幂等。 */
   migrate(): Promise<void>
@@ -137,7 +161,7 @@ export interface Store {
   listDevices(): Promise<DeviceRecord[]>
   createDevice(d: DeviceRecord): Promise<void>
   /** 握手成功后更新在线状态与遥测 */
-  touchDevice(id: string, patch: Partial<Pick<DeviceRecord, 'status' | 'last_seen_at' | 'battery' | 'app_version'>>): Promise<void>
+  touchDevice(id: string, patch: Partial<Pick<DeviceRecord, 'status' | 'last_seen_at' | 'battery' | 'charging' | 'app_version'>>): Promise<void>
   revokeDevice(id: string): Promise<void>
 
   // 渠道
@@ -155,6 +179,15 @@ export interface Store {
   createPairingCode(p: PairingCodeRecord): Promise<void>
   /** 按哈希取出未使用且未过期的配对码 */
   takePairingCode(codeHash: string, now: number): Promise<PairingCodeRecord | null>
+
+  // 计划任务
+  listTasks(): Promise<TaskRecord[]>
+  getTask(id: string): Promise<TaskRecord | null>
+  upsertTask(t: TaskRecord): Promise<void>
+  deleteTask(id: string): Promise<void>
+  /** 只更新执行状态，不动配置——避免执行时把用户正在编辑的配置覆盖回去 */
+  updateTaskRun(id: string, patch: { last_run_at: number; last_status: 'ok' | 'failed'; fail_count: number }): Promise<void>
+  setTaskEnabled(id: string, enabled: boolean): Promise<void>
 
   // 推送消息映射
   putMessageRef(r: MessageRefRecord): Promise<void>

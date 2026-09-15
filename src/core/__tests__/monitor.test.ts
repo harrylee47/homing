@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { checkDevices, resetAlertState } from '../monitor.js'
+import { BATTERY_SETTING_KEY, checkDevices, resetAlertState } from '../monitor.js'
 import { registerProvider } from '../notifier.js'
 import { OFFLINE_ALERT_SEC } from '../protocol.js'
 import type { NotifyMessage, Provider } from '../providers/types.js'
@@ -24,7 +24,7 @@ describe('掉线告警', () => {
     store.devices.set('dev_1', {
       id: 'dev_1', name: 'JP-Gateway-01', token_hash: 'h', status: 'offline',
       last_seen_at: NOW - (OFFLINE_ALERT_SEC + 60) * 1000,
-      battery: 50, app_version: '0.1.0', created_at: 0, ...over,
+      battery: 50, charging: null, app_version: '0.1.0', created_at: 0, ...over,
     } as never)
   }
 
@@ -112,5 +112,146 @@ describe('掉线告警', () => {
     await checkDevices({ store, channels, online: () => [], now: () => NOW })
     expect(sent[0]!.body).toContain('补传')
     expect(sent[0]!.body).toContain('关机')
+  })
+})
+
+describe('电量告警', () => {
+  let store: MemoryStore
+
+  const dev = (over: Record<string, unknown> = {}) => {
+    store.devices.set('dev_1', {
+      id: 'dev_1', name: 'JP-Gateway-01', token_hash: 'h', status: 'online',
+      last_seen_at: Date.now(), battery: 50, charging: false,
+      app_version: '0.1.0', created_at: 0, ...over,
+    } as never)
+  }
+  const run = () => checkDevices({ store, channels, online: () => ['dev_1'], now: () => NOW })
+  const setCfg = (c: Record<string, unknown>) => store.setSetting(BATTERY_SETTING_KEY, JSON.stringify(c))
+
+  beforeEach(() => {
+    store = new MemoryStore()
+    sent.length = 0
+    resetAlertState()
+  })
+
+  it('低于阈值且未充电时告警', async () => {
+    await setCfg({ low: 20, full: 0 })
+    dev({ battery: 15, charging: false })
+    await run()
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.title).toContain('电量低')
+    expect(sent[0]!.priority).toBe('high')
+  })
+
+  it('低电量但正在充电时不告警 —— 正在充说明人已经知道了', async () => {
+    await setCfg({ low: 20, full: 0 })
+    dev({ battery: 15, charging: true })
+    await run()
+    expect(sent).toHaveLength(0)
+  })
+
+  it('告警只发一次', async () => {
+    await setCfg({ low: 20, full: 0 })
+    dev({ battery: 15, charging: false })
+    await run(); await run(); await run()
+    expect(sent).toHaveLength(1)
+  })
+
+  it('阈值附近有 5% 回差，不会反复告警', async () => {
+    await setCfg({ low: 20, full: 0 })
+    dev({ battery: 15, charging: false })
+    await run()
+    // 回到 22%（仍在回差区内）不重置
+    dev({ battery: 22, charging: false })
+    await run()
+    dev({ battery: 15, charging: false })
+    await run()
+    expect(sent).toHaveLength(1)
+
+    // 超过 25% 才重置
+    dev({ battery: 30, charging: false })
+    await run()
+    dev({ battery: 15, charging: false })
+    await run()
+    expect(sent).toHaveLength(2)
+  })
+
+  it('阈值为 0 表示关闭', async () => {
+    await setCfg({ low: 0, full: 0 })
+    dev({ battery: 1, charging: false })
+    await run()
+    expect(sent).toHaveLength(0)
+  })
+
+  it('告警文案说明后果：关机后连告警都收不到', async () => {
+    await setCfg({ low: 20, full: 0 })
+    dev({ battery: 5, charging: false })
+    await run()
+    expect(sent[0]!.body).toContain('关机')
+    expect(sent[0]!.body).toContain('告警也要靠它上报')
+  })
+
+  it('充电到满电阈值时提醒拔电', async () => {
+    await setCfg({ low: 20, full: 90 })
+    dev({ battery: 95, charging: true })
+    await run()
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.title).toContain('拔掉电源')
+    expect(sent[0]!.priority).toBe('normal')
+  })
+
+  it('未充电时不发满电提醒', async () => {
+    await setCfg({ low: 0, full: 90 })
+    dev({ battery: 95, charging: false })
+    await run()
+    expect(sent).toHaveLength(0)
+  })
+
+  it('充电状态变化默认不通知 —— 插拔电源是日常操作，会很吵', async () => {
+    await setCfg({ low: 0, full: 0, notify_charging_change: false })
+    dev({ battery: 50, charging: false })
+    await run()
+    dev({ battery: 50, charging: true })
+    await run()
+    expect(sent).toHaveLength(0)
+  })
+
+  it('开启后才通知充电状态变化', async () => {
+    await setCfg({ low: 0, full: 0, notify_charging_change: true })
+    dev({ battery: 50, charging: false })
+    await run()
+    dev({ battery: 50, charging: true })
+    await run()
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.title).toContain('接通电源')
+  })
+
+  it('首次见到设备不发充电状态通知 —— 那不是变化', async () => {
+    await setCfg({ low: 0, full: 0, notify_charging_change: true })
+    dev({ battery: 50, charging: true })
+    await run()
+    expect(sent).toHaveLength(0)
+  })
+
+  it('离线设备不做电量判断 —— 电量是过期数据', async () => {
+    await setCfg({ low: 20, full: 0 })
+    dev({ battery: 5, charging: false })
+    await checkDevices({ store, channels, online: () => [], now: () => NOW })
+    // 只有离线告警，没有电量告警
+    expect(sent.filter((m) => m.title.includes('电量'))).toHaveLength(0)
+  })
+
+  it('未上报充电状态的老设备不因此崩溃', async () => {
+    await setCfg({ low: 20, full: 90, notify_charging_change: true })
+    dev({ battery: 15, charging: null })
+    await expect(run()).resolves.toBeUndefined()
+    expect(sent).toHaveLength(1)
+  })
+
+  it('没有电量数据时跳过', async () => {
+    await setCfg({ low: 20, full: 0 })
+    dev({ battery: null })
+    await run()
+    expect(sent).toHaveLength(0)
   })
 })

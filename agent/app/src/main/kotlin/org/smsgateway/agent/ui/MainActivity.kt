@@ -89,6 +89,7 @@ class MainActivity : AppCompatActivity() {
                 else -> {}
             }
             appendLine("待补传：$pending 条")
+            appendLine("电池：${batteryText()}")
             appendLine("电池优化白名单：${if (isIgnoringBattery()) "已加入" else "未加入"}")
         }
     }
@@ -152,6 +153,14 @@ class MainActivity : AppCompatActivity() {
             perms += Manifest.permission.POST_NOTIFICATIONS
         }
         permLauncher.launch(perms.toTypedArray())
+    }
+
+    /** 界面上直观显示电量与充电状态，插没插上一眼可见。 */
+    private fun batteryText(): String {
+        val bm = getSystemService(android.os.BatteryManager::class.java) ?: return "未知"
+        val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val charging = runCatching { bm.isCharging }.getOrDefault(false)
+        return "$level%${if (charging) " · 充电中" else " · 未充电"}"
     }
 
     private fun isIgnoringBattery(): Boolean {

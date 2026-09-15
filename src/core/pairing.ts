@@ -79,6 +79,7 @@ export async function redeemPairing(
     status: 'offline',
     last_seen_at: null,
     battery: null,
+    charging: null,
     app_version: null,
     created_at: now,
   }

@@ -21,11 +21,9 @@ import { createPairing, redeemPairing } from '../../core/pairing.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import type { DownstreamFrame } from '../../core/protocol.js'
 import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
-import {
-  loadTasks as loadKeepAliveTasks, newTask as newKeepAliveTask,
-  saveTasks as saveKeepAliveTasks, status as keepAliveStatus,
-  type KeepAliveTask,
-} from '../../core/keepalive.js'
+import { Schedule, describe as describeSchedule } from '../../core/schedule.js'
+import { BATTERY_SETTING_KEY, loadBatteryConfig } from '../../core/monitor.js'
+import { parseTask, taskNextRun, type ParsedTask } from '../../core/tasks.js'
 import { toSvg } from '../../core/qr.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
@@ -47,8 +45,8 @@ export interface ApiDeps {
   onLoginLockout?: ((ip: string, attempts: number) => void) | undefined
   /** 陌生网段登录成功时的告警回调 */
   onUnknownIpLogin?: ((ip: string) => void) | undefined
-  /** 立即执行一个保号任务（忽略排期），用于控制台的「立即测试」。 */
-  runKeepAliveTask?: ((task: KeepAliveTask) => Promise<{ sent: boolean; reason?: string }>) | undefined
+  /** 立即执行一个计划任务（忽略排期），用于控制台的「立即测试」。 */
+  runTask?: ((task: ParsedTask) => Promise<{ sent: boolean; reason?: string }>) | undefined
   /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
   trustedProxy?: string | null
 }
@@ -293,8 +291,8 @@ route('GET', '/api/devices', async ({ res, deps }) => {
       id: d.id, name: d.name,
       // 以实际连接状态为准：库里的 status 在服务端异常退出后可能是陈旧的
       status: d.status === 'revoked' ? 'revoked' : online.has(d.id) ? 'online' : 'offline',
-      last_seen_at: d.last_seen_at, battery: d.battery, app_version: d.app_version,
-      created_at: d.created_at,
+      last_seen_at: d.last_seen_at, battery: d.battery, charging: d.charging,
+      app_version: d.app_version, created_at: d.created_at,
     })),
   })
 }, true, false, 'bot')
@@ -655,65 +653,142 @@ route('POST', '/api/bot/rotate-token', async ({ res, deps, ip }) => {
 
 // ── 保号任务 ────────────────────────────────────────────────
 
-route('GET', '/api/keepalive', async ({ res, deps }) => {
-  json(res, 200, { tasks: await keepAliveStatus(deps.store) })
+/**
+ * 计划任务。
+ *
+ * 保号只是其中一种用法；同一套机制也能做每日提醒、每周汇报之类的事。
+ */
+route('GET', '/api/tasks', async ({ res, deps }) => {
+  const tz = await timezone(deps.store)
+  const rows = await deps.store.listTasks()
+  const items = await Promise.all(rows.map(async (r) => {
+    const text = await deps.cipher.decrypt(r.content_enc).catch(() => '')
+    const t = parseTask(r, text)
+    return {
+      id: r.id, name: r.name, enabled: r.enabled, device_id: r.device_id,
+      to: r.to_number, text,
+      schedule: t ? t.schedule : null,
+      schedule_text: t ? describeSchedule(t.schedule) : '配置损坏',
+      last_run_at: r.last_run_at, last_status: r.last_status, fail_count: r.fail_count,
+      next_run_at: t && r.enabled ? taskNextRun(t, tz) : null,
+      created_at: r.created_at,
+    }
+  }))
+  json(res, 200, { tasks: items, timezone: tz })
 })
 
-/**
- * 保存任务列表（整体替换）。
- *
- * 每张卡一个任务：保号针对的是具体号码，指定了设备就必须用那台发。
- */
-route('POST', '/api/keepalive', async ({ res, body, deps, ip }) => {
-  const raw = (body as { tasks?: unknown })?.tasks
-  if (!Array.isArray(raw)) return json(res, 400, { error: '缺少 tasks 数组' })
-
-  const devices = new Set((await deps.store.listDevices()).map((d) => d.id))
-  const tasks: KeepAliveTask[] = []
-  for (const [i, item] of raw.entries()) {
-    const t = item as Partial<KeepAliveTask>
-    const task = { ...newKeepAliveTask(typeof t.id === 'string' && t.id ? t.id : `ka_${Date.now()}_${i}`) }
-    task.enabled = t.enabled === true
-    task.device_id = typeof t.device_id === 'string' ? t.device_id : ''
-    task.to = String(t.to ?? '').trim()
-    task.text = String(t.text ?? '').trim() || '保号'
-    task.interval_days = Math.min(Math.max(Math.round(Number(t.interval_days) || 30), 1), 365)
-    const f = Number(t.first_run_at)
-    task.first_run_at = Number.isFinite(f) && f > 0 ? f : null
-
-    if (task.enabled && !task.to) return json(res, 400, { error: `第 ${i + 1} 个任务启用时必须填目标号码` })
-    if (task.device_id && !devices.has(task.device_id)) {
-      return json(res, 400, { error: `第 ${i + 1} 个任务指定的设备不存在` })
-    }
-    tasks.push(task)
+route('POST', '/api/tasks', async ({ res, body, deps, ip }) => {
+  const b = body as Record<string, unknown>
+  const sched = Schedule.safeParse(b.schedule)
+  if (!sched.success) {
+    return json(res, 400, { error: '排期配置不合法', detail: sched.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) })
   }
 
-  await saveKeepAliveTasks(deps.store, tasks)
-  await deps.store.audit({
-    actor: 'admin', action: 'keepalive.config',
-    detail: `${tasks.filter((t) => t.enabled).length}/${tasks.length} 个任务启用`,
-    ip, created_at: now(),
+  const to = String(b.to ?? '').trim()
+  const enabled = b.enabled === true
+  if (enabled && !to) return json(res, 400, { error: '启用时必须填目标号码' })
+
+  const deviceId = String(b.device_id ?? '')
+  if (deviceId && !(await deps.store.getDevice(deviceId))) {
+    return json(res, 400, { error: '指定的设备不存在' })
+  }
+
+  const id = String(b.id ?? '') || newId('task')
+  const existing = await deps.store.getTask(id)
+  await deps.store.upsertTask({
+    id,
+    name: String(b.name ?? '').trim() || '未命名任务',
+    enabled, device_id: deviceId, to_number: to,
+    content_enc: await deps.cipher.encrypt(String(b.text ?? '')),
+    schedule_json: JSON.stringify(sched.data),
+    last_run_at: existing?.last_run_at ?? null,
+    last_status: existing?.last_status ?? null,
+    fail_count: existing?.fail_count ?? 0,
+    created_at: existing?.created_at ?? now(),
   })
+  await deps.store.audit({
+    actor: 'admin', action: existing ? 'task.update' : 'task.create',
+    detail: `${id} ${describeSchedule(sched.data)}`, ip, created_at: now(),
+  })
+  json(res, 200, { id })
+})
+
+route('DELETE', '/api/tasks/:id', async ({ res, params, deps, ip }) => {
+  await deps.store.deleteTask(params.id!)
+  await deps.store.audit({ actor: 'admin', action: 'task.delete', detail: params.id!, ip, created_at: now() })
   json(res, 200, { ok: true })
 })
 
 /**
- * 立即测试某个任务。
- *
- * 保号失败是静默的——真到停机那天才发现就晚了，配好之后必须能当场验证。
- * 走与定时执行完全相同的代码路径，否则「测得通」不代表「定时能通」。
+ * 立即测试。走与定时执行完全相同的代码路径——否则「测得通」不代表「定时能通」。
+ * 不推进排期、不计入失败统计。
  */
-route('POST', '/api/keepalive/:id/test', async ({ res, params, deps, ip }) => {
-  if (!deps.runKeepAliveTask) return json(res, 500, { error: '未接入保号任务' })
-  const task = (await loadKeepAliveTasks(deps.store)).find((t) => t.id === params.id)
-  if (!task) return json(res, 404, { error: '任务不存在' })
+route('POST', '/api/tasks/:id/test', async ({ res, params, deps, ip }) => {
+  if (!deps.runTask) return json(res, 500, { error: '未接入计划任务' })
+  const row = await deps.store.getTask(params.id!)
+  if (!row) return json(res, 404, { error: '任务不存在' })
 
-  const r = await deps.runKeepAliveTask(task)
+  const task = parseTask(row, await deps.cipher.decrypt(row.content_enc))
+  if (!task) return json(res, 400, { error: '任务配置损坏' })
+
+  const r = await deps.runTask(task)
   await deps.store.audit({
-    actor: 'admin', action: 'keepalive.test',
-    detail: `${task.id} ${r.sent ? '已下发' : (r.reason ?? '失败')}`, ip, created_at: now(),
+    actor: 'admin', action: 'task.test',
+    detail: `${row.name} ${r.sent ? '已下发' : (r.reason ?? '失败')}`, ip, created_at: now(),
   })
   json(res, r.sent ? 200 : 400, r)
+})
+
+// ── 电量告警 ────────────────────────────────────────────────
+
+route('GET', '/api/battery-alerts', async ({ res, deps }) => {
+  json(res, 200, await loadBatteryConfig(deps.store))
+})
+
+route('POST', '/api/battery-alerts', async ({ res, body, deps, ip }) => {
+  const b = body as Record<string, unknown>
+  const clamp = (v: unknown) => {
+    const n = Number(v)
+    return Number.isFinite(n) && n >= 0 && n <= 100 ? Math.round(n) : 0
+  }
+  const cfg = {
+    low: clamp(b.low),
+    full: clamp(b.full),
+    notify_charging_change: b.notify_charging_change === true,
+  }
+  if (cfg.full > 0 && cfg.low > 0 && cfg.full <= cfg.low) {
+    return json(res, 400, { error: '满电阈值必须高于低电量阈值' })
+  }
+  await deps.store.setSetting(BATTERY_SETTING_KEY, JSON.stringify(cfg))
+  await deps.store.audit({ actor: 'admin', action: 'battery_alerts.set', detail: JSON.stringify(cfg), ip, created_at: now() })
+  json(res, 200, { ok: true })
+})
+
+// ── 时区 ────────────────────────────────────────────────────
+
+const S_TIMEZONE = 'timezone'
+/** 默认东京：这套系统的典型场景就是人在日本、卡在国内。 */
+const DEFAULT_TZ = 'Asia/Tokyo'
+
+export async function timezone(store: Store): Promise<string> {
+  return (await store.getSetting(S_TIMEZONE)) ?? DEFAULT_TZ
+}
+
+route('GET', '/api/timezone', async ({ res, deps }) => {
+  json(res, 200, { timezone: await timezone(deps.store) })
+})
+
+route('POST', '/api/timezone', async ({ res, body, deps, ip }) => {
+  const tz = String((body as { timezone?: string })?.timezone ?? '').trim()
+  // 用 Intl 自己校验，比维护一份时区白名单可靠
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+  } catch {
+    return json(res, 400, { error: '无效的时区名称' })
+  }
+  await deps.store.setSetting(S_TIMEZONE, tz)
+  await deps.store.audit({ actor: 'admin', action: 'timezone.set', detail: tz, ip, created_at: now() })
+  json(res, 200, { ok: true })
 })
 
 // ── 总览统计 ────────────────────────────────────────────────
@@ -731,7 +806,8 @@ route('GET', '/api/stats', async ({ res, deps }) => {
     devices: devices.map((d) => ({
       id: d.id, name: d.name,
       status: d.status === 'revoked' ? 'revoked' : online.has(d.id) ? 'online' : 'offline',
-      last_seen_at: d.last_seen_at, battery: d.battery, app_version: d.app_version,
+      last_seen_at: d.last_seen_at, battery: d.battery, charging: d.charging,
+      app_version: d.app_version,
     })),
     today: {
       events: todayEvents,

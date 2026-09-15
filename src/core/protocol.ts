@@ -117,6 +117,13 @@ export const HelloPayload = z.object({
   android_sdk: z.number().int().min(1).max(200),
   /** 电量百分比 0-100 */
   battery: z.number().int().min(0).max(100),
+  /**
+   * 是否正在充电。
+   *
+   * 老版本 Agent 不带这个字段，因此可选——服务端不能因为字段缺失就拒绝
+   * 老设备连接，那等于一次升级把所有设备踢下线。
+   */
+  charging: z.boolean().nullish(),
   /** 本地待补传条数，服务端用于显示与告警 */
   pending_count: z.number().int().min(0),
 })
@@ -255,8 +262,9 @@ export const CmdResultPayload = z.object({
 export const PingPayload = z.object({ seq: z.number().int().nonnegative() })
 export const PongPayload = z.object({
   seq: z.number().int().nonnegative(),
-  /** Agent 顺带上报的实时状态，服务端用于控制台展示 */
+  /** Agent 顺带上报的实时状态，服务端用于控制台展示与电量告警 */
   battery: z.number().int().min(0).max(100).optional(),
+  charging: z.boolean().nullish(),
   pending_count: z.number().int().min(0).optional(),
 })
 

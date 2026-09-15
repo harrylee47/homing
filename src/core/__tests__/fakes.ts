@@ -2,7 +2,7 @@
 import type { Connection, Hub } from '../hub.js'
 import type {
   ChannelRecord, DeviceRecord, EventQuery, InsertEventResult, OutboundRecord,
-  MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent,
+  MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord,
 } from '../store.js'
 
 /** 与 SQLite 实现保持一致的状态机顺序 */
@@ -57,6 +57,25 @@ export class MemoryStore implements Store {
     if (!p || p.used_at !== null || p.expires_at <= now) return null
     this.pairings.set(hash, { ...p, used_at: now })
     return { ...p, used_at: now }
+  }
+
+  tasks = new Map<string, TaskRecord>()
+
+  async listTasks() { return [...this.tasks.values()].sort((a, b) => a.created_at - b.created_at) }
+  async getTask(id: string) { return this.tasks.get(id) ?? null }
+  async upsertTask(t: TaskRecord) {
+    const old = this.tasks.get(t.id)
+    // 与 SQLite 的 upsert 一致：只覆盖配置字段，执行状态保持不变
+    this.tasks.set(t.id, old ? { ...t, last_run_at: old.last_run_at, last_status: old.last_status, fail_count: old.fail_count } : t)
+  }
+  async deleteTask(id: string) { this.tasks.delete(id) }
+  async setTaskEnabled(id: string, enabled: boolean) {
+    const t = this.tasks.get(id)
+    if (t) this.tasks.set(id, { ...t, enabled })
+  }
+  async updateTaskRun(id: string, p: { last_run_at: number; last_status: 'ok' | 'failed'; fail_count: number }) {
+    const t = this.tasks.get(id)
+    if (t) this.tasks.set(id, { ...t, ...p })
   }
 
   messageRefs = new Map<string, MessageRefRecord>()

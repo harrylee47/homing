@@ -125,6 +125,7 @@ export class DeviceSession {
     app_version: string
     android_sdk: number
     battery: number
+    charging?: boolean | null | undefined
     pending_count: number
   }): Promise<SessionAction> {
     const device = await this.deps.store.getDevice(p.device_id)
@@ -150,6 +151,9 @@ export class DeviceSession {
       status: 'online',
       last_seen_at: this.now(),
       battery: p.battery,
+      // 老版本 Agent 不上报充电状态，此时保持原值而不是写成 null，
+      // 否则升级前后会反复清空
+      ...(p.charging !== undefined && p.charging !== null ? { charging: p.charging } : {}),
       app_version: p.app_version,
     })
 
@@ -247,11 +251,17 @@ export class DeviceSession {
 
   // ── 心跳 ────────────────────────────────────────────────
 
-  private async onPong(p: { seq: number; battery?: number | undefined; pending_count?: number | undefined }): Promise<SessionAction> {
+  private async onPong(p: {
+    seq: number
+    battery?: number | undefined
+    charging?: boolean | null | undefined
+    pending_count?: number | undefined
+  }): Promise<SessionAction> {
     if (!this.deviceId) return NONE
     await this.deps.store.touchDevice(this.deviceId, {
       last_seen_at: this.now(),
       ...(p.battery !== undefined ? { battery: p.battery } : {}),
+      ...(p.charging !== undefined && p.charging !== null ? { charging: p.charging } : {}),
     })
     return NONE
   }
