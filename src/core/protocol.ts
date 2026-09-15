@@ -94,7 +94,9 @@ export const DeviceId = z.string().min(3).max(64).regex(/^dev_[A-Za-z0-9_-]+$/)
 export const EventKind = z.enum(['sms', 'call', 'notification'])
 export type EventKind = z.infer<typeof EventKind>
 
-export const CmdAction = z.enum(['send_sms', 'query_status', 'reboot_service', 'sync_config', 'get_location'])
+export const CmdAction = z.enum([
+  'send_sms', 'query_status', 'reboot_service', 'sync_config', 'get_location', 'list_apps',
+])
 export type CmdAction = z.infer<typeof CmdAction>
 
 /**
@@ -143,6 +145,14 @@ export const AgentConfig = z.object({
   heartbeat_timeout_sec: z.number().int().min(10).max(900),
   /** 是否启用通知捕获（NotificationListenerService） */
   capture_notification: z.boolean(),
+  /**
+   * 要捕获的应用包名白名单。
+   *
+   * **空数组表示一条都不捕获**，而不是全捕获——手机上几十个应用每天产生
+   * 成百上千条通知，全捕获等于把网关变成噪音源，重要的验证码反而被淹没。
+   * 由服务端下发，Agent 不持久化（计划 §2.3 Agent 无状态）。
+   */
+  notification_packages: z.array(z.string().max(128)).max(100).default([]),
   /** v2 端到端模式开关，v1 恒为 false（计划 §3.1 决策二） */
   encrypt_payload: z.boolean(),
   /** 单次补传最大批量，避免重连瞬间打爆服务端 */
@@ -156,6 +166,7 @@ export const DEFAULT_AGENT_CONFIG: AgentConfig = {
   heartbeat_sec: DEFAULT_HEARTBEAT_SEC,
   heartbeat_timeout_sec: DEFAULT_HEARTBEAT_TIMEOUT_SEC,
   capture_notification: false,
+  notification_packages: [],
   encrypt_payload: false,
   max_batch_size: 50,
   enabled_kinds: ['sms', 'call'],
@@ -206,8 +217,15 @@ export const EventPayload = z.object({
   content: z.string().max(MAX_CONTENT_LEN),
   /** 事件真实发生时间，不是上报时间。补传时的排序依据。 */
   occurred_at: Timestamp,
-  /** 双卡槽位，0 或 1；未知为 null */
-  sim_slot: z.number().int().min(0).max(3).nullable(),
+  /**
+   * 双卡槽位，0 或 1；未知为 null。
+   *
+   * 用 nullish 而非 nullable：Kotlin 侧配置了 explicitNulls=false，
+   * 空值会被**整个省略**而不是写成 null。只写 nullable 的话，
+   * 通知这类恒无卡槽的事件会被判为非法帧整条丢掉——协议边界上的每一个
+   * 可空字段都要同时容忍「显式 null」与「字段缺失」两种写法。
+   */
+  sim_slot: z.number().int().min(0).max(3).nullish().transform((v) => v ?? null),
   extra: z
     .object({
       // 用 nullish 而非 optional：Kotlin 等语言序列化空值时给的是显式 null，
@@ -265,6 +283,21 @@ export const LocationResult = z.object({
   cached: z.boolean().default(false),
 })
 export type LocationResult = z.infer<typeof LocationResult>
+
+/**
+ * action=list_apps 的回执结构。
+ *
+ * 供控制台挑选要捕获通知的应用——让用户手敲包名是不现实的。
+ */
+export const AppListResult = z.object({
+  apps: z.array(z.object({
+    package: z.string().max(200),
+    label: z.string().max(200),
+    /** 系统应用。默认不展示，但短信、电话这些系统应用有时也需要 */
+    system: z.boolean(),
+  })).max(1000),
+})
+export type AppListResult = z.infer<typeof AppListResult>
 
 /** action=send_sms 时 args 的结构。 */
 export const SendSmsArgs = z.object({

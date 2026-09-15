@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.smsgateway.agent.net.PairingClient
+import org.smsgateway.agent.notification.NotificationCapture
 import org.smsgateway.agent.App
 import org.smsgateway.agent.databinding.ActivityMainBinding
 import org.smsgateway.agent.net.ConnState
@@ -55,6 +56,7 @@ class MainActivity : AppCompatActivity() {
         vb.unpairButton.setOnClickListener { unpair() }
         vb.permButton.setOnClickListener { requestPerms() }
         vb.batteryButton.setOnClickListener { requestBatteryWhitelist() }
+        vb.notifyButton.setOnClickListener { requestNotificationAccess() }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -91,6 +93,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("待补传：$pending 条")
             appendLine("电池：${batteryText()}")
             appendLine("电池优化白名单：${if (isIgnoringBattery()) "已加入" else "未加入"}")
+            appendLine("通知使用权：${if (NotificationCapture.isEnabled(this@MainActivity)) "已授予" else "未授予"}")
         }
     }
 
@@ -166,6 +169,20 @@ class MainActivity : AppCompatActivity() {
         val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
         val charging = runCatching { bm.isCharging }.getOrDefault(false)
         return "$level%${if (charging) " · 充电中" else " · 未充电"}"
+    }
+
+    /**
+     * 通知使用权属于「特殊访问权限」，没有运行时权限对话框，
+     * 只能跳到系统设置页由用户手动打开。
+     */
+    private fun requestNotificationAccess() {
+        if (NotificationCapture.isEnabled(this)) {
+            toast("已经授予了")
+            return
+        }
+        runCatching { startActivity(NotificationCapture.settingsIntent()) }
+            .onSuccess { toast("在列表里找到「短信网关」并打开") }
+            .onFailure { toast("此设备不支持直接跳转，请到系统设置 → 通知使用权 手动开启") }
     }
 
     private fun isIgnoringBattery(): Boolean {

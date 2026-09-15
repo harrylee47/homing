@@ -49,6 +49,10 @@ export interface ApiDeps {
   runTask?: ((task: ParsedTask) => Promise<{ sent: boolean; reason?: string }>) | undefined
   /** 向设备请求一次定位 */
   locateDevice?: ((deviceId: string) => Promise<{ ok: boolean; location?: unknown; error?: string }>) | undefined
+  /** 让设备列出已安装应用 */
+  listApps?: ((deviceId: string) => Promise<{ ok: boolean; apps?: unknown; error?: string }>) | undefined
+  /** 断开全部设备连接，迫使它们重连并拉取新配置 */
+  reconnectDevices?: (() => void) | undefined
   /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
   trustedProxy?: string | null
 }
@@ -772,6 +776,61 @@ route('POST', '/api/tasks/:id/test', async ({ res, params, deps, ip }) => {
     detail: `${row.name} ${r.sent ? '已下发' : (r.reason ?? '失败')}`, ip, created_at: now(),
   })
   json(res, r.sent ? 200 : 400, r)
+})
+
+// ── 通知捕获 ────────────────────────────────────────────────
+
+const S_NOTIFY_CAPTURE = 'notification_capture'
+
+export interface NotifyCaptureConfig { enabled: boolean; packages: string[] }
+export const DEFAULT_NOTIFY_CAPTURE: NotifyCaptureConfig = { enabled: false, packages: [] }
+
+export async function loadNotifyCapture(store: Store): Promise<NotifyCaptureConfig> {
+  const raw = await store.getSetting(S_NOTIFY_CAPTURE)
+  if (!raw) return DEFAULT_NOTIFY_CAPTURE
+  try {
+    const p = JSON.parse(raw) as Partial<NotifyCaptureConfig>
+    return {
+      enabled: p.enabled === true,
+      packages: Array.isArray(p.packages) ? p.packages.filter((x) => typeof x === 'string').slice(0, 100) : [],
+    }
+  } catch {
+    return DEFAULT_NOTIFY_CAPTURE
+  }
+}
+
+route('GET', '/api/notify-capture', async ({ res, deps }) => {
+  json(res, 200, await loadNotifyCapture(deps.store))
+})
+
+route('POST', '/api/notify-capture', async ({ res, body, deps, ip }) => {
+  const b = body as Partial<NotifyCaptureConfig>
+  const cfg: NotifyCaptureConfig = {
+    enabled: b.enabled === true,
+    packages: Array.isArray(b.packages)
+      ? [...new Set(b.packages.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 128))].slice(0, 100)
+      : [],
+  }
+  if (cfg.enabled && cfg.packages.length === 0) {
+    // 空白名单等于不捕获，直接拒绝比让用户以为开了却没反应好
+    return json(res, 400, { error: '启用时至少要选一个应用，否则不会捕获任何通知' })
+  }
+  await deps.store.setSetting(S_NOTIFY_CAPTURE, JSON.stringify(cfg))
+  await deps.store.audit({
+    actor: 'admin', action: 'notify_capture.set',
+    detail: cfg.enabled ? `${cfg.packages.length} 个应用` : '已停用', ip, created_at: now(),
+  })
+  // 配置变更后立刻重连设备，让新配置马上生效而不是等下次握手
+  if (deps.reconnectDevices) deps.reconnectDevices()
+  json(res, 200, { ok: true })
+})
+
+/** 让设备列出已安装应用，供控制台挑选。 */
+route('POST', '/api/devices/:id/apps', async ({ res, params, deps }) => {
+  if (!deps.listApps) return json(res, 500, { error: '未接入' })
+  const r = await deps.listApps(params.id!)
+  if (!r.ok) return json(res, 502, { error: r.error ?? '查询失败' })
+  json(res, 200, r.apps)
 })
 
 // ── 电量告警 ────────────────────────────────────────────────

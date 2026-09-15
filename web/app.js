@@ -1064,6 +1064,7 @@ async function settings() {
       <a href="/tasks"><button class="ghost sm">管理</button></a>
     </div>
 
+    <div id="notify"></div>
     <div id="battery"></div>
 
     <h2>时区</h2>
@@ -1106,6 +1107,7 @@ async function settings() {
     go('/login')
   }
 
+  void paintNotifyCapture()
   void paintBattery()
   void paintTimezone()
 
@@ -1150,6 +1152,131 @@ async function paintTimezone() {
       toast('已保存')
     } catch (e) { $('#tz_err').textContent = e.message }
   }
+}
+
+/**
+ * 通知捕获设置。
+ *
+ * 很多验证码走 App 推送而不是短信。必须挑具体应用——手机上几十个应用每天
+ * 产生成百上千条通知，全捕获会把验证码淹没。
+ */
+async function paintNotifyCapture() {
+  const box = $('#notify')
+  if (!box) return
+  let cfg, devs
+  try {
+    ;[cfg, devs] = await Promise.all([api('/notify-capture'), api('/devices').catch(() => ({ devices: [] }))])
+  } catch { return }
+
+  const online = devs.devices.filter((d) => d.status === 'online')
+  let picked = new Set(cfg.packages)
+  let apps = null
+  let allApps = null
+  let showSystem = false
+
+  const paint = () => {
+    box.innerHTML = `
+      <h2>应用通知捕获</h2>
+      <div class="card">
+        <p class="muted">很多验证码走 App 推送而不是短信（微信、支付宝、银行 App 的登录确认）。
+        捕获到的通知会像短信一样走规则与渠道。</p>
+        <p class="muted">需要在 Agent 里单独授予「通知使用权」——这是系统的特殊权限，
+        不能由 App 自己申请，要你在手机上手动打开。</p>
+        <label>启用</label>
+        <select id="nc_on">
+          <option value="1"${cfg.enabled ? ' selected' : ''}>启用</option>
+          <option value="0"${cfg.enabled ? '' : ' selected'}>停用</option>
+        </select>
+
+        <label>捕获哪些应用（已选 ${picked.size} 个）</label>
+        ${picked.size === 0 ? '<div class="muted">一个都没选等于不捕获。</div>' : ''}
+        <div id="nc_picked">
+          ${[...picked].map((p) => `
+            <label style="display:flex;gap:8px;align-items:center;margin:4px 0">
+              <input type="checkbox" checked data-pkg="${esc(p)}" style="width:auto">
+              <span class="mono" style="font-size:12px">${esc(p)}</span>
+            </label>`).join('')}
+        </div>
+
+        ${online.length > 0 ? `
+          <div class="btnrow">
+            <button class="ghost sm" id="nc_load">从设备读取应用列表</button>
+          </div>` : '<div class="muted">没有在线设备，无法读取应用列表。</div>'}
+        <div id="nc_apps"></div>
+
+        <div class="btnrow"><button id="nc_save" class="sm">保存</button></div>
+        <div class="muted">保存后设备会立即重连以应用新配置。</div>
+        <div id="nc_err" class="err-text"></div>
+      </div>`
+
+    for (const c of box.querySelectorAll('[data-pkg]')) {
+      c.onchange = () => { c.checked ? picked.add(c.dataset.pkg) : picked.delete(c.dataset.pkg); paint() }
+    }
+
+    const load = $('#nc_load')
+    if (load) load.onclick = async () => {
+      $('#nc_apps').innerHTML = '<div class="loading">读取中…</div>'
+      load.disabled = true
+      try {
+        allApps = await api(`/devices/${online[0].id}/apps`, { method: 'POST' })
+        apps = allApps.filter((a) => !a.system)
+        paintApps()
+      } catch (e) { $('#nc_apps').innerHTML = `<div class="err-text">${esc(e.message)}</div>` }
+      load.disabled = false
+    }
+
+    if (apps) paintApps()
+
+    $('#nc_save').onclick = async () => {
+      try {
+        await api('/notify-capture', {
+          method: 'POST',
+          body: { enabled: $('#nc_on').value === '1', packages: [...picked] },
+        })
+        toast('已保存，设备正在重连')
+        paintNotifyCapture()
+      } catch (e) { $('#nc_err').textContent = e.message }
+    }
+  }
+
+  const paintApps = () => {
+    const box2 = $('#nc_apps')
+    if (!box2 || !apps) return
+    box2.innerHTML = `
+      <label>设备上的应用</label>
+      <input id="nc_filter" placeholder="筛选应用名或包名">
+      <label style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <input type="checkbox" id="nc_sys" style="width:auto"${showSystem ? ' checked' : ''}>
+        <span>显示系统应用</span>
+      </label>
+      <div class="muted">这台机器上有用的可能恰恰是系统应用（如自带短信、通话）。</div>
+      <div id="nc_list" style="max-height:280px;overflow-y:auto;margin-top:8px"></div>`
+
+    const renderList = (kw = '') => {
+      const list = apps.filter((a) => !kw || a.label.toLowerCase().includes(kw) || a.package.toLowerCase().includes(kw))
+      $('#nc_list').innerHTML = list.slice(0, 200).map((a) => `
+        <label style="display:flex;gap:8px;align-items:center;margin:4px 0">
+          <input type="checkbox" data-app="${esc(a.package)}" style="width:auto"${picked.has(a.package) ? ' checked' : ''}>
+          <span class="col" style="gap:0">
+            <span>${esc(a.label)}</span>
+            <span class="muted mono" style="font-size:11px">${esc(a.package)}</span>
+          </span>
+        </label>`).join('') + (list.length > 200 ? '<div class="muted">只显示前 200 个，用上面的筛选框缩小范围。</div>' : '')
+
+      for (const c of $('#nc_list').querySelectorAll('[data-app]')) {
+        c.onchange = () => { c.checked ? picked.add(c.dataset.app) : picked.delete(c.dataset.app) }
+      }
+    }
+    renderList()
+    $('#nc_filter').oninput = (e) => renderList(e.target.value.trim().toLowerCase())
+    $('#nc_sys').onchange = (e) => {
+      showSystem = e.target.checked
+      apps = showSystem ? allApps : allApps.filter((a) => !a.system)
+      paintApps()
+    }
+  }
+
+  paint()
 }
 
 /** 电量告警：阈值为 0 表示关闭该项。 */

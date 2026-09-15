@@ -26,6 +26,8 @@ export interface SessionDeps {
   /** 控制台地址，供通知生成深链 */
   baseUrl?: string | null
   config?: AgentConfig
+  /** 每次握手时动态生成配置。优先于静态 config。 */
+  loadConfig?: (() => Promise<AgentConfig>) | undefined
   /** 可注入，便于测试 */
   now?: () => number
   /** 查询类指令的结果回调（如 get_location）。 */
@@ -182,11 +184,15 @@ export class DeviceSession {
       pending_count: p.pending_count,
     })
 
+    // 每次握手都取当前配置：Agent 不持久化业务配置，服务端改了设置
+    // 只需让设备重连即可生效
+    const config = this.deps.loadConfig ? await this.deps.loadConfig() : this.config
+
     return {
       send: [
         makeFrame(
           'hello_ack',
-          { server_time: this.now(), config: this.config, known_event_ids: [] },
+          { server_time: this.now(), config, known_event_ids: [] },
           this.now(),
         ) as DownstreamFrame,
       ],

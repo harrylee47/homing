@@ -12,10 +12,27 @@ const classify = (content: string, kind: MatchableEvent['kind'] = 'sms') => {
 }
 
 describe('建议规则集：按消息类型分类', () => {
-  it('四条规则，顺序即语义', () => {
-    expect(rules.map((r) => r.name)).toEqual(['验证码', '广告推广', '普通短信', '来电'])
-    expect(rules.map((r) => r.priority)).toEqual([10, 20, 100, 110])
+  it('五条规则，顺序即语义', () => {
+    expect(rules.map((r) => r.name)).toEqual(['验证码', '广告推广', '普通短信', '应用通知', '来电'])
+    expect(rules.map((r) => r.priority)).toEqual([10, 20, 100, 90, 110])
     expect(rules.every((r) => r.action.stop_processing)).toBe(true)
+  })
+
+  it('应用通知走独立规则，不被短信规则捕获', () => {
+    const r = evaluate(rules, {
+      device_id: 'dev_1', kind: 'notification', from: '中国建设银行',
+      content: '您的登录验证码是 662211', occurred_at: Date.now(),
+    })
+    expect(r.name ?? r.matched[0]?.name).toBe('应用通知')
+    expect(r.priority).toBe('high')
+  })
+
+  it('应用通知也提取验证码 —— 很多验证码走 App 推送', () => {
+    expect(rules.find((r) => r.name === '应用通知')!.action.extract_code).toBe(true)
+  })
+
+  it('应用通知有独立的 Bark 分组，不与短信混在一起', () => {
+    expect(rules.find((r) => r.name === '应用通知')!.action.bark?.group).toBe('应用通知')
   })
 
   describe('验证码', () => {

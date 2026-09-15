@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- 采集 -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
@@ -16,6 +17,14 @@
       没有它「查找设备」只在你恰好打开 App 时才有效，那就失去意义了。
     -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!--
+      Android 11+ 起，应用默认只能看到自己和少数系统应用。不声明这个权限的话
+      「列出已安装应用供选择通知捕获对象」只会返回本应用一个，功能形同虚设。
+      仅用于让用户在控制台里挑选应用，不做任何其他用途。
+    -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
 
     <!-- 上报 -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -46,6 +55,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          通知捕获。很多验证码走 App 推送而不是短信。
+          需要用户在系统设置里手动授予「通知使用权」，无法用运行时权限申请。
+        -->
+        <service
+            android:name=".notification.NotificationCapture"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".service.GatewayService"

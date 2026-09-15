@@ -13,10 +13,10 @@ import { dispatch } from '../../core/notifier.js'
 import { runTask as runOneTask, tick as tasksTick, type ParsedTask } from '../../core/tasks.js'
 import { checkDevices } from '../../core/monitor.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
-import { LocationResult, type DownstreamFrame } from '../../core/protocol.js'
+import { AppListResult, LocationResult, type DownstreamFrame } from '../../core/protocol.js'
 import { PROVIDERS } from '../../core/notifier.js'
 import { TelegramConfig } from '../../core/providers/telegram.js'
-import { barkAccess, getOrCreateBotToken, handleApi, isInitialized, timezone } from './api.js'
+import { barkAccess, getOrCreateBotToken, handleApi, isInitialized, loadNotifyCapture, timezone } from './api.js'
 import { TelegramBot } from './bot.js'
 import { isBarkAllowed, isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
@@ -45,6 +45,16 @@ const wss = createWsServer({
   heartbeatSec: DEFAULT_AGENT_CONFIG.heartbeat_sec,
   baseUrl: cfg.baseUrl,
   onQueryResult,
+  // 每次握手都按当前设置生成配置，Agent 不持久化业务配置（计划 §2.3）
+  agentConfig: async () => {
+    const n = await loadNotifyCapture(store)
+    return {
+      ...DEFAULT_AGENT_CONFIG,
+      capture_notification: n.enabled,
+      notification_packages: n.packages,
+      enabled_kinds: n.enabled ? ['sms', 'call', 'notification'] as const : ['sms', 'call'] as const,
+    }
+  },
 })
 
 /**
@@ -88,20 +98,28 @@ function onQueryResult(cmdId: string, ok: boolean, detail: Record<string, unknow
   resolve({ ok, detail, error })
 }
 
+/** 通用的查询类指令：下发后等回执或超时。 */
+async function queryDevice(
+  deviceId: string, action: 'get_location' | 'list_apps', timeoutMs: number,
+): Promise<{ ok: boolean; detail: Record<string, unknown> | null; error: string | null }> {
+  const cmdId = `cmd_${crypto.randomUUID()}`
+  const frame = makeFrame('cmd', { cmd_id: cmdId, action, args: {} }) as DownstreamFrame
+  if (!hub.send(deviceId, frame)) return { ok: false, detail: null, error: '设备离线' }
+
+  return new Promise((resolve) => {
+    pendingQueries.set(cmdId, resolve)
+    setTimeout(() => {
+      if (pendingQueries.delete(cmdId)) {
+        resolve({ ok: false, detail: null, error: `设备未在 ${Math.round(timeoutMs / 1000)} 秒内响应` })
+      }
+    }, timeoutMs)
+  })
+}
+
 /** 向设备请求一次定位，等待回执或超时。 */
 async function locateDevice(deviceId: string): Promise<{ ok: boolean; location?: unknown; error?: string }> {
-  const cmdId = `cmd_${crypto.randomUUID()}`
-  const frame = makeFrame('cmd', { cmd_id: cmdId, action: 'get_location', args: {} }) as DownstreamFrame
-  if (!hub.send(deviceId, frame)) return { ok: false, error: '设备离线' }
-
-  const result = await new Promise<{ ok: boolean; detail: Record<string, unknown> | null; error: string | null }>((resolve) => {
-    pendingQueries.set(cmdId, resolve)
-    // GPS 冷启动可能要十几秒，Agent 侧自己也有 20 秒上限，这里留足余量
-    setTimeout(() => {
-      if (pendingQueries.delete(cmdId)) resolve({ ok: false, detail: null, error: '设备未在 40 秒内返回位置' })
-    }, 40_000)
-  })
-
+  // GPS 冷启动可能要十几秒，Agent 侧自己有 25 秒上限，这里留足余量
+  const result = await queryDevice(deviceId, 'get_location', 40_000)
   if (!result.ok) return { ok: false, error: result.error ?? '定位失败' }
 
   const parsed = LocationResult.safeParse(result.detail)
@@ -112,6 +130,28 @@ async function locateDevice(deviceId: string): Promise<{ ok: boolean; location?:
   return { ok: true, location: parsed.data }
 }
 
+/** 让设备列出已安装应用。 */
+async function listApps(deviceId: string): Promise<{ ok: boolean; apps?: unknown; error?: string }> {
+  const result = await queryDevice(deviceId, 'list_apps', 25_000)
+  if (!result.ok) return { ok: false, error: result.error ?? '查询失败' }
+  const parsed = AppListResult.safeParse(result.detail)
+  if (!parsed.success) return { ok: false, error: '设备返回的应用列表格式不正确' }
+  return { ok: true, apps: parsed.data.apps }
+}
+
+/**
+ * 断开全部设备，迫使它们重连并拉取新配置。
+ *
+ * 配置只在握手时下发，改完不重连就要等到下次断线才生效——
+ * 用户改了设置却看不到效果，会以为坏了。断开后 Agent 1 秒内就会重连。
+ */
+function reconnectDevices(): void {
+  for (const id of hub.onlineDevices()) {
+    hub.get(id)?.close(1000, 'config changed')
+  }
+  log.info('已断开全部设备以应用新配置')
+}
+
 const apiDeps = {
   store, cipher, hub, adminToken: cfg.adminToken,
   barkUpstream: cfg.barkUpstream,
@@ -119,6 +159,8 @@ const apiDeps = {
   // apiDeps 在 taskDeps 之前定义，用函数包一层避免 TDZ
   runTask: (task: ParsedTask) => runTaskNow(task),
   locateDevice,
+  listApps,
+  reconnectDevices,
   barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
   onUnknownIpLogin: (ip: string) => void (async () => {

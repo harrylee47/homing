@@ -104,6 +104,17 @@ data class CmdResultPayload(
     val detail: JsonElement? = null,
 )
 
+/** list_apps 的回执内容。 */
+@Serializable
+data class AppInfo(
+    val `package`: String,
+    val label: String,
+    val system: Boolean,
+)
+
+@Serializable
+data class AppListResult(val apps: List<AppInfo>)
+
 /** get_location 的回执内容。位置与短信正文同等敏感，服务端加密落库。 */
 @Serializable
 data class LocationResult(
@@ -133,6 +144,8 @@ data class AgentConfig(
     @SerialName("heartbeat_sec") val heartbeatSec: Int = Protocol.DEFAULT_HEARTBEAT_SEC,
     @SerialName("heartbeat_timeout_sec") val heartbeatTimeoutSec: Int = Protocol.DEFAULT_HEARTBEAT_TIMEOUT_SEC,
     @SerialName("capture_notification") val captureNotification: Boolean = false,
+    /** 要捕获通知的应用包名白名单。空 = 一条都不捕获 */
+    @SerialName("notification_packages") val notificationPackages: List<String> = emptyList(),
     @SerialName("encrypt_payload") val encryptPayload: Boolean = false,
     @SerialName("max_batch_size") val maxBatchSize: Int = 50,
     @SerialName("enabled_kinds") val enabledKinds: List<String> = listOf("sms", "call"),

@@ -167,6 +167,22 @@ class WsClient(
                 if (!closed.isCompleted) closed.complete(Unit)
             }
 
+            /**
+             * 服务端主动关闭时先走这里。
+             *
+             * **必须回应关闭帧**，否则 OkHttp 不会触发 onClosed，
+             * 重连循环会一直阻塞在 closed.await() 上，直到 90 秒后心跳
+             * 看门狗才把连接 cancel 掉——服务端改个配置要等一分半才生效。
+             */
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                Log.i("对端关闭连接 code=$code reason=$reason")
+                runCatching { webSocket.close(1000, null) }
+                // 不等 onClosed：部分情况下回应后对端已断开，回调不一定到达
+                cleanup()
+                if (!connected.isCompleted) connected.complete(false)
+                if (!closed.isCompleted) closed.complete(Unit)
+            }
+
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.i("连接关闭 code=$code reason=$reason")
                 cleanup()
@@ -229,6 +245,12 @@ class WsClient(
             "hello_ack" -> {
                 val p = Protocol.json.decodeFromJsonElement(HelloAckPayload.serializer(), env.payload)
                 config = p.config
+                // 配置以服务端为准，每次握手刷新
+                runCatching {
+                    val app = org.smsgateway.agent.App.get()
+                    app.captureNotification = p.config.captureNotification
+                    app.notificationPackages = p.config.notificationPackages.toSet()
+                }
                 attempt = 0
                 _state.value = ConnState.Connected(System.currentTimeMillis())
                 Log.i("已连接，心跳 ${config.heartbeatSec}s，启用类型 ${config.enabledKinds}")
@@ -281,7 +303,41 @@ class WsClient(
         when (cmd.action) {
             "send_sms" -> onSendSms(cmd)
             "get_location" -> onGetLocation(cmd)
+            "list_apps" -> onListApps(cmd)
             else -> report(cmd.cmdId, "failed", "尚未实现：${cmd.action}")
+        }
+    }
+
+    /**
+     * 列出已安装应用，供控制台挑选要捕获通知的对象——让用户手敲包名不现实。
+     */
+    private fun onListApps(cmd: CmdPayload) {
+        report(cmd.cmdId, "accepted", null)
+        scope.launch {
+            val apps = runCatching {
+                val pm = ctx.packageManager
+                pm.getInstalledApplications(0)
+                    .mapNotNull { info ->
+                        val label = runCatching { pm.getApplicationLabel(info).toString() }.getOrNull() ?: return@mapNotNull null
+                        AppInfo(
+                            `package` = info.packageName,
+                            label = label,
+                            system = (info.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0,
+                        )
+                    }
+                    .sortedBy { it.label }
+                    .take(1000)
+            }.getOrNull()
+
+            if (apps == null) {
+                report(cmd.cmdId, "failed", "读取应用列表失败")
+                return@launch
+            }
+            val socket = ws ?: return@launch
+            socket.send(frame("cmd_result", CmdResultPayload(
+                cmd.cmdId, "done", null,
+                Protocol.json.encodeToJsonElement(AppListResult.serializer(), AppListResult(apps)),
+            )))
         }
     }
 

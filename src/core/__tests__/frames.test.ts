@@ -53,6 +53,30 @@ describe('帧解析', () => {
     expect(parseUpstream(encodeFrame(f), NOW).ok).toBe(false)
   })
 
+  it('缺失 sim_slot 的事件仍然合法 —— Kotlin 会省略空字段而非写 null', () => {
+    const f = makeFrame('event', {
+      id: `evt_${crypto.randomUUID()}`,
+      device_id: 'dev_test01',
+      kind: 'notification',
+      from: '中国建设银行',
+      content: '您的验证码是 662211',
+      occurred_at: NOW,
+      // 故意不带 sim_slot：通知类事件恒无卡槽
+      extra: { package: 'com.example.bank' },
+    }, NOW)
+    const r = parseUpstream(encodeFrame(f), NOW)
+    expect(r.ok).toBe(true)
+    if (r.ok && r.frame.type === 'event') expect(r.frame.payload.sim_slot).toBeNull()
+  })
+
+  it('显式 null 的 sim_slot 同样合法', () => {
+    const f = makeFrame('event', {
+      id: `evt_${crypto.randomUUID()}`, device_id: 'dev_test01', kind: 'sms',
+      from: '95533', content: 'x', occurred_at: NOW, sim_slot: null, extra: {},
+    }, NOW)
+    expect(parseUpstream(encodeFrame(f), NOW).ok).toBe(true)
+  })
+
   it('event 的 occurred_at 可以很旧（补传场景）', () => {
     const f = makeFrame('event', {
       id: `evt_${crypto.randomUUID()}`,

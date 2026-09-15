@@ -68,6 +68,19 @@ export const SEED_RULES: SeedSpec[] = [
     },
   },
   {
+    // App 通知：很多验证码走推送而不是短信（微信、支付宝、银行 App）。
+    // 单列一条是为了能给它单独的 Bark 分组与优先级——与短信混在一起
+    // 就没法区分「银行短信」和「银行 App 推送」了。
+    name: '应用通知',
+    priority: 90,
+    match: { kind: ['notification'] },
+    action: {
+      priority: 'high', extract_code: true,
+      template: '【{sender}】{content}', archive: true, stop_processing: true,
+      bark: { level: 'timeSensitive', group: '应用通知', auto_copy_code: true, deep_link: 'event' },
+    },
+  },
+  {
     name: '来电',
     priority: 110,
     match: { kind: ['call'] },

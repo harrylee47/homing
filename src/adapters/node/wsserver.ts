@@ -9,7 +9,7 @@ import type { Cipher } from '../../core/crypto.js'
 import type { Connection, Hub } from '../../core/hub.js'
 import { encodeFrame, makeFrame } from '../../core/frames.js'
 import { log } from '../../core/logging.js'
-import type { DownstreamFrame } from '../../core/protocol.js'
+import type { AgentConfig, DownstreamFrame } from '../../core/protocol.js'
 import { DeviceSession } from '../../core/session.js'
 import type { Store } from '../../core/store.js'
 
@@ -21,6 +21,8 @@ export interface WsServerDeps {
   baseUrl: string | null
   /** 查询类指令的结果回调 */
   onQueryResult?: ((cmdId: string, ok: boolean, detail: Record<string, unknown> | null, error: string | null) => void) | undefined
+  /** 每次握手时生成下发给 Agent 的配置 */
+  agentConfig?: (() => Promise<AgentConfig>) | undefined
 }
 
 /**
@@ -41,6 +43,7 @@ export function createWsServer(deps: WsServerDeps): WebSocketServer {
     const session = new DeviceSession({
       store: deps.store, cipher: deps.cipher, hub: deps.hub, baseUrl: deps.baseUrl,
       onQueryResult: deps.onQueryResult,
+      loadConfig: deps.agentConfig,
     })
     let alive = true
     let seq = 0

@@ -26,6 +26,15 @@ class App : Application() {
     lateinit var ws: WsClient
         private set
 
+    /**
+     * 通知捕获配置，由服务端经 hello_ack.config 下发。
+     *
+     * 放在内存而不是落盘：Agent 无状态（计划 §2.3），配置以服务端为准，
+     * 每次握手都会重新下发。
+     */
+    @Volatile var captureNotification: Boolean = false
+    @Volatile var notificationPackages: Set<String> = emptySet()
+
     override fun onCreate() {
         super.onCreate()
         instance = this
