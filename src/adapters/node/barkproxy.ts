@@ -18,6 +18,32 @@ import { log } from '../../core/logging.js'
 
 export const BARK_PREFIX = '/bark'
 
+/**
+ * 对外开放程度。
+ *
+ * - off：完全关闭。只有网关自己（走内部地址）能推送。
+ * - push：**允许推送，禁止注册**。其它服务可以拿已知的 device key 推送，
+ *   但陌生人无法在这台服务器上注册新设备，也就无法把它当免费中转用。
+ *   device key 本身是一串随机值，不知道就推不了——这是推荐档位。
+ * - full：注册与推送都开放。仅在 Bark App 首次绑定或换设备时临时开启。
+ */
+export type BarkAccess = 'off' | 'push' | 'full'
+
+/** 注册类路径。push 档位下拦掉这些，其余放行。 */
+const REGISTER_PATHS = ['/register']
+
+export function isRegisterPath(pathAfterPrefix: string): boolean {
+  const p = (pathAfterPrefix.split('?')[0] ?? '').replace(/\/+$/, '') || '/'
+  return REGISTER_PATHS.some((r) => p === r || p.startsWith(`${r}/`))
+}
+
+/** 给定档位，判断这个请求是否放行。 */
+export function isBarkAllowed(access: BarkAccess, url: string): boolean {
+  if (access === 'off') return false
+  if (access === 'full') return true
+  return !isRegisterPath(url.slice(BARK_PREFIX.length) || '/')
+}
+
 /** 请求体上限：Bark 的推送体很小，给 64KB 足够，超出即拒绝。 */
 const MAX_BODY = 64 * 1024
 

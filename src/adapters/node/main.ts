@@ -9,8 +9,8 @@ import { loadConfig } from './config.js'
 import { MemoryHub } from './hub.js'
 import { SqliteStore } from './store.js'
 import { dispatch } from '../../core/notifier.js'
-import { handleApi, isBarkPublic, isInitialized } from './api.js'
-import { isBarkPath, proxyBark } from './barkproxy.js'
+import { barkAccess, handleApi, isInitialized } from './api.js'
+import { isBarkAllowed, isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
 import { createWsServer, isAllowedAgentOrigin } from './wsserver.js'
 
@@ -80,9 +80,10 @@ const server = createServer((req, res) => {
   if (cfg.barkUpstream && isBarkPath(req.url)) {
     void (async () => {
       if (!(await isInitialized(store))) { res.writeHead(403).end(); return }
-      if (!(await isBarkPublic(store))) {
-        // 未开放时返回 404 而非 403：不确认这里存在一个 Bark 服务
-        log.debug('Bark 对外访问被拒（未开放）', { ip: req.socket.remoteAddress })
+      const access = await barkAccess(store)
+      if (!isBarkAllowed(access, req.url ?? '')) {
+        // 被拒时返回 404 而非 403：不确认这里存在一个 Bark 服务
+        log.debug('Bark 请求被拒', { access, path: (req.url ?? '').split('?')[0], ip: req.socket.remoteAddress })
         res.writeHead(404).end()
         return
       }

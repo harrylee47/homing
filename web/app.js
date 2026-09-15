@@ -597,29 +597,39 @@ async function channels() {
         <div id="err" class="err-text"></div>
       </div>
       ${bark?.upstream ? `
-      <h2>Bark 对外访问</h2>
+      <h2>Bark 服务对外开放</h2>
       <div class="card">
-        <div class="row">
-          <div class="col grow">
-            <b>${bark.public_enabled ? '已开放' : '已关闭'}</b>
-            <span class="muted">${bark.public_enabled
-              ? '任何知道地址的人都能在这台服务器上注册设备。注册完请关掉。'
-              : '外部无法访问。网关自己的推送走内部地址，不受影响。'}</span>
-          </div>
-          <button class="${bark.public_enabled ? 'danger' : 'ghost'} sm" id="barktoggle">
-            ${bark.public_enabled ? '关闭' : '临时开启'}
-          </button>
-        </div>
+        <p class="muted">这台自建 Bark 也可以给你的其它服务用，推送地址：</p>
+        <div class="mono wrap card tight" style="font-size:12px">${esc(bark.public_url || '')}/&lt;设备Key&gt;</div>
+        <label>开放档位</label>
+        <select id="barkaccess">
+          <option value="push"${bark.access === 'push' ? ' selected' : ''}>允许推送，禁止注册（推荐）</option>
+          <option value="full"${bark.access === 'full' ? ' selected' : ''}>完全开放（注册 + 推送）</option>
+          <option value="off"${bark.access === 'off' ? ' selected' : ''}>完全关闭</option>
+        </select>
+        <div class="muted" id="barkdesc" style="margin-top:8px"></div>
       </div>` : ''}`)
 
-    const bt = $('#barktoggle')
-    if (bt) bt.onclick = async () => {
-      bt.disabled = true
-      try {
-        await api('/bark/public', { method: 'POST', body: { enabled: !bark.public_enabled } })
-        toast(bark.public_enabled ? '已关闭对外访问' : '已开启，注册完记得关掉')
-        channels()
-      } catch (e) { toast(e.message); bt.disabled = false }
+    const sel = $('#barkaccess')
+    if (sel) {
+      const DESC = {
+        push: '其它服务可以拿已知的设备 Key 推送。陌生人无法注册新设备，也就无法把这台服务器当免费中转用——Key 是随机串，不知道就推不了。',
+        full: '注册也开放。只在用 Bark App 绑定新设备时才需要，绑完建议调回「允许推送」。',
+        off: '外部完全不可用。网关自己的推送走内部地址，不受影响；arm 上的其它服务仍可用 127.0.0.1:2334。',
+      }
+      const paintDesc = () => { $('#barkdesc').textContent = DESC[sel.value] }
+      paintDesc()
+      sel.onchange = async () => {
+        const v = sel.value
+        sel.disabled = true
+        try {
+          await api('/bark/access', { method: 'POST', body: { access: v } })
+          bark.access = v
+          paintDesc()
+          toast('已切换')
+        } catch (e) { toast(e.message) }
+        sel.disabled = false
+      }
     }
 
     const FORMS = {
@@ -627,10 +637,10 @@ async function channels() {
         name: '主 Bark',
         html: `<div class="card tight" style="background:var(--bg)">
                  <b>第一步：在 Bark App 里注册</b>
-                 <div class="muted" style="margin:6px 0 4px">需要先在下方「Bark 对外访问」里临时开启，然后 iOS 装 Bark → 右上角「服务器」→ 填：</div>
+                 <div class="muted" style="margin:6px 0 4px">先把下方「开放档位」调成「完全开放」，然后 iOS 装 Bark → 右上角「服务器」→ 填：</div>
                  <div class="mono wrap" style="font-size:13px;padding:6px 0"><b>${esc(bark?.public_url || `${location.origin}/bark`)}</b></div>
                  <button class="ghost sm" id="copyurl" type="button">复制地址</button>
-                 <div class="muted" style="margin-top:8px">App 首页会显示一串设备 Key，填到下面，然后把对外访问关掉。</div>
+                 <div class="muted" style="margin-top:8px">App 首页会显示一串设备 Key，填到下面，然后把档位调回「允许推送」。</div>
                </div>
                <label>推送地址（网关内部使用，不走公网）</label>
                <input id="f_server" class="mono" value="${esc(bark?.upstream || '')}" placeholder="http://bark:8080">

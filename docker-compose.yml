@@ -45,9 +45,11 @@ services:
     image: finab/bark-server:latest
     container_name: bark-server
     restart: unless-stopped
-    # 不发布端口：只由网关经内部网络访问
-    expose:
-      - "8080"
+    # 同时发布到宿主机回环：arm 上的其它服务可以直接用
+    # http://127.0.0.1:2334 推送，不必经过公网路径。
+    # 公网入口由网关的 /bark/* 提供，档位在控制台里调。
+    ports:
+      - "127.0.0.1:2334:8080"
     volumes:
       - ./bark-data:/data
     environment:

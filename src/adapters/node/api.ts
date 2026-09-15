@@ -23,6 +23,7 @@ import type { DownstreamFrame } from '../../core/protocol.js'
 import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
+import type { BarkAccess } from './barkproxy.js'
 import type { Store } from '../../core/store.js'
 
 export interface ApiDeps {
@@ -43,8 +44,8 @@ export interface ApiDeps {
 const S_PASSWORD = 'admin_password_hash'
 const S_TOTP = 'totp_secret'
 const S_INITIALIZED = 'initialized'
-/** Bark 反代是否对外开放。默认关闭——开放等于把推送服务白送给全网。 */
-const S_BARK_PUBLIC = 'bark_public'
+/** Bark 反代的对外开放档位：off / push / full。默认 push。 */
+const S_BARK_ACCESS = 'bark_access'
 
 type Handler = (ctx: Ctx) => Promise<void>
 interface Ctx {
@@ -435,34 +436,37 @@ const tzOffsetMin = (): number => -new Date().getTimezoneOffset()
 
 // ── Bark 设置 ───────────────────────────────────────────────
 
-export async function isBarkPublic(store: Store): Promise<boolean> {
-  return (await store.getSetting(S_BARK_PUBLIC)) === '1'
+/**
+ * 默认 push：其它服务可以拿已知的 device key 推送，但陌生人不能注册新设备。
+ * 老部署里存的是布尔值 bark_public，这里做一次兼容映射。
+ */
+export async function barkAccess(store: Store): Promise<BarkAccess> {
+  const v = await store.getSetting(S_BARK_ACCESS)
+  if (v === 'off' || v === 'push' || v === 'full') return v
+  const legacy = await store.getSetting('bark_public')
+  if (legacy === '1') return 'full'
+  if (legacy === '0') return 'off'
+  return 'push'
 }
 
 route('GET', '/api/bark/info', async ({ res, deps }) => {
   json(res, 200, {
     // 网关推送走内部地址，不绕公网；渠道配置里就该填这个
     upstream: deps.barkUpstream ?? null,
-    // Bark App 里填这个，用于注册与令牌刷新
+    // 其它服务与 Bark App 用这个
     public_url: deps.barkPublicUrl ?? null,
-    public_enabled: await isBarkPublic(deps.store),
+    access: await barkAccess(deps.store),
   })
 })
 
-/**
- * 开关对外开放。
- *
- * 典型用法是临时开启：在 Bark App 里完成注册拿到 device key，然后关掉。
- * 关闭后网关自己的推送不受影响——它走内部地址。
- */
-route('POST', '/api/bark/public', async ({ res, body, deps, ip }) => {
-  const on = (body as { enabled?: boolean })?.enabled === true
-  await deps.store.setSetting(S_BARK_PUBLIC, on ? '1' : '0')
-  await deps.store.audit({
-    actor: 'admin', action: on ? 'bark.public_on' : 'bark.public_off',
-    detail: null, ip, created_at: now(),
-  })
-  json(res, 200, { public_enabled: on })
+route('POST', '/api/bark/access', async ({ res, body, deps, ip }) => {
+  const v = (body as { access?: string })?.access
+  if (v !== 'off' && v !== 'push' && v !== 'full') {
+    return json(res, 400, { error: 'access 必须是 off / push / full' })
+  }
+  await deps.store.setSetting(S_BARK_ACCESS, v)
+  await deps.store.audit({ actor: 'admin', action: `bark.access.${v}`, detail: null, ip, created_at: now() })
+  json(res, 200, { access: v })
 })
 
 // ── 总览统计 ────────────────────────────────────────────────
