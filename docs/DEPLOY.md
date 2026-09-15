@@ -30,7 +30,7 @@ docker version                                   # 能打印版本就成了
 
 ```bash
 mkdir -p /opt && cd /opt
-git clone --depth 1 https://github.com/harryzhu/smsgateway.git
+git clone --depth 1 https://github.com/rikouu/smsgateway.git
 cd smsgateway
 ```
 

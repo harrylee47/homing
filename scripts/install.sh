@@ -16,7 +16,7 @@ set -euo pipefail
 
 # ── 可调项（都可以用环境变量覆盖）────────────────────────────
 
-REPO="${SMSGW_REPO:-https://github.com/harryzhu/smsgateway.git}"
+REPO="${SMSGW_REPO:-https://github.com/rikouu/smsgateway.git}"
 DIR="${SMSGW_DIR:-/opt/smsgateway}"
 BRANCH="${SMSGW_BRANCH:-main}"
 # 留空表示自动探测公网 IP

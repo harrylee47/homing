@@ -83,7 +83,7 @@ Telegram 的反欺诈系统会封禁转发验证码的机器人——这是踩�
 SSH 连上你那台**全新的** VPS，粘贴这三行：
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/harryzhu/smsgateway/main/scripts/install.sh
+curl -fsSLO https://raw.githubusercontent.com/rikouu/smsgateway/main/scripts/install.sh
 less install.sh          # 花一分钟看看它要干什么，养成好习惯
 sudo bash install.sh
 ```
@@ -124,7 +124,7 @@ sudo bash install.sh
 
 ## 第二步：装手机 App
 
-1. 到 [Releases](https://github.com/harryzhu/smsgateway/releases) 下载最新的 `smsgateway-agent.apk`
+1. 到 [Releases](https://github.com/rikouu/smsgateway/releases) 下载最新的 `smsgateway-agent.apk`
 2. 传到那台安卓手机上安装（会提示「未知来源」，允许即可）
 3. 打开 App，点 **申请权限**，把短信、通话、电话状态几项都允许
 4. 回到电脑上的控制台 → **设备** 页 → 填个名字（比如「家里的手机」）→ **生成配对码**
