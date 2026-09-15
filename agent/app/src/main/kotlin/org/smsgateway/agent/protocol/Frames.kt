@@ -80,6 +80,10 @@ data class EventExtra(
     @SerialName("call_type") val callType: String? = null,
     val `package`: String? = null,
     val truncated: Boolean? = null,
+    /** in=收到，out=本机发出。缺省按 in 处理 */
+    val direction: String? = null,
+    /** 历史导入：服务端只归档不推送 */
+    val imported: Boolean? = null,
 )
 
 @Serializable
@@ -144,11 +148,27 @@ data class AgentConfig(
     @SerialName("heartbeat_sec") val heartbeatSec: Int = Protocol.DEFAULT_HEARTBEAT_SEC,
     @SerialName("heartbeat_timeout_sec") val heartbeatTimeoutSec: Int = Protocol.DEFAULT_HEARTBEAT_TIMEOUT_SEC,
     @SerialName("capture_notification") val captureNotification: Boolean = false,
-    /** 要捕获通知的应用包名白名单。空 = 一条都不捕获 */
+    /** all = 全部应用（含以后新装的）；selected = 仅白名单 */
+    @SerialName("notification_scope") val notificationScope: String = "selected",
+    /** notificationScope=selected 时的白名单 */
     @SerialName("notification_packages") val notificationPackages: List<String> = emptyList(),
     @SerialName("encrypt_payload") val encryptPayload: Boolean = false,
     @SerialName("max_batch_size") val maxBatchSize: Int = 50,
     @SerialName("enabled_kinds") val enabledKinds: List<String> = listOf("sms", "call"),
+    @SerialName("sms_command") val smsCommand: SmsCommandConfig = SmsCommandConfig(),
+)
+
+/** 历史导入结果。与服务端 protocol.ts 的 ImportResult 对应。 */
+@Serializable
+data class ImportResult(val sms: Int, val calls: Int, val skipped: Int)
+
+/** 短信指令配置。语义见服务端 protocol.ts 的 SmsCommandConfig。 */
+@Serializable
+data class SmsCommandConfig(
+    val enabled: Boolean = false,
+    val secret: String = "",
+    @SerialName("allow_numbers") val allowNumbers: List<String> = emptyList(),
+    val reply: Boolean = true,
 )
 
 @Serializable

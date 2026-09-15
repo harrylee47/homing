@@ -19,6 +19,7 @@ import okhttp3.WebSocketListener
 import org.smsgateway.agent.BuildConfig
 import org.smsgateway.agent.db.AgentDatabase
 import org.smsgateway.agent.db.PendingEvent
+import org.smsgateway.agent.history.HistoryImporter
 import org.smsgateway.agent.protocol.*
 import org.smsgateway.agent.location.Locator
 import org.smsgateway.agent.sms.SmsSender
@@ -85,6 +86,18 @@ class WsClient(
         ws?.close(1000, "stopped")
         ws = null
         _state.value = ConnState.Idle
+    }
+
+    /**
+     * 断开重连。短信指令的「重连」用它——人在外面发现网关掉线，
+     * 至少能让它立刻重试一次，而不是干等退避。
+     */
+    fun restart() {
+        Log.i("收到重连请求")
+        ws?.close(1000, "restart")
+        ws = null
+        attempt = 0
+        if (!running) start() else scope.launch { refreshPending() }
     }
 
     /** 收到新事件：先落本地队列，再尝试立刻发送。落库在前，保证不丢。 */
@@ -249,7 +262,10 @@ class WsClient(
                 runCatching {
                     val app = org.smsgateway.agent.App.get()
                     app.captureNotification = p.config.captureNotification
+                    app.notificationScope = p.config.notificationScope
                     app.notificationPackages = p.config.notificationPackages.toSet()
+                    // 唯一落盘的业务配置：断网时短信指令还要能用（见 Prefs.smsCommand）
+                    app.prefs.smsCommand = p.config.smsCommand
                 }
                 attempt = 0
                 _state.value = ConnState.Connected(System.currentTimeMillis())
@@ -304,7 +320,34 @@ class WsClient(
             "send_sms" -> onSendSms(cmd)
             "get_location" -> onGetLocation(cmd)
             "list_apps" -> onListApps(cmd)
+            "import_history" -> onImportHistory(cmd)
             else -> report(cmd.cmdId, "failed", "尚未实现：${cmd.action}")
+        }
+    }
+
+    /**
+     * 导入手机里已有的历史短信与通话。
+     *
+     * 在 IO 线程上跑：几千行游标遍历加解析，放在 WS 回调线程上会把心跳一起堵住。
+     */
+    private fun onImportHistory(cmd: CmdPayload) {
+        report(cmd.cmdId, "accepted", null)
+        scope.launch {
+            val since = (cmd.args["since"] as? String)?.toLongOrNull()
+            val limit = (cmd.args["limit"] as? String)?.toIntOrNull() ?: 1000
+            val r = runCatching { HistoryImporter.run(ctx, since, limit) }
+            r.fold(
+                onSuccess = { out ->
+                    val socket = ws ?: return@launch
+                    socket.send(frame("cmd_result", CmdResultPayload(
+                        cmd.cmdId, "done", null,
+                        Protocol.json.encodeToJsonElement(
+                            ImportResult.serializer(), ImportResult(out.sms, out.calls, out.skipped),
+                        ),
+                    )))
+                },
+                onFailure = { report(cmd.cmdId, "failed", it.message ?: "导入失败") },
+            )
         }
     }
 
@@ -473,5 +516,10 @@ class WsClient(
 private fun PendingEvent.toPayload(deviceId: String) = EventPayload(
     id = id, deviceId = deviceId, kind = kind, from = from, content = content,
     occurredAt = occurredAt, simSlot = simSlot,
-    extra = EventExtra(callType = callType, `package` = pkg, truncated = truncated.takeIf { it }),
+    extra = EventExtra(
+        callType = callType, `package` = pkg, truncated = truncated.takeIf { it },
+        // 只在发出时上报，收到的走默认值，省掉每条都带一个冗余字段
+        direction = direction.takeIf { it == "out" },
+        imported = imported.takeIf { it },
+    ),
 )
