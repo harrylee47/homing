@@ -1,27 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { LAST_RUN_KEY, loadConfig, nextDueAt, SETTING_KEY, status, tick } from '../keepalive.js'
+import { loadTasks, newTask, nextDueAt, runTask, saveTasks, SETTING_KEY, status, tick, type KeepAliveTask } from '../keepalive.js'
 import { MemoryStore } from './fakes.js'
 
 const jan5 = Date.UTC(2026, 0, 5)
-const feb5 = Date.UTC(2026, 1, 5)
 const DAY = 86_400_000
 
 describe('保号任务', () => {
   let store: MemoryStore
-  // vitest 5 的 vi.fn 不再从赋值推断签名，要显式给出函数类型
   let send: ReturnType<typeof vi.fn<(deviceId: string, to: string, text: string) => Promise<boolean>>>
   let alert: ReturnType<typeof vi.fn<(title: string, body: string) => Promise<void>>>
 
-  const deps = (now: number, online: string | null = 'dev_1') => ({
-    store, onlineDevice: () => online, send, alert, now: () => now,
+  const deps = (now: number, online: string[] = ['dev_jp']) => ({
+    store, onlineDevices: () => online, send, alert,
+    deviceName: (id: string) => ({ dev_jp: '日本卡', dev_cn: '国内卡' })[id] ?? id,
+    now: () => now,
   })
 
-  const enable = async (over: Record<string, unknown> = {}) => {
-    await store.setSetting(SETTING_KEY, JSON.stringify({
-      enabled: true, to: '13800138000', text: '保号',
-      interval_days: 30, first_run_at: jan5, ...over,
-    }))
-  }
+  const task = (over: Partial<KeepAliveTask> = {}): KeepAliveTask => ({
+    ...newTask('ka_1'), enabled: true, to: '13800138000',
+    interval_days: 30, first_run_at: jan5, ...over,
+  })
 
   beforeEach(() => {
     store = new MemoryStore()
@@ -29,195 +27,239 @@ describe('保号任务', () => {
     alert = vi.fn<(title: string, body: string) => Promise<void>>(async () => {})
   })
 
-  it('未启用时不发送', async () => {
-    await tick(deps(jan5))
-    expect(send).not.toHaveBeenCalled()
+  describe('排期', () => {
+    it('到达首次执行时刻后发送', async () => {
+      await runTask(deps(jan5), task())
+      expect(send).toHaveBeenCalledWith('dev_jp', '13800138000', '保号')
+    })
+
+    it('未到首次执行时刻不发送', async () => {
+      await runTask(deps(jan5), task({ first_run_at: jan5 + 10 * DAY }))
+      expect(send).not.toHaveBeenCalled()
+    })
+
+    it('间隔期内不重复', async () => {
+      const t = task()
+      await runTask(deps(jan5), t)
+      await runTask(deps(jan5 + 29 * DAY), t)
+      expect(send).toHaveBeenCalledTimes(1)
+    })
+
+    it('到达间隔后再发', async () => {
+      const t = task()
+      await runTask(deps(jan5), t)
+      await runTask(deps(jan5 + 30 * DAY), t)
+      expect(send).toHaveBeenCalledTimes(2)
+    })
+
+    it('支持任意间隔，不限于整月', async () => {
+      const t = task({ interval_days: 7 })
+      await runTask(deps(jan5), t)
+      await runTask(deps(jan5 + 7 * DAY), t)
+      expect(send).toHaveBeenCalledTimes(2)
+    })
+
+    it('未设首次时刻则立即到期', async () => {
+      await runTask(deps(jan5), task({ first_run_at: null }))
+      expect(send).toHaveBeenCalledTimes(1)
+    })
+
+    it('未启用不发送', async () => {
+      await runTask(deps(jan5), task({ enabled: false }))
+      expect(send).not.toHaveBeenCalled()
+    })
+
+    it('没填号码不发送', async () => {
+      await runTask(deps(jan5), task({ to: '' }))
+      expect(send).not.toHaveBeenCalled()
+    })
   })
 
-  it('启用但没填号码时不发送', async () => {
-    await enable({ to: '' })
-    await tick(deps(jan5))
-    expect(send).not.toHaveBeenCalled()
+  describe('设备选择', () => {
+    it('指定了设备就必须用它 —— 保号针对的是那张卡', async () => {
+      await runTask(deps(jan5, ['dev_jp', 'dev_cn']), task({ device_id: 'dev_cn' }))
+      expect(send).toHaveBeenCalledWith('dev_cn', '13800138000', '保号')
+    })
+
+    it('指定的设备不在线则跳过，不会换一台发', async () => {
+      const r = await runTask(deps(jan5, ['dev_jp']), task({ device_id: 'dev_cn' }))
+      expect(send).not.toHaveBeenCalled()
+      expect(r.reason).toContain('国内卡')
+    })
+
+    it('指定设备不在线时不推进排期，上线后会重试', async () => {
+      const t = task({ device_id: 'dev_cn' })
+      await runTask(deps(jan5, ['dev_jp']), t)
+      await runTask(deps(jan5 + 3600_000, ['dev_jp', 'dev_cn']), t)
+      expect(send).toHaveBeenCalledTimes(1)
+    })
+
+    it('未指定设备时回落到任意在线设备（单设备部署）', async () => {
+      await runTask(deps(jan5, ['dev_only']), task({ device_id: '' }))
+      expect(send).toHaveBeenCalledWith('dev_only', '13800138000', '保号')
+    })
+
+    it('没有任何设备在线时跳过', async () => {
+      const r = await runTask(deps(jan5, []), task())
+      expect(send).not.toHaveBeenCalled()
+      expect(r.sent).toBe(false)
+    })
   })
 
-  it('到达首次执行时刻后发送', async () => {
-    await enable()
-    await tick(deps(jan5))
-    expect(send).toHaveBeenCalledWith('dev_1', '13800138000', '保号')
+  describe('多任务', () => {
+    it('每张卡各自独立排期，互不影响', async () => {
+      const jp = task({ id: 'ka_jp', device_id: 'dev_jp', interval_days: 30 })
+      const cn = task({ id: 'ka_cn', device_id: 'dev_cn', interval_days: 7 })
+      await saveTasks(store, [jp, cn])
+
+      await tick(deps(jan5, ['dev_jp', 'dev_cn']))
+      expect(send).toHaveBeenCalledTimes(2)
+
+      // 7 天后只有国内卡那条到期
+      send.mockClear()
+      await tick(deps(jan5 + 7 * DAY, ['dev_jp', 'dev_cn']))
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(send).toHaveBeenCalledWith('dev_cn', '13800138000', '保号')
+    })
+
+    it('失败计数按任务分开统计', async () => {
+      const jp = task({ id: 'ka_jp', device_id: 'dev_jp' })
+      const cn = task({ id: 'ka_cn', device_id: 'dev_cn' })
+      send.mockImplementation(async (dev) => dev !== 'dev_cn')
+      await saveTasks(store, [jp, cn])
+      await tick(deps(jan5, ['dev_jp', 'dev_cn']))
+
+      expect(await store.getSetting('keepalive_fail_count:ka_jp')).toBeNull()
+      expect(await store.getSetting('keepalive_fail_count:ka_cn')).toBe('1')
+    })
+
+    it('一个任务异常不影响其他任务', async () => {
+      await saveTasks(store, [task({ id: 'a', device_id: 'dev_jp' }), task({ id: 'b', device_id: 'dev_cn' })])
+      send.mockImplementation(async (dev) => {
+        if (dev === 'dev_jp') throw new Error('boom')
+        return true
+      })
+      await expect(tick(deps(jan5, ['dev_jp', 'dev_cn']))).resolves.toBeUndefined()
+      expect(send).toHaveBeenCalledTimes(2)
+    })
   })
 
-  it('未到首次执行时刻不发送', async () => {
-    await enable({ first_run_at: jan5 + 10 * DAY })
-    await tick(deps(jan5))
-    expect(send).not.toHaveBeenCalled()
-  })
+  describe('失败与告警', () => {
+    it('失败也推进排期，避免每小时重发', async () => {
+      send.mockResolvedValue(false)
+      const t = task()
+      await runTask(deps(jan5), t)
+      await runTask(deps(jan5 + 3600_000), t)
+      expect(send).toHaveBeenCalledTimes(1)
+    })
 
-  it('间隔期内不重复发送', async () => {
-    await enable({ interval_days: 30 })
-    await tick(deps(jan5))
-    await tick(deps(jan5 + 3600_000))
-    await tick(deps(jan5 + 29 * DAY))
-    expect(send).toHaveBeenCalledTimes(1)
-  })
+    it('连续 2 次失败才告警', async () => {
+      send.mockResolvedValue(false)
+      const t = task()
+      await runTask(deps(jan5), t)
+      expect(alert).not.toHaveBeenCalled()
+      await runTask(deps(jan5 + 30 * DAY), t)
+      expect(alert).toHaveBeenCalledTimes(1)
+    })
 
-  it('到达间隔后再发', async () => {
-    await enable({ interval_days: 30 })
-    await tick(deps(jan5))
-    await tick(deps(jan5 + 30 * DAY))
-    expect(send).toHaveBeenCalledTimes(2)
-  })
+    it('告警里点名是哪张卡', async () => {
+      send.mockResolvedValue(false)
+      const t = task({ device_id: 'dev_cn' })
+      await runTask(deps(jan5, ['dev_cn']), t)
+      await runTask(deps(jan5 + 30 * DAY, ['dev_cn']), t)
+      expect(alert.mock.calls[0]![1]).toContain('国内卡')
+      expect(alert.mock.calls[0]![1]).toContain('停机')
+    })
 
-  it('支持任意间隔天数，不限于整月', async () => {
-    await enable({ interval_days: 7 })
-    await tick(deps(jan5))
-    await tick(deps(jan5 + 7 * DAY))
-    await tick(deps(jan5 + 14 * DAY))
-    expect(send).toHaveBeenCalledTimes(3)
-  })
-
-  it('未设首次时刻则视为立即到期', async () => {
-    await enable({ first_run_at: null })
-    await tick(deps(jan5))
-    expect(send).toHaveBeenCalledTimes(1)
-  })
-
-  it('没有在线设备时跳过，且不占用本月名额', async () => {
-    await enable()
-    await tick(deps(jan5, null))
-    expect(send).not.toHaveBeenCalled()
-    // 设备上线后同月仍会执行
-    await tick(deps(jan5 + 3600_000, 'dev_1'))
-    expect(send).toHaveBeenCalledTimes(1)
-  })
-
-  it('失败也推进排期，避免每小时重发一条短信', async () => {
-    await enable()
-    send.mockResolvedValue(false)
-    await tick(deps(jan5))
-    await tick(deps(jan5 + 3600_000))
-    expect(send).toHaveBeenCalledTimes(1)
-  })
-
-  it('连续失败 2 次才告警 —— 1 次可能是偶发', async () => {
-    await enable()
-    send.mockResolvedValue(false)
-    await tick(deps(jan5))
-    expect(alert).not.toHaveBeenCalled()
-    await tick(deps(feb5))
-    expect(alert).toHaveBeenCalledTimes(1)
-    expect(alert.mock.calls[0]![0]).toContain('保号任务连续失败')
-  })
-
-  it('告警说明后果：停机后验证码完全收不到且无提示', async () => {
-    await enable()
-    send.mockResolvedValue(false)
-    await tick(deps(jan5))
-    await tick(deps(feb5))
-    expect(alert.mock.calls[0]![1]).toContain('停机')
-    expect(alert.mock.calls[0]![1]).toContain('收不到')
-  })
-
-  it('成功后失败计数清零', async () => {
-    await enable()
-    send.mockResolvedValue(false)
-    await tick(deps(jan5))
-    send.mockResolvedValue(true)
-    await tick(deps(feb5))
-    expect(await store.getSetting('keepalive_fail_count')).toBe('0')
-  })
-
-  it('send 抛异常按失败处理，不中断定时器', async () => {
-    await enable()
-    send.mockRejectedValue(new Error('boom'))
-    const r = await tick(deps(jan5))
-    expect(r.sent).toBe(false)
-    expect(await store.getSetting('keepalive_fail_count')).toBe('1')
-  })
-
-  it('配置损坏时回落到默认（停用），不影响其他功能', async () => {
-    await store.setSetting(SETTING_KEY, '{ not json')
-    expect((await loadConfig(store)).enabled).toBe(false)
-    expect((await tick(deps(jan5))).sent).toBe(false)
-  })
-
-  it('间隔天数被限制在 1-365', async () => {
-    await store.setSetting(SETTING_KEY, JSON.stringify({ enabled: true, to: 'x', interval_days: 9999 }))
-    expect((await loadConfig(store)).interval_days).toBe(365)
-    await store.setSetting(SETTING_KEY, JSON.stringify({ enabled: true, to: 'x', interval_days: 0 }))
-    expect((await loadConfig(store)).interval_days).toBe(1)
-  })
-
-  it('旧配置（每月第 N 天）迁移为 30 天间隔', async () => {
-    await store.setSetting(SETTING_KEY, JSON.stringify({ enabled: true, to: 'x', day: 1, text: '保号' }))
-    const cfg = await loadConfig(store)
-    expect(cfg.interval_days).toBe(30)
-    expect(cfg.enabled).toBe(true)
+    it('成功后失败计数清零', async () => {
+      const t = task()
+      send.mockResolvedValue(false)
+      await runTask(deps(jan5), t)
+      send.mockResolvedValue(true)
+      await runTask(deps(jan5 + 30 * DAY), t)
+      expect(await store.getSetting('keepalive_fail_count:ka_1')).toBe('0')
+    })
   })
 
   describe('立即测试', () => {
     it('忽略排期直接发送', async () => {
-      await enable({ first_run_at: jan5 + 100 * DAY })
-      const r = await tick(deps(jan5), true)
+      const r = await runTask(deps(jan5), task({ first_run_at: jan5 + 100 * DAY }), true)
       expect(r.sent).toBe(true)
-      expect(send).toHaveBeenCalledTimes(1)
     })
 
-    it('未启用时也能测试 —— 配置过程中就要能验证链路', async () => {
-      await store.setSetting(SETTING_KEY, JSON.stringify({ enabled: false, to: '13800138000' }))
-      expect((await tick(deps(jan5), true)).sent).toBe(true)
+    it('未启用也能测试 —— 配置过程中就要能验证链路', async () => {
+      expect((await runTask(deps(jan5), task({ enabled: false }), true)).sent).toBe(true)
     })
 
     it('不推进排期，不顶掉正常的下一次', async () => {
-      await enable()
-      await tick(deps(jan5), true)
-      expect(await store.getSetting(LAST_RUN_KEY)).toBeNull()
-      // 正常执行仍会发生
-      await tick(deps(jan5))
+      const t = task()
+      await runTask(deps(jan5), t, true)
+      expect(await store.getSetting('keepalive_last_run_at:ka_1')).toBeNull()
+      await runTask(deps(jan5), t)
       expect(send).toHaveBeenCalledTimes(2)
     })
 
     it('不计入失败统计', async () => {
-      await enable()
       send.mockResolvedValue(false)
-      await tick(deps(jan5), true)
-      expect(await store.getSetting('keepalive_fail_count')).toBeNull()
+      await runTask(deps(jan5), task(), true)
+      expect(await store.getSetting('keepalive_fail_count:ka_1')).toBeNull()
       expect(alert).not.toHaveBeenCalled()
     })
 
-    it('没填号码时明确告知，而不是假装成功', async () => {
-      await store.setSetting(SETTING_KEY, JSON.stringify({ enabled: false, to: '' }))
-      const r = await tick(deps(jan5), true)
+    it('测试也遵守设备限定，不会换一台发', async () => {
+      const r = await runTask(deps(jan5, ['dev_jp']), task({ device_id: 'dev_cn' }), true)
+      expect(send).not.toHaveBeenCalled()
       expect(r.sent).toBe(false)
-      expect(r.reason).toContain('号码')
+    })
+  })
+
+  describe('配置读写', () => {
+    it('空配置返回空列表', async () => {
+      expect(await loadTasks(store)).toEqual([])
+    })
+
+    it('损坏的配置返回空列表而不是抛异常', async () => {
+      await store.setSetting(SETTING_KEY, '{ not json')
+      expect(await loadTasks(store)).toEqual([])
+    })
+
+    it('间隔天数被限制在 1-365', async () => {
+      await saveTasks(store, [task({ interval_days: 9999 }), task({ id: 'b', interval_days: 0 })])
+      const ts = await loadTasks(store)
+      expect(ts[0]!.interval_days).toBe(365)
+      expect(ts[1]!.interval_days).toBe(1)
+    })
+
+    it('兼容早期的单任务对象格式', async () => {
+      await store.setSetting(SETTING_KEY, JSON.stringify({
+        enabled: true, to: '13800138000', day: 1, text: '保号',
+      }))
+      const ts = await loadTasks(store)
+      expect(ts).toHaveLength(1)
+      expect(ts[0]!.interval_days).toBe(30)
+      expect(ts[0]!.device_id).toBe('')
+    })
+
+    it('status 返回每个任务的下次执行时刻', async () => {
+      await saveTasks(store, [task({ interval_days: 10 })])
+      await store.setSetting('keepalive_last_run_at:ka_1', String(jan5))
+      const st = await status(store)
+      expect(st[0]!.next_due_at).toBe(jan5 + 10 * DAY)
+    })
+
+    it('停用的任务不返回下次执行时刻', async () => {
+      await saveTasks(store, [task({ enabled: false })])
+      expect((await status(store))[0]!.next_due_at).toBeNull()
     })
   })
 
   describe('排期计算', () => {
     it('跑过之后从上次执行时间推', () => {
-      const cfg = { enabled: true, to: 'x', text: 'y', interval_days: 7, first_run_at: jan5 }
-      expect(nextDueAt(cfg, jan5)).toBe(jan5 + 7 * DAY)
+      expect(nextDueAt(task({ interval_days: 7 }), jan5)).toBe(jan5 + 7 * DAY)
     })
 
     it('没跑过则用首次执行时刻', () => {
-      const cfg = { enabled: true, to: 'x', text: 'y', interval_days: 7, first_run_at: feb5 }
-      expect(nextDueAt(cfg, null)).toBe(feb5)
+      expect(nextDueAt(task({ first_run_at: jan5 }), null)).toBe(jan5)
     })
-
-    it('status 返回下次执行时刻', async () => {
-      await enable({ interval_days: 10 })
-      await store.setSetting(LAST_RUN_KEY, String(jan5))
-      expect((await status(store)).next_due_at).toBe(jan5 + 10 * DAY)
-    })
-
-    it('停用时不返回下次执行时刻', async () => {
-      await enable({ enabled: false })
-      expect((await status(store)).next_due_at).toBeNull()
-    })
-  })
-
-  it('写审计日志', async () => {
-    await enable()
-    await tick(deps(jan5))
-    expect(store.audits.some((a) => a.action === 'keepalive.sent')).toBe(true)
   })
 })

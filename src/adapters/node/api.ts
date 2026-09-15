@@ -22,8 +22,9 @@ import { makeFrame, newCmdId } from '../../core/frames.js'
 import type { DownstreamFrame } from '../../core/protocol.js'
 import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
 import {
-  DEFAULT_KEEPALIVE, loadConfig as loadKeepAlive,
-  SETTING_KEY as KEEPALIVE_KEY, status as keepAliveStatus,
+  loadTasks as loadKeepAliveTasks, newTask as newKeepAliveTask,
+  saveTasks as saveKeepAliveTasks, status as keepAliveStatus,
+  type KeepAliveTask,
 } from '../../core/keepalive.js'
 import { toSvg } from '../../core/qr.js'
 import { buildSeedRules } from '../../core/seeds.js'
@@ -46,8 +47,8 @@ export interface ApiDeps {
   onLoginLockout?: ((ip: string, attempts: number) => void) | undefined
   /** 陌生网段登录成功时的告警回调 */
   onUnknownIpLogin?: ((ip: string) => void) | undefined
-  /** 执行一次保号任务。force=true 表示忽略排期立即发送。 */
-  runKeepAlive?: ((force: boolean) => Promise<{ sent: boolean; reason?: string }>) | undefined
+  /** 立即执行一个保号任务（忽略排期），用于控制台的「立即测试」。 */
+  runKeepAliveTask?: ((task: KeepAliveTask) => Promise<{ sent: boolean; reason?: string }>) | undefined
   /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
   trustedProxy?: string | null
 }
@@ -655,45 +656,62 @@ route('POST', '/api/bot/rotate-token', async ({ res, deps, ip }) => {
 // ── 保号任务 ────────────────────────────────────────────────
 
 route('GET', '/api/keepalive', async ({ res, deps }) => {
-  const cfg = await loadKeepAlive(deps.store)
-  json(res, 200, { ...cfg, ...(await keepAliveStatus(deps.store)) })
+  json(res, 200, { tasks: await keepAliveStatus(deps.store) })
 })
 
+/**
+ * 保存任务列表（整体替换）。
+ *
+ * 每张卡一个任务：保号针对的是具体号码，指定了设备就必须用那台发。
+ */
 route('POST', '/api/keepalive', async ({ res, body, deps, ip }) => {
-  const b = body as Partial<Record<keyof typeof DEFAULT_KEEPALIVE, unknown>>
-  const to = String(b.to ?? '').trim()
-  if (b.enabled === true && !to) return json(res, 400, { error: '启用时必须填目标号码' })
+  const raw = (body as { tasks?: unknown })?.tasks
+  if (!Array.isArray(raw)) return json(res, 400, { error: '缺少 tasks 数组' })
 
-  const interval = Math.min(Math.max(Math.round(Number(b.interval_days) || 30), 1), 365)
-  const firstRaw = Number(b.first_run_at)
-  const cfg = {
-    enabled: b.enabled === true,
-    to,
-    text: String(b.text ?? '').trim() || DEFAULT_KEEPALIVE.text,
-    interval_days: interval,
-    first_run_at: Number.isFinite(firstRaw) && firstRaw > 0 ? firstRaw : null,
+  const devices = new Set((await deps.store.listDevices()).map((d) => d.id))
+  const tasks: KeepAliveTask[] = []
+  for (const [i, item] of raw.entries()) {
+    const t = item as Partial<KeepAliveTask>
+    const task = { ...newKeepAliveTask(typeof t.id === 'string' && t.id ? t.id : `ka_${Date.now()}_${i}`) }
+    task.enabled = t.enabled === true
+    task.device_id = typeof t.device_id === 'string' ? t.device_id : ''
+    task.to = String(t.to ?? '').trim()
+    task.text = String(t.text ?? '').trim() || '保号'
+    task.interval_days = Math.min(Math.max(Math.round(Number(t.interval_days) || 30), 1), 365)
+    const f = Number(t.first_run_at)
+    task.first_run_at = Number.isFinite(f) && f > 0 ? f : null
+
+    if (task.enabled && !task.to) return json(res, 400, { error: `第 ${i + 1} 个任务启用时必须填目标号码` })
+    if (task.device_id && !devices.has(task.device_id)) {
+      return json(res, 400, { error: `第 ${i + 1} 个任务指定的设备不存在` })
+    }
+    tasks.push(task)
   }
-  await deps.store.setSetting(KEEPALIVE_KEY, JSON.stringify(cfg))
+
+  await saveKeepAliveTasks(deps.store, tasks)
   await deps.store.audit({
     actor: 'admin', action: 'keepalive.config',
-    detail: cfg.enabled ? `每 ${cfg.interval_days} 天 → ${maskNumber(cfg.to)}` : '已停用',
+    detail: `${tasks.filter((t) => t.enabled).length}/${tasks.length} 个任务启用`,
     ip, created_at: now(),
   })
   json(res, 200, { ok: true })
 })
 
 /**
- * 立即测试发送。
+ * 立即测试某个任务。
  *
- * 保号任务的失败是静默的——真到停机那天才会发现，所以配好之后必须能
- * 当场验证链路是通的。测试不写排期、不计入失败统计。
+ * 保号失败是静默的——真到停机那天才发现就晚了，配好之后必须能当场验证。
+ * 走与定时执行完全相同的代码路径，否则「测得通」不代表「定时能通」。
  */
-route('POST', '/api/keepalive/test', async ({ res, deps, ip }) => {
-  if (!deps.runKeepAlive) return json(res, 500, { error: '未接入保号任务' })
-  const r = await deps.runKeepAlive(true)
+route('POST', '/api/keepalive/:id/test', async ({ res, params, deps, ip }) => {
+  if (!deps.runKeepAliveTask) return json(res, 500, { error: '未接入保号任务' })
+  const task = (await loadKeepAliveTasks(deps.store)).find((t) => t.id === params.id)
+  if (!task) return json(res, 404, { error: '任务不存在' })
+
+  const r = await deps.runKeepAliveTask(task)
   await deps.store.audit({
     actor: 'admin', action: 'keepalive.test',
-    detail: r.sent ? '已下发' : (r.reason ?? '失败'), ip, created_at: now(),
+    detail: `${task.id} ${r.sent ? '已下发' : (r.reason ?? '失败')}`, ip, created_at: now(),
   })
   json(res, r.sent ? 200 : 400, r)
 })

@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
-import { handleCallback, handleCommand, handleReply, type BotApi } from '../bot.js'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { handleCallback, handleCommand, handleReply, resetPendingSends, type BotApi } from '../bot.js'
 
 const EVENTS = [
   { id: 'evt_1', from: '95533', content: '【建设银行】您的验证码是 902431，请勿泄露', kind: 'sms', occurred_at: 1_700_000_000_000 },
   { id: 'evt_2', from: '10086', content: '您的话费余额为 32.50 元', kind: 'sms', occurred_at: 1_700_000_100_000 },
+]
+
+const TWO_DEVICES = [
+  { id: 'dev_jp', name: '日本卡', status: 'online', last_seen_at: Date.now(), battery: 80 },
+  { id: 'dev_cn', name: '国内卡', status: 'online', last_seen_at: Date.now(), battery: 60 },
 ]
 
 const makeApi = (over: Partial<BotApi> = {}): BotApi => ({
@@ -109,6 +114,32 @@ describe('/send', () => {
     expect(r!.text).toContain('不在历史记录中')
   })
 
+  it('多设备时即使是已知号码也要先选设备 —— 用错卡等于用错身份', async () => {
+    const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
+    const api = makeApi({
+      sendSms,
+      stats: async () => ({ devices: TWO_DEVICES, today: { events: 0, outbound: 0, outbound_failed: 0 }, rules: 0, channels: 0 }),
+    })
+    const r = await handleCommand(api, '/send 95533 收到')
+    expect(sendSms).not.toHaveBeenCalled()
+    expect(r!.buttons!.flat().map((b) => b.text)).toEqual(
+      expect.arrayContaining(['用 日本卡 发送', '用 国内卡 发送', '取消']),
+    )
+  })
+
+  it('选定设备后用那台发，不是随便挑一台', async () => {
+    const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
+    const api = makeApi({
+      sendSms,
+      stats: async () => ({ devices: TWO_DEVICES, today: { events: 0, outbound: 0, outbound_failed: 0 }, rules: 0, channels: 0 }),
+    })
+    const prompt = await handleCommand(api, '/send 95533 收到')
+    const cnBtn = prompt!.buttons!.flat().find((b) => b.text.includes('国内卡'))!
+    const r = await handleCallback(api, cnBtn.data)
+    expect(sendSms).toHaveBeenCalledWith('dev_cn', '95533', '收到')
+    expect(r!.text).toContain('国内卡')
+  })
+
   it('没有在线设备时明确告知', async () => {
     const api = makeApi({
       stats: async () => ({ devices: [], today: { events: 0, outbound: 0, outbound_failed: 0 }, rules: 0, channels: 0 }),
@@ -124,6 +155,8 @@ describe('/send', () => {
 })
 
 describe('确认按钮回调', () => {
+  beforeEach(() => resetPendingSends())
+
   it('确认后真正发送，中文内容往返正确', async () => {
     const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
     const api = makeApi({ sendSms })
@@ -135,9 +168,42 @@ describe('确认按钮回调', () => {
   })
 
   it('callback_data 不超过 Telegram 的 64 字节上限', async () => {
-    const prompt = await handleCommand(makeApi(), `/send 13900139000 ${'很长的内容'.repeat(20)}`)
+    const prompt = await handleCommand(makeApi(), `/send 13900139000 ${'很长的内容'.repeat(50)}`)
+    for (const b of prompt!.buttons!.flat()) {
+      expect(new TextEncoder().encode(b.data).length).toBeLessThanOrEqual(64)
+    }
+  })
+
+  it('过期的待发消息不会被发出', async () => {
+    const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
+    const api = makeApi({ sendSms })
+    const prompt = await handleCommand(api, '/send 13900139000 你好')
     const data = prompt!.buttons![0]![0]!.data
-    expect(new TextEncoder().encode(data).length).toBeLessThanOrEqual(64)
+    const r = await handleCallback(api, data, Date.now() + 10 * 60_000)
+    expect(sendSms).not.toHaveBeenCalled()
+    expect(r!.text).toContain('过期')
+  })
+
+  it('同一个确认不能重复点击发两次', async () => {
+    const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
+    const api = makeApi({ sendSms })
+    const prompt = await handleCommand(api, '/send 13900139000 你好')
+    const data = prompt!.buttons![0]![0]!.data
+    await handleCallback(api, data)
+    await handleCallback(api, data)
+    expect(sendSms).toHaveBeenCalledTimes(1)
+  })
+
+  it('选中的设备在点击时已离线则不发送', async () => {
+    const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
+    let devices = TWO_DEVICES
+    const api = makeApi({ sendSms, stats: async () => ({ devices, today: { events: 0, outbound: 0, outbound_failed: 0 }, rules: 0, channels: 0 }) })
+    const prompt = await handleCommand(api, '/send 95533 收到')
+    const cnBtn = prompt!.buttons!.flat().find((b) => b.text.includes('国内卡'))!
+    devices = [TWO_DEVICES[0]!, { ...TWO_DEVICES[1]!, status: 'offline' }]
+    const r = await handleCallback(api, cnBtn.data)
+    expect(sendSms).not.toHaveBeenCalled()
+    expect(r!.text).toContain('不在线')
   })
 
   it('取消不发送', async () => {

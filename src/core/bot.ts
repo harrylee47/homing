@@ -38,6 +38,31 @@ export interface BotMessage {
   buttons?: { text: string; data: string }[][]
 }
 
+/**
+ * 待确认的发送。
+ *
+ * callback_data 上限 64 字节，塞不下「设备 id + 号码 + 正文」，所以把内容
+ * 暂存在这里，按钮只带一个短 token。
+ *
+ * 这是允许的进程内状态：确认窗口只有几分钟，重启后丢失的后果仅仅是用户
+ * 需要重新发一次命令，不涉及任何数据丢失。
+ */
+const pendingSends = new Map<string, { to: string; text: string; expiresAt: number }>()
+const PENDING_TTL_MS = 5 * 60 * 1000
+
+function stashSend(to: string, text: string, now = Date.now()): string {
+  // 顺手清理过期项，不需要额外的定时器
+  for (const [k, v] of pendingSends) if (v.expiresAt < now) pendingSends.delete(k)
+  const token = Math.random().toString(36).slice(2, 10)
+  pendingSends.set(token, { to, text, expiresAt: now + PENDING_TTL_MS })
+  return token
+}
+
+/** 仅供测试。 */
+export function resetPendingSends(): void {
+  pendingSends.clear()
+}
+
 const esc = (s: string): string =>
   String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
@@ -176,26 +201,41 @@ async function rules(api: BotApi): Promise<BotMessage> {
 /**
  * 发送短信。
  *
- * 新号码需要二次确认（计划 §11.4 安全约束②）：Telegram 账号被盗时，
- * 攻击者最直接的变现方式就是用你的卡往外发短信。
+ * 两道确认逻辑叠在一起：
+ *  - 新号码需要二次确认（计划 §11.4 安全约束②）：Telegram 账号被盗时，
+ *    攻击者最直接的变现方式就是用你的卡往外发短信
+ *  - 多设备时必须让用户选哪张卡发，不能替他挑一台——收件人看到的号码
+ *    取决于用哪张卡，挑错等于用错身份
+ *
+ * 只有「单设备 + 已知号码」才直接发出。
  */
 async function send(api: BotApi, to: string, text: string): Promise<BotMessage> {
   const s = await api.stats()
-  const online = s.devices.find((d) => d.status === 'online')
-  if (!online) return { text: '没有在线设备，无法发送' }
+  const online = s.devices.filter((d) => d.status === 'online')
+  if (online.length === 0) return { text: '没有在线设备，无法发送' }
 
-  if (!(await api.isKnownNumber(to))) {
-    return {
-      text: `⚠️ <b>${esc(to)}</b> 不在历史记录中，确认要发送吗？\n\n💬 ${spoiler(text)}`,
-      buttons: [[
-        { text: '确认发送', data: `send:${to}:${encode(text)}` },
-        { text: '取消', data: 'cancel' },
-      ]],
-    }
+  const known = await api.isKnownNumber(to)
+
+  if (online.length === 1 && known) {
+    const r = await api.sendSms(online[0]!.id, to, text)
+    return { text: r.status === 'failed' ? `发送失败：${esc(r.error ?? '未知原因')}` : `已提交发送 → ${esc(to)}` }
   }
 
-  const r = await api.sendSms(online.id, to, text)
-  return { text: r.status === 'failed' ? `发送失败：${esc(r.error ?? '未知原因')}` : `已提交发送 → ${esc(to)}` }
+  const token = stashSend(to, text)
+  const head = known
+    ? `发给 <b>${esc(to)}</b>，用哪台设备？`
+    : `⚠️ <b>${esc(to)}</b> 不在历史记录中，确认要发送吗？`
+
+  return {
+    text: `${head}\n\n💬 ${spoiler(text)}`,
+    buttons: [
+      ...online.map((d) => [{
+        text: online.length > 1 ? `用 ${d.name} 发送` : '确认发送',
+        data: `send:${token}:${d.id}`,
+      }]),
+      [{ text: '取消', data: 'cancel' }],
+    ],
+  }
 }
 
 /** 处理引用回复：把回复内容作为短信发回原发件人。 */
@@ -215,37 +255,29 @@ export async function handleReply(api: BotApi, replyToRef: string, text: string)
 }
 
 /** 处理按钮回调。 */
-export async function handleCallback(api: BotApi, data: string): Promise<BotMessage | null> {
+export async function handleCallback(api: BotApi, data: string, now = Date.now()): Promise<BotMessage | null> {
   if (data === 'cancel') return { text: '已取消' }
 
-  const m = data.match(/^send:([^:]+):(.*)$/)
+  const m = data.match(/^send:([^:]+):(.+)$/)
   if (!m) return null
 
-  const to = m[1]!
-  const text = decode(m[2]!)
+  const pending = pendingSends.get(m[1]!)
+  if (!pending || pending.expiresAt < now) {
+    return { text: '这条待发消息已过期，请重新发送命令' }
+  }
+  pendingSends.delete(m[1]!)
+
+  const deviceId = m[2]!
   const s = await api.stats()
-  const online = s.devices.find((d) => d.status === 'online')
-  if (!online) return { text: '没有在线设备，无法发送' }
+  const device = s.devices.find((d) => d.id === deviceId)
+  if (!device || device.status !== 'online') {
+    return { text: `${device ? esc(device.name) : '该设备'}当前不在线，未发送` }
+  }
 
-  const r = await api.sendSms(online.id, to, text)
-  return { text: r.status === 'failed' ? `发送失败：${esc(r.error ?? '未知原因')}` : `已提交发送 → ${esc(to)}` }
-}
-
-/**
- * callback_data 上限 64 字节，且短信正文可能含冒号。
- * 用 base64url 编码避开分隔符冲突；超长则截断——确认按钮只用于短消息，
- * 长内容应该用控制台发。
- */
-function encode(s: string): string {
-  const bytes = new TextEncoder().encode(s)
-  let bin = ''
-  for (const b of bytes) bin += String.fromCharCode(b)
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 40)
-}
-
-function decode(s: string): string {
-  const b64 = s.replace(/-/g, '+').replace(/_/g, '/')
-  const bin = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))
-  const bytes = new Uint8Array([...bin].map((c) => c.charCodeAt(0)))
-  return new TextDecoder().decode(bytes)
+  const r = await api.sendSms(deviceId, pending.to, pending.text)
+  return {
+    text: r.status === 'failed'
+      ? `发送失败：${esc(r.error ?? '未知原因')}`
+      : `已提交发送 → ${esc(pending.to)}（${esc(device.name)}）`,
+  }
 }

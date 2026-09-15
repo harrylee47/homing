@@ -10,7 +10,7 @@ import { loadConfig } from './config.js'
 import { MemoryHub } from './hub.js'
 import { SqliteStore } from './store.js'
 import { dispatch } from '../../core/notifier.js'
-import { tick as keepAliveTick } from '../../core/keepalive.js'
+import { runTask as runKeepAliveTask, tick as keepAliveTick, type KeepAliveTask } from '../../core/keepalive.js'
 import { checkDevices } from '../../core/monitor.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import type { DownstreamFrame } from '../../core/protocol.js'
@@ -77,7 +77,7 @@ const apiDeps = {
   barkUpstream: cfg.barkUpstream,
   trustedProxy: cfg.trustedProxy,
   // apiDeps 在 keepAliveDeps 之前定义，用函数包一层避免 TDZ
-  runKeepAlive: (force: boolean) => runKeepAlive(force),
+  runKeepAliveTask: (task: KeepAliveTask) => runOneKeepAlive(task),
   barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
   onUnknownIpLogin: (ip: string) => void (async () => {
@@ -251,7 +251,8 @@ const monitorTimer = setInterval(() => {
  */
 const keepAliveDeps = () => ({
     store,
-    onlineDevice: () => hub.onlineDevices()[0] ?? null,
+    onlineDevices: () => hub.onlineDevices(),
+    deviceName: (id: string) => deviceNameCache.get(id) ?? id,
     send: async (deviceId: string, to: string, text: string) => {
       const id = `cmd_${crypto.randomUUID()}`
       const t = Date.now()
@@ -278,11 +279,23 @@ const keepAliveDeps = () => ({
     },
   })
 
-const runKeepAlive = (force: boolean) => keepAliveTick(keepAliveDeps(), force)
+/** 设备名缓存，仅用于告警文案；取不到就退回 id，不值得为它阻塞。 */
+const deviceNameCache = new Map<string, string>()
+const refreshDeviceNames = async () => {
+  for (const d of await store.listDevices()) deviceNameCache.set(d.id, d.name)
+}
+void refreshDeviceNames()
+
+const runOneKeepAlive = async (task: KeepAliveTask) => {
+  await refreshDeviceNames()
+  return runKeepAliveTask(keepAliveDeps(), task, true)
+}
 
 /** 每小时检查一次是否到期。排期基于绝对时刻，服务端短暂停机不会漏掉。 */
 const keepAliveTimer = setInterval(() => {
-  void runKeepAlive(false).catch((e: unknown) => log.error('保号任务异常', { error: String(e) }))
+  void refreshDeviceNames()
+    .then(() => keepAliveTick(keepAliveDeps()))
+    .catch((e: unknown) => log.error('保号任务异常', { error: String(e) }))
 }, 3600_000)
 
 /** 回复映射保留 7 天：超过这个窗口的推送，用户基本不会再去引用回复。 */

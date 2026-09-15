@@ -990,84 +990,127 @@ async function settings() {
 async function paintKeepAlive() {
   const box = $('#ka')
   if (!box) return
-  let k
-  try { k = await api('/keepalive') } catch { return }
+  let data, devs
+  try {
+    ;[data, devs] = await Promise.all([api('/keepalive'), api('/devices').catch(() => ({ devices: [] }))])
+  } catch { return }
 
-  // datetime-local 要本地时间且不带时区，这里把 epoch 转成本地时间字符串
+  const activeDevs = devs.devices.filter((d) => d.status !== 'revoked')
   const toLocalInput = (ts) => {
+    if (!ts) return ''
     const d = new Date(ts)
     const pad = (n) => String(n).padStart(2, '0')
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
   }
   const fmtTs = (ts) => (ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—')
 
-  box.innerHTML = `
-    <h2>保号任务</h2>
-    <div class="card">
-      <p class="muted">定期发一条短信产生使用记录。国内号码长期零消费加异地漫游可能被停机，而停机不会有任何提示——到你需要验证码那天才会发现。</p>
-      <label>启用</label>
-      <select id="ka_on">
-        <option value="1"${k.enabled ? ' selected' : ''}>启用</option>
-        <option value="0"${k.enabled ? '' : ' selected'}>停用</option>
-      </select>
-      <label>目标号码</label>
-      <input id="ka_to" inputmode="tel" value="${esc(k.to || '')}" placeholder="发给自己的另一个号码即可">
-      <label>内容</label>
-      <input id="ka_text" value="${esc(k.text)}">
-      <label>每隔多少天发一次</label>
-      <input id="ka_interval" type="number" min="1" max="365" value="${k.interval_days}">
-      <label>首次执行时间</label>
-      <input id="ka_first" type="datetime-local" value="${k.first_run_at ? toLocalInput(k.first_run_at) : ''}">
-      <div class="muted">留空表示保存后立即开始第一次。之后按间隔天数从上次执行时间往后推。</div>
+  // 任务在内存里编辑，点保存才整体提交
+  let tasks = data.tasks.map((t) => ({ ...t }))
 
-      <div class="card tight" style="background:var(--bg);margin-top:12px">
-        <div class="row"><span class="muted">上次执行</span><span>${fmtTs(k.last_run_at)}</span></div>
-        <div class="row"><span class="muted">下次执行</span><span>${k.enabled ? fmtTs(k.next_due_at) : '未启用'}</span></div>
-        ${k.consecutive_failures > 0 ? `<div class="row"><span class="muted">连续失败</span><span class="badge err">${k.consecutive_failures} 次</span></div>` : ''}
+  const paint = () => {
+    box.innerHTML = `
+      <h2>保号任务</h2>
+      <div class="card">
+        <p class="muted">定期发一条短信产生使用记录。国内号码长期零消费加异地漫游可能被停机，
+        而停机不会有任何提示——到你需要验证码那天才会发现。<b>每张卡各建一个任务</b>：
+        保号针对的是具体号码，用别的卡发等于没保。</p>
       </div>
+      ${tasks.map((t, i) => `
+        <div class="card">
+          <div class="row">
+            <b>任务 ${i + 1}</b>
+            <button class="danger sm" data-ka-del="${i}">删除</button>
+          </div>
+          <label>启用</label>
+          <select data-ka="enabled" data-i="${i}">
+            <option value="1"${t.enabled ? ' selected' : ''}>启用</option>
+            <option value="0"${t.enabled ? '' : ' selected'}>停用</option>
+          </select>
+          <label>用哪台设备发</label>
+          <select data-ka="device_id" data-i="${i}">
+            <option value=""${!t.device_id ? ' selected' : ''}>任意在线设备${activeDevs.length > 1 ? '（多设备下不建议）' : ''}</option>
+            ${activeDevs.map((d) => `<option value="${esc(d.id)}"${t.device_id === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+          </select>
+          <label>目标号码</label>
+          <input data-ka="to" data-i="${i}" inputmode="tel" value="${esc(t.to || '')}" placeholder="发给自己的另一个号码即可">
+          <label>内容</label>
+          <input data-ka="text" data-i="${i}" value="${esc(t.text)}">
+          <label>每隔多少天发一次</label>
+          <input data-ka="interval_days" data-i="${i}" type="number" min="1" max="365" value="${t.interval_days}">
+          <label>首次执行时间</label>
+          <input data-ka="first_run_at" data-i="${i}" type="datetime-local" value="${toLocalInput(t.first_run_at)}">
+          <div class="muted">留空表示保存后立即开始第一次。</div>
 
+          <div class="card tight" style="background:var(--bg);margin-top:12px">
+            <div class="row"><span class="muted">上次执行</span><span>${fmtTs(t.last_run_at)}</span></div>
+            <div class="row"><span class="muted">下次执行</span><span>${t.enabled ? fmtTs(t.next_due_at) : '未启用'}</span></div>
+            ${t.consecutive_failures > 0 ? `<div class="row"><span class="muted">连续失败</span><span class="badge err">${t.consecutive_failures} 次</span></div>` : ''}
+          </div>
+          <div class="btnrow">
+            <button class="ghost sm" data-ka-test="${esc(t.id)}" ${t.to ? '' : 'disabled'}>立即测试发送</button>
+          </div>
+          <div class="muted" data-ka-result="${esc(t.id)}" style="margin-top:6px"></div>
+        </div>`).join('')}
       <div class="btnrow">
-        <button id="ka_save" class="sm">保存</button>
-        <button id="ka_test" class="ghost sm">立即测试发送</button>
+        <button id="ka_add" class="ghost sm">新增任务</button>
+        <button id="ka_save" class="sm">保存全部</button>
       </div>
-      <div id="ka_err" class="err-text"></div>
-      <div id="ka_result" class="muted" style="margin-top:6px"></div>
-    </div>`
+      <div id="ka_err" class="err-text"></div>`
 
-  $('#ka_save').onclick = async () => {
-    const firstRaw = $('#ka_first').value
-    try {
-      await api('/keepalive', {
-        method: 'POST',
-        body: {
-          enabled: $('#ka_on').value === '1',
-          to: $('#ka_to').value.trim(),
-          text: $('#ka_text').value,
-          interval_days: Number($('#ka_interval').value),
-          // datetime-local 没有时区，按浏览器本地时间解析成绝对时刻
-          first_run_at: firstRaw ? new Date(firstRaw).getTime() : null,
-        },
-      })
-      toast('已保存')
-      paintKeepAlive()
-    } catch (e) { $('#ka_err').textContent = e.message }
-  }
-
-  // 配好之后必须能当场验证链路是通的：保号失败是静默的，
-  // 真到停机那天才发现就晚了
-  $('#ka_test').onclick = async () => {
-    $('#ka_result').textContent = '发送中…'
-    $('#ka_test').disabled = true
-    try {
-      const r = await api('/keepalive/test', { method: 'POST' })
-      $('#ka_result').innerHTML = r.sent
-        ? '<span class="badge ok">已下发，到发送记录里看状态机流转</span>'
-        : `<span class="badge err">${esc(r.reason || '失败')}</span>`
-    } catch (e) {
-      $('#ka_result').innerHTML = `<span class="badge err">${esc(e.message)}</span>`
+    for (const el of box.querySelectorAll('[data-ka]')) {
+      el.onchange = () => {
+        const t = tasks[Number(el.dataset.i)]
+        const k = el.dataset.ka
+        if (k === 'enabled') t.enabled = el.value === '1'
+        else if (k === 'interval_days') t.interval_days = Number(el.value)
+        else if (k === 'first_run_at') t.first_run_at = el.value ? new Date(el.value).getTime() : null
+        else t[k] = el.value
+      }
     }
-    $('#ka_test').disabled = false
+
+    for (const b of box.querySelectorAll('[data-ka-del]')) {
+      b.onclick = () => { tasks.splice(Number(b.dataset.kaDel), 1); paint() }
+    }
+
+    $('#ka_add').onclick = () => {
+      tasks.push({
+        id: `ka_${Date.now()}`, enabled: false,
+        device_id: activeDevs.length === 1 ? activeDevs[0].id : '',
+        to: '', text: '保号', interval_days: 30, first_run_at: null,
+        last_run_at: null, next_due_at: null, consecutive_failures: 0,
+      })
+      paint()
+    }
+
+    $('#ka_save').onclick = async () => {
+      try {
+        await api('/keepalive', { method: 'POST', body: { tasks } })
+        toast('已保存')
+        paintKeepAlive()
+      } catch (e) { $('#ka_err').textContent = e.message }
+    }
+
+    // 配好之后必须能当场验证链路：保号失败是静默的
+    for (const b of box.querySelectorAll('[data-ka-test]')) {
+      b.onclick = async () => {
+        const id = b.dataset.kaTest
+        const out = box.querySelector(`[data-ka-result="${id}"]`)
+        out.textContent = '发送中…（未保存的修改不会生效，请先保存）'
+        b.disabled = true
+        try {
+          const r = await api(`/keepalive/${id}/test`, { method: 'POST' })
+          out.innerHTML = r.sent
+            ? '<span class="badge ok">已下发，到发送记录里看状态机流转</span>'
+            : `<span class="badge err">${esc(r.reason || '失败')}</span>`
+        } catch (e) {
+          out.innerHTML = `<span class="badge err">${esc(e.message)}</span>`
+        }
+        b.disabled = false
+      }
+    }
   }
+
+  paint()
 }
 
 // ── 启动 ────────────────────────────────────────────────────
