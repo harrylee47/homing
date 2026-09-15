@@ -44,6 +44,154 @@ async function api(path, opts = {}) {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
+/**
+ * 标签输入。
+ *
+ * 替代「用逗号分隔填一个框」：那种写法在中文输入法下几乎必错——
+ * 全角逗号、顿号、前后空格，任何一个都会让关键词悄悄变成另一个词，
+ * 而规则失效的表现是「验证码没推过来」，等发现已经晚了。
+ *
+ * 提交时机：回车、失焦、或输入逗号（半角全角都认）。
+ * **不按空格拆**——关键词里本来就可能带空格（verification code）。
+ */
+function tagInput(host, initial, placeholder = '输入后回车') {
+  const vals = [...(initial || [])]
+
+  const paint = () => {
+    host.innerHTML = vals.map((v, i) => `
+      <span class="tag"><span>${esc(v)}</span><b data-rm="${i}" title="删除">×</b></span>`).join('') +
+      `<input placeholder="${esc(vals.length ? '' : placeholder)}">`
+    const input = host.querySelector('input')
+
+    for (const b of host.querySelectorAll('[data-rm]')) {
+      b.onclick = () => { vals.splice(Number(b.dataset.rm), 1); paint(); host.querySelector('input').focus() }
+    }
+
+    const add = (text) => {
+      // 全角空格也要去掉：中文输入法下敲出来的空格常常是它
+      const parts = String(text).split(/[,，\n]/).map((x) => x.replace(/^[\s\u3000]+|[\s\u3000]+$/g, ''))
+      let added = false
+      for (const x of parts) if (x && !vals.includes(x)) { vals.push(x); added = true }
+      return added
+    }
+
+    const commit = () => {
+      const added = add(input.value)
+      input.value = ''
+      if (added) { paint(); host.querySelector('input').focus() }
+    }
+
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit() }
+      // 空输入时退格删掉最后一个标签，跟各处的标签输入习惯一致
+      else if (e.key === 'Backspace' && input.value === '' && vals.length) {
+        vals.pop(); paint(); host.querySelector('input').focus()
+      }
+    }
+    input.oninput = () => { if (/[,，]/.test(input.value)) commit() }
+    input.onblur = commit
+    input.onpaste = (e) => {
+      const t = (e.clipboardData || window.clipboardData).getData('text')
+      if (!/[,，\n]/.test(t)) return
+      // 必须直接切粘贴来的文本：input 元素存不住换行，
+      // 先赋给 input.value 再切，多行会被拼成一行（「顺丰\n京东」→「顺丰京东」）
+      e.preventDefault()
+      if (add(t)) { paint(); host.querySelector('input').focus() }
+    }
+  }
+  paint()
+  return {
+    /** 取值前先把输入框里还没提交的内容也算上，避免「打完没回车就点保存」丢东西 */
+    values: () => {
+      const input = host.querySelector('input')
+      const rest = (input?.value ?? '').split(/[,，\n]/)
+        .map((x) => x.replace(/^[\s\u3000]+|[\s\u3000]+$/g, '')).filter(Boolean)
+      return [...new Set([...vals, ...rest])]
+    },
+  }
+}
+
+/**
+ * 设备配色。
+ *
+ * 同一台设备在总览、消息列表、发送记录里必须是同一个颜色，否则「按颜色认设备」
+ * 这件事就不成立。所以颜色由 id 决定，而不是由它在列表里的位置决定。
+ */
+function deviceClass(id) {
+  let h = 0
+  for (const c of String(id || '')) h = (h * 31 + c.charCodeAt(0)) >>> 0
+  return `c-dev${h % 6}`
+}
+
+/** 列表项左侧色带的类别。与 style.css 的 .s-* 对应。 */
+const stripeOf = (kind, direction) =>
+  direction === 'out' ? 's-out' : `s-${kind}`
+
+/**
+ * 次要信息行：设备色点 + 设备名 + 其它补充。
+ *
+ * 设备只在多设备时显示——单设备下每条都缀一遍是噪音（pipeline.ts 里同样的判断）。
+ */
+function metaLine(parts, deviceId, deviceName, showDevice) {
+  const bits = []
+  if (showDevice && deviceName) {
+    bits.push(`<span class="pip ${deviceClass(deviceId)}"></span><span>${esc(deviceName)}</span>`)
+  }
+  for (const p of parts.filter(Boolean)) bits.push(`<span>${esc(p)}</span>`)
+  if (bits.length === 0) return ''
+  return `<div class="meta">${bits.join('<span class="sep">·</span>')}</div>`
+}
+
+/**
+ * 通话正文里除去状态之后还剩什么。
+ *
+ * 来电的正文本身就是状态（「未接来电」），徽章已经说了一遍，再显示就是重复；
+ * 去电的正文里还带着通话时长，那部分要留下。
+ */
+function callDetail(content) {
+  const rest = String(content).replace(/^已拨出\s*·\s*/, '')
+  return rest === content ? '' : rest
+}
+
+/** 通话状态：未接是要一眼看见的那个。 */
+function callBadge(content, direction) {
+  if (direction === 'out') return '<span class="badge info">去电</span>'
+  if (content.includes('未接')) return '<span class="badge err">未接来电</span>'
+  return '<span class="badge ok">已接来电</span>'
+}
+
+/** 事件类型徽章。颜色与 style.css 的 .c-sms/.c-call/.c-notification 对应。 */
+function kindBadge(kind, direction) {
+  if (direction === 'out') return '<span class="badge c-out">已发出</span>'
+  const label = { sms: '短信', call: '来电', notification: '通知' }[kind] || kind
+  return `<span class="badge c-${esc(kind)}">${esc(label)}</span>`
+}
+
+/** 发送状态：颜色即语义，送达是绿的、失败是红的，中间态留白。 */
+const OUTBOUND_STATUS = [
+  ['pending', '待下发', ''],
+  ['accepted', '已接收', 'info'],
+  ['sent', '已发出', 'info'],
+  ['delivered', '已送达', 'ok'],
+  ['failed', '失败', 'err'],
+]
+/** 发送记录的色带：成功绿、失败红、在途灰。 */
+const outboundStripe = (status) =>
+  status === 'delivered' ? 's-ok' : status === 'failed' ? 's-err' : 's-wait'
+
+function statusBadge(status) {
+  const hit = OUTBOUND_STATUS.find(([v]) => v === status)
+  return hit
+    ? `<span class="badge ${hit[2]}">${hit[1]}</span>`
+    : `<span class="badge">${esc(status)}</span>`
+}
+
+/** 只给日期，用于「搜到哪天为止」这类说明 */
+const fmtDate = (ts) => {
+  const d = new Date(Number(ts))
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 const fmt = (ts) => {
   if (!ts) return '—'
   const d = new Date(ts)
@@ -107,6 +255,8 @@ const routes = [
   [/^\/events\/(.+)$/, eventDetail],
   [/^\/events$/, events],
   [/^\/compose$/, compose],
+  [/^\/sent\/(.+)$/, sentDetail],
+  [/^\/sent$/, sent],
   [/^\/rules$/, rules],
   [/^\/tasks$/, tasks],
   [/^\/channels$/, channels],
@@ -133,7 +283,8 @@ async function route() {
     if (m) {
       nav.hidden = path === '/login' || path === '/setup'
       for (const a of nav.querySelectorAll('a')) {
-        a.classList.toggle('active', a.dataset.nav === (path.startsWith('/events') ? '/events' : path))
+        const group = path.startsWith('/events') ? '/events' : path.startsWith('/sent') ? '/compose' : path
+        a.classList.toggle('active', a.dataset.nav === group)
       }
       return view(m[1])
     }
@@ -253,10 +404,13 @@ async function overview() {
       <div class="card">
         <div class="row">
           <div class="col grow">
-            <div><span class="dot ${d.status}"></span><b>${esc(d.name)}</b></div>
+            <div class="row" style="justify-content:flex-start;gap:7px">
+              <span class="badge ${deviceClass(d.id)}">${esc(d.name)}</span>
+              <span class="dot ${d.status}"></span>
+            </div>
             <div class="muted">最后心跳 ${ago(d.last_seen_at)}${battery(d)}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</div>
           </div>
-          <span class="badge ${d.status === 'online' ? 'ok' : d.status === 'revoked' ? 'err' : ''}">${
+          <span class="badge ${d.status === 'online' ? 'ok' : d.status === 'revoked' ? 'err' : 'plain'}">${
             d.status === 'online' ? '在线' : d.status === 'revoked' ? '已吊销' : '离线'}</span>
         </div>
       </div>`).join('') : '<div class="card muted">还没有设备。到「设备」页生成配对码。</div>'
@@ -268,7 +422,7 @@ async function overview() {
         <div class="stat">
           <div><b>${s.today.events}</b><span class="muted">今日事件</span></div>
           <div><b>${s.today.outbound}</b><span class="muted">今日发送</span></div>
-          <div><b class="${s.today.outbound_failed ? 'err' : ''}">${s.today.outbound_failed}</b><span class="muted">发送失败</span></div>
+          <div class="${s.today.outbound_failed ? 'bad' : ''}"><b>${s.today.outbound_failed}</b><span class="muted">发送失败</span></div>
         </div>
       </div>
       <div class="card tight row">
@@ -307,11 +461,25 @@ async function events() {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
   }
 
+  // 类别切换放在最外层，而不是埋在「更多筛选」里：
+  // 「我要看通话记录」是个独立意图，不该让人先想到它是一种「消息筛选」
+  const kindNow = get('kind')
+  const segs = [['', '全部'], ['sms', '短信'], ['call', '通话'], ['notification', '通知']]
+  const segLink = (k) => {
+    const q = new URLSearchParams(location.search)
+    k ? q.set('kind', k) : q.delete('kind')
+    q.delete('offset')
+    return `/events?${q.toString()}`
+  }
+
   render(`
-    <h1>消息</h1>
+    <h1>${kindNow === 'call' ? '通话记录' : kindNow === 'notification' ? '应用通知' : '消息'}</h1>
+    <div class="segs">
+      ${segs.map(([k, t]) => `<a href="${segLink(k)}" class="${kindNow === k ? 'on' : ''}" data-seg="${k}">${t}</a>`).join('')}
+    </div>
     <div class="card">
-      <input id="f_q" placeholder="搜索发件人或正文" value="${esc(get('q'))}">
-      <details id="adv" ${['from', 'device', 'kind', 'since', 'until'].some((k) => get(k)) ? 'open' : ''}>
+      <input id="f_q" placeholder="${kindNow === 'call' ? '搜索号码' : '搜索发件人或正文'}" value="${esc(get('q'))}">
+      <details id="adv" ${['from', 'device', 'direction', 'since', 'until'].some((k) => get(k)) ? 'open' : ''}>
         <summary class="muted">更多筛选</summary>
         <label>来源号码</label>
         <input id="f_from" inputmode="tel" value="${esc(get('from'))}" placeholder="支持部分匹配，如 955">
@@ -321,11 +489,11 @@ async function events() {
             <option value="">全部设备</option>
             ${activeDevs.map((d) => `<option value="${esc(d.id)}"${get('device') === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
           </select>` : ''}
-        <label>类型</label>
-        <select id="f_kind">
+        <label>方向</label>
+        <select id="f_direction">
           <option value="">全部</option>
-          <option value="sms"${get('kind') === 'sms' ? ' selected' : ''}>短信</option>
-          <option value="call"${get('kind') === 'call' ? ' selected' : ''}>来电</option>
+          <option value="in"${get('direction') === 'in' ? ' selected' : ''}>${kindNow === 'call' ? '来电' : '收到的'}</option>
+          <option value="out"${get('direction') === 'out' ? ' selected' : ''}>${kindNow === 'call' ? '去电' : '本机发出的'}</option>
         </select>
         <div style="display:flex;gap:8px">
           <div class="grow"><label>起始日期</label><input id="f_since" type="date" value="${toDateInput(get('since'))}"></div>
@@ -345,7 +513,8 @@ async function events() {
       q: $('#f_q').value.trim(),
       from: $('#f_from')?.value.trim() ?? '',
       device: $('#f_device')?.value ?? '',
-      kind: $('#f_kind')?.value ?? '',
+      kind: kindNow,
+      direction: $('#f_direction')?.value ?? '',
       // 结束日期按当天 23:59:59 算，否则选了同一天会查不到任何东西
       since: $('#f_since')?.value ? new Date(`${$('#f_since').value}T00:00:00`).getTime() : '',
       until: $('#f_until')?.value ? new Date(`${$('#f_until').value}T23:59:59`).getTime() : '',
@@ -356,9 +525,14 @@ async function events() {
     return q
   }
 
+  for (const a of app.querySelectorAll('[data-seg]')) {
+    a.onclick = (e) => { e.preventDefault(); go(a.getAttribute('href')) }
+  }
+
   const apply = (over) => go(`/events?${buildQuery(over).toString()}`)
   $('#f_apply').onclick = () => apply({})
-  $('#f_clear').onclick = () => go('/events')
+  // 清空筛选但保留当前类别：在「通话」页点清空却跳回「全部」是反直觉的
+  $('#f_clear').onclick = () => go(kindNow ? `/events?kind=${kindNow}` : '/events')
   $('#f_q').onkeydown = (e) => { if (e.key === 'Enter') apply({}) }
 
   try {
@@ -371,20 +545,49 @@ async function events() {
     const to = Math.min(offset + limit, r.total)
     const multi = activeDevs.length > 1
 
+    // 没搜完时不能假装 total 是总数：这里区分「共 N 条」和「已找到 N 条」
+    const counter = r.total === 0
+      ? (r.exhausted === false ? '这一段时间里没找到' : '没有匹配的消息')
+      : r.exhausted === false
+        ? `已找到 ${r.total} 条`
+        : `第 ${from}–${to} 条，共 ${r.total} 条`
+
     $('#list').innerHTML = `
       <div class="card tight row">
-        <span class="muted">${r.total === 0 ? '没有匹配的消息' : `第 ${from}–${to} 条，共 ${r.total} 条`}${r.truncated ? '（结果已截断）' : ''}</span>
-        <select id="f_limit" style="width:auto">
+        <span class="muted">${counter}</span>
+        <select id="f_limit" class="sm">
           ${[30, 50, 100].map((n) => `<option value="${n}"${limit === n ? ' selected' : ''}>每页 ${n}</option>`).join('')}
         </select>
       </div>
-      ${r.events.length ? `<div class="card list">${r.events.map((e) => `
-        <div class="item" data-id="${esc(e.id)}">
+      ${r.exhausted === false ? `
+        <div class="card">
           <div class="row">
-            <b class="truncate">${esc(e.from)}</b>
-            <span class="muted">${multi ? `${esc(e.device_name)} · ` : ''}${fmt(e.occurred_at)}</span>
+            <span class="badge warn">只搜了最近的部分</span>
+            <span class="muted mono" style="font-size:12px">已扫 ${r.scanned} 条</span>
           </div>
-          <div class="muted truncate">${esc(e.content)}</div>
+          <div class="muted" style="margin-top:8px">
+            号码和正文是加密存的，只能逐条解开再比对，所以一次请求有时间预算。
+            ${r.scanned_to ? `这次搜到 <b>${fmtDate(r.scanned_to)}</b> 为止，更早的还没搜。` : ''}
+          </div>
+          <div class="btnrow">
+            <button class="sm" id="deep">继续往更早搜</button>
+            <button class="ghost sm" id="bydate">改用时间范围找</button>
+          </div>
+        </div>` : ''}
+      ${r.events.length ? `<div class="card list">${r.events.map((e) => `
+        <div class="item striped ${stripeOf(e.kind, e.direction)}" data-id="${esc(e.id)}">
+          <div class="row">
+            <b class="truncate">${e.direction === 'out' && e.kind === 'sms' ? '→ ' : ''}${esc(e.from)}</b>
+            <span class="muted mono" style="font-size:12px;flex:none">${fmt(e.occurred_at)}</span>
+          </div>
+          ${e.kind === 'call'
+            ? `<div style="margin-top:6px">${callBadge(e.content, e.direction)}
+                 ${callDetail(e.content) ? `<span class="muted" style="margin-left:6px">${esc(callDetail(e.content))}</span>` : ''}</div>`
+            : `<div class="muted truncate" style="margin-top:3px">${esc(e.content)}</div>`}
+          ${metaLine(
+            [e.direction === 'out' && e.kind === 'sms' ? '本机发出' : '', ...e.matched_rules],
+            e.device_id, e.device_name, multi,
+          )}
         </div>`).join('')}</div>` : ''}
       ${r.total > limit ? `
         <div class="card tight row">
@@ -399,34 +602,57 @@ async function events() {
     $('#f_limit').onchange = (e) => apply({ limit: Number(e.target.value), offset: 0 })
     const prev = $('#p_prev'); if (prev) prev.onclick = () => apply({ offset: Math.max(0, offset - limit) })
     const next = $('#p_next'); if (next) next.onclick = () => apply({ offset: offset + limit })
+
+    const deep = $('#deep')
+    if (deep) deep.onclick = () => {
+      deep.disabled = true
+      deep.textContent = '搜索中，可能要几秒…'
+      apply({ deep: 1, offset: 0 })
+    }
+    const byDate = $('#bydate')
+    if (byDate) byDate.onclick = () => {
+      $('#adv').open = true
+      $('#f_since').focus()
+      toast('填上起止日期，搜索会先按时间缩小范围')
+    }
   } catch (e) { fail(e) }
 }
+
+const KIND_LABEL = { sms: '短信', call: '来电', notification: '应用通知' }
 
 async function eventDetail(id) {
   render('<div class="loading">加载中…</div>')
   try {
-    const r = await api(`/events?limit=200`)
-    const e = r.events.find((x) => x.id === id)
-    if (!e) return render('<div class="card muted">消息不存在或已删除。</div>')
+    let e
+    try { e = await api(`/events/${encodeURIComponent(id)}`) }
+    catch { return render('<div class="card muted">消息不存在或已删除。</div>') }
 
     render(`
-      <h1>${esc(e.from)}</h1>
+      <div class="row" style="align-items:flex-start">
+        <h1 class="wrap" style="margin-bottom:8px">${esc(e.from)}</h1>
+        <a href="/events" class="muted">返回</a>
+      </div>
+      <div class="row" style="justify-content:flex-start;gap:6px;margin-bottom:12px">
+        ${kindBadge(e.kind, e.direction)}
+        <span class="badge ${deviceClass(e.device_id)}">${esc(e.device_name || e.device_id)}</span>
+      </div>
       <div class="card">
-        <div class="wrap">${esc(e.content)}</div>
+        <div class="wrap" style="font-size:16px">${esc(e.content)}</div>
       </div>
       <div class="card tight">
-        <div class="row"><span class="muted">发生时间</span><span>${new Date(e.occurred_at).toLocaleString('zh-CN', { hour12: false })}</span></div>
-        <div class="row"><span class="muted">上报延迟</span><span>${e.received_at - e.occurred_at} ms</span></div>
-        <div class="row"><span class="muted">类型</span><span>${esc(e.kind)}</span></div>
-        <div class="row"><span class="muted">接收设备</span><span>${esc(e.device_name || e.device_id)}</span></div>
-        <div class="row"><span class="muted">命中规则</span><span>${e.matched_rules.length ? esc(e.matched_rules.join(', ')) : '兜底规则'}</span></div>
+        <div class="row"><span class="muted">发生时间</span><span class="mono">${new Date(e.occurred_at).toLocaleString('zh-CN', { hour12: false })}</span></div>
+        <div class="row"><span class="muted">上报延迟</span><span class="mono">${e.received_at - e.occurred_at} ms</span></div>
+        <div class="row"><span class="muted">类型</span><span>${KIND_LABEL[e.kind] || esc(e.kind)}${e.direction === 'out' ? '（手机发出）' : ''}</span></div>
+        <div class="row"><span class="muted">命中规则</span><span>${e.matched_rules.length ? esc(e.matched_rules.join('、')) : '兜底规则'}</span></div>
       </div>
       <div class="btnrow">
-        <a href="/compose?to=${encodeURIComponent(e.from)}&ref=${encodeURIComponent(e.id)}&dev=${encodeURIComponent(e.device_id)}"><button class="sm">回复</button></a>
-        <button class="ghost sm" id="copy">复制正文</button>
+        ${e.kind === 'call' ? `<a href="tel:${encodeURIComponent(e.from)}"><button class="sm">拨回</button></a>` : ''}
+        <a href="/compose?to=${encodeURIComponent(e.from)}&ref=${encodeURIComponent(e.id)}&dev=${encodeURIComponent(e.device_id)}"><button class="${e.kind === 'call' ? 'ghost sm' : 'sm'}">${e.kind === 'call' ? '发短信' : '回复'}</button></a>
+        ${e.kind === 'call' ? '' : '<button class="ghost sm" id="copy">复制正文</button>'}
       </div>`)
 
-    $('#copy').onclick = async () => {
+    const copy = $('#copy')
+    if (copy) copy.onclick = async () => {
       try { await navigator.clipboard.writeText(e.content); toast('已复制') }
       catch { toast('复制失败，请手动选择') }
     }
@@ -446,7 +672,10 @@ async function compose() {
     // 那张卡发回去，否则对方看到的是一个陌生号码
     const preferred = p.get('dev')
     render(`
-      <h1>发送短信</h1>
+      <div class="row">
+        <h1>发送短信</h1>
+        <a href="/sent" class="muted">发送记录 →</a>
+      </div>
       <div class="card">
         <label>设备</label>
         <select id="dev">${online.length
@@ -483,15 +712,188 @@ async function compose() {
   } catch (e) { fail(e) }
 }
 
+/**
+ * 网关自己发出去的短信记录。
+ *
+ * 与「消息」页分开：那边是收到的，这边是发出的，混在一起看反而费劲。
+ * 设备上用户手动发的短信会作为 direction=out 的事件进「消息」页，
+ * 这里只收网关下发的任务——两条路径的失败原因完全不同。
+ */
+async function sent() {
+  const p = new URLSearchParams(location.search)
+  const get = (k, d = '') => p.get(k) ?? d
+  const limit = Number(get('limit', '30'))
+  const offset = Number(get('offset', '0'))
+
+  const devs = await api('/devices').catch(() => ({ devices: [] }))
+  const activeDevs = devs.devices.filter((d) => d.status !== 'revoked')
+  const STATUS = [['', '全部状态'], ...OUTBOUND_STATUS.map(([v, t]) => [v, t])]
+
+  render(`
+    <div class="row">
+      <h1>发送记录</h1>
+      <a href="/compose" class="muted">← 发送短信</a>
+    </div>
+    <div class="card">
+      <input id="f_to" inputmode="tel" placeholder="按收件人号码筛选" value="${esc(get('to'))}">
+      <div style="display:flex;gap:8px">
+        <div class="grow">
+          <label>状态</label>
+          <select id="f_status">
+            ${STATUS.map(([v, t]) => `<option value="${v}"${get('status') === v ? ' selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </div>
+        ${activeDevs.length > 1 ? `
+          <div class="grow">
+            <label>设备</label>
+            <select id="f_device">
+              <option value="">全部设备</option>
+              ${activeDevs.map((d) => `<option value="${esc(d.id)}"${get('device') === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+            </select>
+          </div>` : ''}
+      </div>
+      <div class="btnrow">
+        <button id="f_apply" class="sm">应用筛选</button>
+        <button id="f_clear" class="ghost sm">清空</button>
+      </div>
+    </div>
+    <div id="list"><div class="loading">加载中…</div></div>`)
+
+  const buildQuery = (over = {}) => {
+    const q = new URLSearchParams()
+    const vals = {
+      to: $('#f_to').value.trim(),
+      status: $('#f_status').value,
+      device: $('#f_device')?.value ?? '',
+      limit, offset: 0,
+      ...over,
+    }
+    for (const [k, v] of Object.entries(vals)) if (v !== '' && v != null) q.set(k, String(v))
+    return q
+  }
+  const apply = (over) => go(`/sent?${buildQuery(over).toString()}`)
+  $('#f_apply').onclick = () => apply({})
+  $('#f_clear').onclick = () => go('/sent')
+  $('#f_to').onkeydown = (e) => { if (e.key === 'Enter') apply({}) }
+
+  try {
+    const query = new URLSearchParams(location.search)
+    query.set('limit', String(limit))
+    query.set('offset', String(offset))
+    const r = await api(`/outbound?${query.toString()}`)
+
+    const from = r.total === 0 ? 0 : offset + 1
+    const to = Math.min(offset + limit, r.total)
+    const multi = activeDevs.length > 1
+
+    $('#list').innerHTML = `
+      <div class="card tight row">
+        <span class="muted">${r.total === 0 ? '还没有发送记录' : `第 ${from}–${to} 条，共 ${r.total} 条`}</span>
+        <select id="f_limit" class="sm">
+          ${[30, 50, 100].map((n) => `<option value="${n}"${limit === n ? ' selected' : ''}>每页 ${n}</option>`).join('')}
+        </select>
+      </div>
+      ${r.outbound.length ? `<div class="card list">${r.outbound.map((o) => `
+        <div class="item striped ${outboundStripe(o.status)}" data-id="${esc(o.id)}">
+          <div class="row">
+            <b class="truncate">→ ${esc(o.to)}</b>
+            <span class="muted mono" style="font-size:12px;flex:none">${fmt(o.created_at)}</span>
+          </div>
+          <div class="muted truncate" style="margin-top:3px">${esc(o.text)}</div>
+          <div class="row" style="justify-content:flex-start;gap:6px;margin-top:6px">
+            ${statusBadge(o.status)}
+            ${o.error ? `<span class="badge err">${esc(o.error)}</span>` : ''}
+          </div>
+          ${metaLine([], o.device_id, o.device_name, multi)}
+        </div>`).join('')}</div>` : ''}
+      ${r.total > limit ? `
+        <div class="card tight row">
+          <button class="ghost sm" id="p_prev" ${offset === 0 ? 'disabled' : ''}>上一页</button>
+          <span class="muted">${Math.floor(offset / limit) + 1} / ${Math.ceil(r.total / limit)}</span>
+          <button class="ghost sm" id="p_next" ${to >= r.total ? 'disabled' : ''}>下一页</button>
+        </div>` : ''}`
+
+    for (const el of $('#list').querySelectorAll('.item')) {
+      el.onclick = () => go(`/sent/${el.dataset.id}`)
+    }
+    $('#f_limit').onchange = (e) => apply({ limit: Number(e.target.value), offset: 0 })
+    const prev = $('#p_prev'); if (prev) prev.onclick = () => apply({ offset: Math.max(0, offset - limit) })
+    const next = $('#p_next'); if (next) next.onclick = () => apply({ offset: offset + limit })
+  } catch (e) { fail(e) }
+}
+
+/**
+ * 单条发送记录。
+ *
+ * 列表里正文是截断的，而发出去的内容恰恰经常很长（保号短信、转发的验证码），
+ * 看不到全文就没法判断「这条到底发的是什么」。
+ */
+async function sentDetail(id) {
+  render('<div class="loading">加载中…</div>')
+  try {
+    let o
+    try { o = await api(`/outbound/${encodeURIComponent(id)}`) }
+    catch { return render('<div class="card muted">发送记录不存在。</div>') }
+
+    const steps = OUTBOUND_STATUS.filter(([v]) => v !== 'failed')
+    const idx = steps.findIndex(([v]) => v === o.status)
+    const failed = o.status === 'failed'
+
+    render(`
+      <div class="row" style="align-items:flex-start">
+        <h1 class="wrap" style="margin-bottom:8px">→ ${esc(o.to)}</h1>
+        <a href="/sent" class="muted">返回</a>
+      </div>
+      <div class="row" style="justify-content:flex-start;gap:6px;margin-bottom:12px">
+        ${statusBadge(o.status)}
+        <span class="badge ${deviceClass(o.device_id)}">${esc(o.device_name)}</span>
+      </div>
+
+      <div class="card">
+        <div class="wrap" style="font-size:16px">${esc(o.text)}</div>
+        <div class="muted" style="margin-top:8px">${[...o.text].length} 字${[...o.text].length > 70 ? '（超过 70 字会拆成多条发送）' : ''}</div>
+      </div>
+
+      <h2>投递过程</h2>
+      <div class="card">
+        <div class="track">
+          ${steps.map(([v, t], i) => `
+            <span class="badge ${failed ? (i === 0 ? 'err' : 'plain') : i <= idx ? 'ok' : 'plain'}">${t}</span>`).join('')}
+          ${failed ? '<span class="badge err">失败</span>' : ''}
+        </div>
+        ${o.error ? `<div class="err-text">${esc(o.error)}</div>` : ''}
+        ${o.status === 'sent' ? '<div class="muted" style="margin-top:10px">已交给运营商。停在这一步通常是对方网络没回送达报告，不代表没收到。</div>' : ''}
+        ${o.status === 'pending' ? '<div class="muted" style="margin-top:10px">还没送到设备。设备离线时会一直停在这里。</div>' : ''}
+      </div>
+
+      <div class="card tight">
+        <div class="row"><span class="muted">创建时间</span><span class="mono">${new Date(o.created_at).toLocaleString('zh-CN', { hour12: false })}</span></div>
+        <div class="row"><span class="muted">最后更新</span><span class="mono">${new Date(o.updated_at).toLocaleString('zh-CN', { hour12: false })}</span></div>
+        <div class="row"><span class="muted">耗时</span><span class="mono">${o.updated_at > o.created_at ? `${((o.updated_at - o.created_at) / 1000).toFixed(1)} s` : '—'}</span></div>
+        <div class="row"><span class="muted">任务号</span><span class="mono truncate" style="max-width:60%">${esc(o.id)}</span></div>
+      </div>
+
+      <div class="btnrow">
+        <a href="/compose?to=${encodeURIComponent(o.to)}&dev=${encodeURIComponent(o.device_id)}"><button class="sm">再发一条</button></a>
+        <button class="ghost sm" id="copy">复制正文</button>
+      </div>`)
+
+    $('#copy').onclick = async () => {
+      try { await navigator.clipboard.writeText(o.text); toast('已复制') }
+      catch { toast('复制失败，请手动选择') }
+    }
+  } catch (e) { fail(e) }
+}
+
 /** 状态机进度：accepted → sent → delivered，每一步都可见（计划 §5.5）。 */
 function trackOutbound(id) {
-  const steps = [['accepted', '已接收'], ['sent', '已发出'], ['delivered', '已送达']]
+  const steps = OUTBOUND_STATUS.filter(([v]) => v !== 'pending' && v !== 'failed')
   const paint = (status, error) => {
     const idx = steps.findIndex(([s]) => s === status)
     $('#status').innerHTML = `
       <div class="card">
-        <div class="row">${steps.map(([s, label], i) => `
-          <span class="badge ${status === 'failed' ? (i === 0 ? 'err' : '') : i <= idx ? 'ok' : ''}">${label}</span>
+        <div class="track">${steps.map(([s, label], i) => `
+          <span class="badge ${status === 'failed' ? (i === 0 ? 'err' : 'plain') : i <= idx ? 'ok' : 'plain'}">${label}</span>
         `).join('')}</div>
         ${status === 'failed' ? `<div class="err-text">发送失败：${esc(error || '未知原因')}</div>` : ''}
         ${status === 'delivered' ? '<div class="muted" style="margin-top:8px">已送达对方手机</div>' : ''}
@@ -528,10 +930,12 @@ async function rules() {
       <p class="muted">按优先级从小到大匹配。没有规则命中时走兜底：推送到全部启用渠道并归档。</p>
       ${!rs.length && chs.length ? `<div class="card">
         <b>还没有规则</b>
-        <p class="muted">可以一键写入四条建议规则，按顺序匹配：<br>
+        <p class="muted">可以一键写入建议规则，按顺序匹配：<br>
         <b>验证码</b> 高优先级、自动提取、穿透专注模式<br>
         <b>广告推广</b> 只归档不推送<br>
-        <b>普通短信</b> 前两者都不是，正常推送<br>
+        <b>应用通知</b> App 推送来的验证码走这条<br>
+        <b>已发送短信</b> 本机发出的，只归档不推送<br>
+        <b>普通短信</b> 以上都不是，正常推送<br>
         <b>来电</b> 单独分组，点击可预填回复<br>
         之后随时可改。</p>
         <div class="btnrow"><button id="seed" class="sm">写入建议规则</button></div>
@@ -541,7 +945,8 @@ async function rules() {
           <div class="row">
             <div class="col grow">
               <b>${esc(r.name)}</b>
-              <span class="muted">优先级 ${r.priority} · ${r.action.channels.length} 个渠道${r.action.extract_code ? ' · 提取验证码' : ''}</span>
+              <span class="muted">优先级 ${r.priority} · ${r.action.channels.length ? `${r.action.channels.length} 个渠道` : '只归档'}${r.action.extract_code ? ' · 提取验证码' : ''}</span>
+              <span class="muted">${esc(matchSummary(r.match))}</span>
               ${r.match.device_ids?.length
                 ? `<span class="muted">仅限 ${r.match.device_ids.map((id) => esc(activeDevs.find((d) => d.id === id)?.name || id)).join('、')}</span>`
                 : ''}
@@ -568,11 +973,65 @@ async function rules() {
   } catch (e) { fail(e) }
 }
 
+/**
+ * 一行话概括这条规则匹配什么。
+ *
+ * 列表页只显示名字的话，「验证码」和「验证码2」放在一起根本分不清谁是谁，
+ * 只能一条条点进去看。
+ */
+function matchSummary(m) {
+  const parts = []
+  if (m.kind?.length) parts.push(m.kind.map((k) => (RULE_KINDS.find(([v]) => v === k) || [, k])[1]).join('/'))
+  if (m.direction?.length === 1) parts.push(m.direction[0] === 'out' ? '发出的' : '收到的')
+  if (m.sender?.values?.length) {
+    const label = (SENDER_MODES.find(([v]) => v === m.sender.mode) || [, m.sender.mode])[1]
+    parts.push(`发件人${label} ${m.sender.values.slice(0, 3).join('/')}${m.sender.values.length > 3 ? '…' : ''}`)
+  } else if (m.sender_regex) {
+    parts.push(`发件人正则 ${m.sender_regex}`)
+  }
+  if (m.content_contains?.length) {
+    parts.push(`含 ${m.content_contains.slice(0, 3).join('/')}${m.content_contains.length > 3 ? '…' : ''}`)
+  }
+  if (m.content_excludes?.length) parts.push(`排除 ${m.content_excludes.slice(0, 2).join('/')}`)
+  if (m.time_window) parts.push(`${m.time_window.from}–${m.time_window.to}`)
+  if (m.device_ids?.length) parts.push(`限 ${m.device_ids.length} 台设备`)
+  return parts.length ? parts.join(' · ') : '匹配全部消息'
+}
+
+/** 事件类型的显示名。列表页、筛选、规则编辑共用一份，免得三处各写各的。 */
+const RULE_KINDS = [['sms', '短信'], ['call', '来电'], ['notification', '应用通知']]
+
+const SENDER_MODES = [
+  ['contains', '包含'], ['equals', '等于'], ['prefix', '开头是'],
+  ['suffix', '尾号是'], ['regex', '正则（高级）'],
+]
+
 function ruleEditor(rule, chs, devs = []) {
   const r = rule || {
     id: null, name: '', priority: 100, enabled: true,
-    match: { kind: [], sender_regex: null, content_contains: [], content_regex: null, device_ids: [] },
-    action: { channels: [], priority: 'normal', extract_code: true, template: '【{sender}】{content}', archive: true, stop_processing: false },
+    match: {
+      kind: [], sender: null, sender_regex: null,
+      content_contains: [], content_excludes: [], content_regex: null,
+      device_ids: [], direction: [], time_window: null,
+    },
+    action: {
+      channels: [], priority: 'normal', extract_code: true,
+      template: '【{sender}】{content}', archive: true, stop_processing: false,
+    },
+  }
+  const m = r.match
+
+  // 老规则只有 sender_regex，把它按正则模式显示出来，不让用户看见「两个发件人字段」
+  const sender = m.sender && m.sender.values?.length
+    ? { mode: m.sender.mode, values: m.sender.values }
+    : m.sender_regex
+      ? { mode: 'regex', values: [m.sender_regex] }
+      : { mode: 'contains', values: [] }
+
+  const win = m.time_window || null
+  const bark = {
+    level: 'active', group: '', auto_copy_code: true, deep_link: 'event',
+    ...(r.action.bark || {}),
   }
 
   render(`
@@ -583,26 +1042,61 @@ function ruleEditor(rule, chs, devs = []) {
       <label>启用</label>
       <select id="enabled"><option value="1"${r.enabled ? ' selected' : ''}>是</option><option value="0"${r.enabled ? '' : ' selected'}>否</option></select>
     </div>
-    <h2>匹配条件（留空表示不限制）</h2>
+
+    <h2>匹配条件</h2>
     <div class="card">
+      <div class="muted">留空的条件表示不限制。多个条件之间是「都要满足」，同一条件里的多个值是「满足其一」。</div>
+
       <label>事件类型</label>
-      <select id="kind">
-        <option value=""${!r.match.kind.length ? ' selected' : ''}>全部</option>
-        <option value="sms"${r.match.kind[0] === 'sms' ? ' selected' : ''}>短信</option>
-        <option value="call"${r.match.kind[0] === 'call' ? ' selected' : ''}>来电</option>
+      <div class="chips">
+        ${RULE_KINDS.map(([v, t]) => `
+          <label class="tag" style="cursor:pointer">
+            <input type="checkbox" data-kind="${v}" style="width:auto;margin-right:4px"${(m.kind || []).includes(v) ? ' checked' : ''}>
+            <span>${t}</span>
+          </label>`).join('')}
+      </div>
+      <div class="muted">都不勾表示全部类型。</div>
+
+      <label>方向</label>
+      <select id="direction">
+        <option value=""${!(m.direction || []).length ? ' selected' : ''}>全部</option>
+        <option value="in"${(m.direction || []).join() === 'in' ? ' selected' : ''}>收到的</option>
+        <option value="out"${(m.direction || []).join() === 'out' ? ' selected' : ''}>本机发出的</option>
       </select>
-      <label>发件人正则</label><input id="sender" class="mono" value="${esc(r.match.sender_regex || '')}" placeholder="^(95533|95588)$">
-      <label>正文包含（逗号分隔，任一命中即可）</label><input id="contains" value="${esc((r.match.content_contains || []).join(','))}" placeholder="验证码,动态密码">
+
+      <label>发件人</label>
+      <select id="smode">
+        ${SENDER_MODES.map(([v, t]) => `<option value="${v}"${sender.mode === v ? ' selected' : ''}>${t}</option>`).join('')}
+      </select>
+      <div id="sbox" style="margin-top:7px"></div>
+      <div class="muted" id="shint"></div>
+
+      <label>正文包含</label>
+      <div id="cbox"></div>
+      <div class="muted">命中任意一个即可。</div>
+
+      <label>正文不包含</label>
+      <div id="xbox"></div>
+      <div class="muted">命中任意一个就排除掉，优先于上面的包含。常用来把带「退订」的营销短信挑出去。</div>
+
+      <label>生效时段</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="w_from" type="time" value="${esc(win?.from || '')}" style="flex:1">
+        <span class="muted">到</span>
+        <input id="w_to" type="time" value="${esc(win?.to || '')}" style="flex:1">
+      </div>
+      <div class="muted">两个都留空表示全天。起点晚于终点表示跨午夜，如 23:00 到 07:00。按服务器时区算。</div>
 
       <label>限定设备</label>
       ${devs.length > 1 ? `
         <div class="muted">不勾选表示不限制。勾选后这条规则只对选中的设备生效——
         不同卡走不同渠道就靠这里，给每张卡各建一条规则即可。</div>
         ${devs.map((d) => `<label style="display:flex;gap:8px;align-items:center;margin:6px 0">
-          <input type="checkbox" data-dev="${esc(d.id)}" style="width:auto"${(r.match.device_ids || []).includes(d.id) ? ' checked' : ''}>
+          <input type="checkbox" data-dev="${esc(d.id)}" style="width:auto"${(m.device_ids || []).includes(d.id) ? ' checked' : ''}>
           <span>${esc(d.name)} <span class="muted">${d.status === 'online' ? '在线' : '离线'}</span></span></label>`).join('')}
       ` : `<div class="muted">当前只有 ${devs.length} 台设备，无需限定。多设备时这里可以让不同的卡走不同的渠道。</div>`}
     </div>
+
     <h2>动作</h2>
     <div class="card">
       <label>推送渠道</label>
@@ -610,12 +1104,40 @@ function ruleEditor(rule, chs, devs = []) {
         <input type="checkbox" data-ch="${esc(c.id)}" style="width:auto"${r.action.channels.includes(c.id) ? ' checked' : ''}>
         <span>${esc(c.name)} <span class="muted">(${esc(c.type)})</span></span></label>`).join('')
         : '<div class="muted">还没有渠道，去「设置 → 渠道」添加。</div>'}
-      <label>模板</label><input id="tpl" class="mono" value="${esc(r.action.template)}">
-      <div class="muted">可用占位符：{sender} {content} {code} {time} {device}</div>
+      <div class="muted">一个都不勾 = 只归档不推送。</div>
+
+      <label>推送内容模板</label>
+      <input id="tpl" class="mono" value="${esc(r.action.template)}">
+      <div class="chips">
+        ${TEMPLATE_VARS.map(([k, t]) => `<button type="button" class="ghost" data-var="${k}">${t}</button>`).join('')}
+      </div>
+      <div class="preview" id="tplpv"></div>
+
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="extract" style="width:auto"${r.action.extract_code ? ' checked' : ''}><span>提取验证码</span></label>
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="stop" style="width:auto"${r.action.stop_processing ? ' checked' : ''}><span>命中后不再匹配后续规则</span></label>
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="high" style="width:auto"${r.action.priority === 'high' ? ' checked' : ''}><span>高优先级（推送时出声）</span></label>
     </div>
+
+    ${chs.some((c) => c.type === 'bark') ? `
+      <h2>Bark 行为</h2>
+      <div class="card">
+        <div class="muted">这几项配在规则里而不是渠道里——它随消息类型变化：
+        银行验证码要穿透专注模式，广告短信不该。对非 Bark 渠道无影响。</div>
+        <label>通知级别</label>
+        <select id="b_level">
+          ${BARK_LEVELS.map(([v, t]) => `<option value="${v}"${bark.level === v ? ' selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <label>分组名</label>
+        <input id="b_group" value="${esc(bark.group || '')}" placeholder="如 验证码">
+        <div class="muted">通知中心按分组分栏。多设备时会自动再缀上设备名。</div>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="b_copy" style="width:auto"${bark.auto_copy_code ? ' checked' : ''}><span>长按通知自动复制验证码</span></label>
+        <label>点击通知跳转到</label>
+        <select id="b_link">
+          <option value="event"${bark.deep_link === 'event' ? ' selected' : ''}>消息详情</option>
+          <option value="compose"${bark.deep_link === 'compose' ? ' selected' : ''}>预填回复</option>
+          <option value="none"${bark.deep_link === 'none' ? ' selected' : ''}>不跳转</option>
+        </select>
+      </div>` : ''}
     <div class="btnrow">
       <button id="save">保存</button>
       <button class="ghost sm" id="test">用历史消息试跑</button>
@@ -625,32 +1147,109 @@ function ruleEditor(rule, chs, devs = []) {
     <div id="err" class="err-text"></div>
     <div id="testout"></div>`)
 
-  const collect = () => ({
-    id: r.id || undefined,
-    name: $('#name').value.trim() || '未命名规则',
-    priority: Number($('#prio').value) || 100,
-    enabled: $('#enabled').value === '1',
-    match: {
-      kind: $('#kind').value ? [$('#kind').value] : [],
-      sender_regex: $('#sender').value.trim() || null,
-      content_contains: $('#contains').value.split(',').map((x) => x.trim()).filter(Boolean),
-      content_regex: null,
-      device_ids: [...app.querySelectorAll('[data-dev]')].filter((c) => c.checked).map((c) => c.dataset.dev),
-    },
-    action: {
-      channels: [...app.querySelectorAll('[data-ch]')].filter((c) => c.checked).map((c) => c.dataset.ch),
-      priority: $('#high').checked ? 'high' : 'normal',
-      extract_code: $('#extract').checked,
-      template: $('#tpl').value,
-      archive: true,
-      stop_processing: $('#stop').checked,
-    },
-  })
+  // ── 发件人：正则模式用单行输入，其余用标签 ──────────────
+  let senderTags = null
+  const paintSender = () => {
+    const mode = $('#smode').value
+    const box = $('#sbox')
+    if (mode === 'regex') {
+      box.innerHTML = `<input id="sregex" class="mono" value="${esc(sender.mode === 'regex' ? (sender.values[0] || '') : '')}" placeholder="^(95533|95588)$">`
+      senderTags = null
+      $('#shint').textContent = '对完整发件人做正则匹配。写错的正则会让这条规则永不命中，先用下面的试跑确认。'
+    } else {
+      box.innerHTML = '<div class="tags"></div>'
+      senderTags = tagInput(box.firstElementChild, sender.mode === 'regex' ? [] : sender.values, '如 95533，回车添加')
+      $('#shint').textContent = {
+        contains: '发件人里出现其中任意一段即可，不用管国际区号前缀。',
+        equals: '完整相等才算。带不带 +86 是两个不同的值。',
+        prefix: '常用于 106 开头的服务号。',
+        suffix: '常用于只认尾号的场景，带不带国际区号都能命中。',
+      }[mode]
+    }
+  }
+  $('#smode').onchange = paintSender
+  paintSender()
+
+  const contentTags = tagInput(
+    Object.assign($('#cbox'), { className: 'tags' }), m.content_contains || [], '如 验证码，回车添加',
+  )
+  const excludeTags = tagInput(
+    Object.assign($('#xbox'), { className: 'tags' }), m.content_excludes || [], '如 退订，回车添加',
+  )
+
+  // ── 模板：点占位符插到光标处，并实时预览 ────────────────
+  const tpl = $('#tpl')
+  for (const b of app.querySelectorAll('[data-var]')) {
+    b.onclick = () => {
+      const token = `{${b.dataset.var}}`
+      const at = tpl.selectionStart ?? tpl.value.length
+      tpl.value = tpl.value.slice(0, at) + token + tpl.value.slice(tpl.selectionEnd ?? at)
+      tpl.focus()
+      tpl.selectionStart = tpl.selectionEnd = at + token.length
+      paintPreview()
+    }
+  }
+  const paintPreview = () => {
+    $('#tplpv').innerHTML = `<span class="muted">预览：</span>${esc(renderTemplate(tpl.value))}`
+  }
+  tpl.oninput = paintPreview
+  paintPreview()
+
+  const collect = () => {
+    const kinds = [...app.querySelectorAll('[data-kind]')].filter((c) => c.checked).map((c) => c.dataset.kind)
+    const mode = $('#smode').value
+    const values = mode === 'regex'
+      ? [$('#sregex').value.trim()].filter(Boolean)
+      : senderTags.values()
+    const from = $('#w_from').value, to = $('#w_to').value
+    return {
+      id: r.id || undefined,
+      name: $('#name').value.trim() || '未命名规则',
+      priority: Number($('#prio').value) || 100,
+      enabled: $('#enabled').value === '1',
+      match: {
+        kind: kinds,
+        sender: values.length ? { mode, values } : null,
+        // 迁到 sender 之后就把老字段清掉，否则两个条件会同时生效（AND）
+        sender_regex: null,
+        content_contains: contentTags.values(),
+        content_excludes: excludeTags.values(),
+        content_regex: m.content_regex ?? null,
+        device_ids: [...app.querySelectorAll('[data-dev]')].filter((c) => c.checked).map((c) => c.dataset.dev),
+        direction: $('#direction').value ? [$('#direction').value] : [],
+        // 只填了一半的时段是无意义的，当没填处理
+        time_window: from && to ? { from, to } : null,
+      },
+      action: {
+        channels: [...app.querySelectorAll('[data-ch]')].filter((c) => c.checked).map((c) => c.dataset.ch),
+        priority: $('#high').checked ? 'high' : 'normal',
+        extract_code: $('#extract').checked,
+        template: $('#tpl').value,
+        archive: true,
+        stop_processing: $('#stop').checked,
+        // 界面上没有 Bark 区块时（没有 Bark 渠道）保留原值，
+        // 不能因为没显示就把用户配过的东西抹掉
+        bark: $('#b_level')
+          ? {
+              level: $('#b_level').value,
+              group: $('#b_group').value.trim() || null,
+              auto_copy_code: $('#b_copy').checked,
+              deep_link: $('#b_link').value,
+            }
+          : (r.action.bark ?? undefined),
+      },
+    }
+  }
 
   $('#back').onclick = () => go('/rules')
   $('#save').onclick = async () => {
+    const c = collect()
+    const from = $('#w_from').value, to = $('#w_to').value
+    if ((from && !to) || (!from && to)) {
+      return ($('#err').textContent = '生效时段要么两个都填，要么都留空')
+    }
     try {
-      await api('/rules', { method: 'POST', body: collect() })
+      await api('/rules', { method: 'POST', body: c })
       toast('已保存')
       go('/rules')
     } catch (e) { $('#err').textContent = e.message }
@@ -664,6 +1263,7 @@ function ruleEditor(rule, chs, devs = []) {
       const out = await api('/rules/test', { method: 'POST', body: { match: c.match, action: c.action } })
       $('#testout').innerHTML = `
         <h2>试跑结果：${out.matched} / ${out.total} 条命中</h2>
+        ${out.matched === 0 ? '<div class="card muted">一条都没命中。条件太严，或者历史消息里本来就没有这类消息。</div>' : ''}
         <div class="card list">${out.results.map((x) => `
           <div class="item">
             <div class="row">
@@ -683,6 +1283,28 @@ function ruleEditor(rule, chs, devs = []) {
     toast('已删除')
     go('/rules')
   }
+}
+
+const BARK_LEVELS = [
+  ['active', '普通'],
+  ['timeSensitive', '时效性（可穿透专注模式）'],
+  ['critical', '重要警告（静音也会响）'],
+  ['passive', '安静（不亮屏）'],
+]
+
+/** 占位符清单与服务端 core/rules.ts 的 TemplateVars 一一对应，改动要同步。 */
+const TEMPLATE_VARS = [
+  ['sender', '发件人'], ['content', '正文'], ['code', '验证码'],
+  ['time', '时间'], ['device', '设备名'],
+]
+
+/** 模板预览用的样例消息。挑的是验证码短信——模板最常调的就是这一类。 */
+function renderTemplate(template) {
+  const sample = {
+    sender: '95533', content: '【建设银行】您的验证码是 902431，请勿泄露',
+    code: '902431', time: fmt(Date.now()), device: '日本卡',
+  }
+  return String(template).replace(/\{(\w+)\}/g, (whole, k) => (k in sample ? sample[k] : whole))
 }
 
 // ── 渠道 ────────────────────────────────────────────────────
@@ -728,6 +1350,8 @@ async function channels() {
       <div class="card">
         <p class="muted">这台自建 Bark 也可以给你的其它服务用，推送地址：</p>
         <div class="mono wrap card tight" style="font-size:12px">${esc(bark.public_url || '')}/&lt;设备Key&gt;</div>
+        <div class="muted">要在别的手机上加这台服务器，在 Bark App 的服务器页点 + 扫这个码：</div>
+        <div id="barkqr2" class="qr"></div>
         <label>开放档位</label>
         <select id="barkaccess">
           <option value="push"${bark.access === 'push' ? ' selected' : ''}>允许推送，禁止注册（推荐）</option>
@@ -736,6 +1360,12 @@ async function channels() {
         </select>
         <div class="muted" id="barkdesc" style="margin-top:8px"></div>
       </div>` : ''}`)
+
+    const qr2 = $('#barkqr2')
+    if (qr2) {
+      if (bark?.qr) qr2.innerHTML = bark.qr
+      else qr2.remove()
+    }
 
     const sel = $('#barkaccess')
     if (sel) {
@@ -763,15 +1393,23 @@ async function channels() {
       bark: {
         name: '主 Bark',
         html: `<div class="card tight" style="background:var(--bg)">
-                 <b>第一步：在 Bark App 里注册</b>
-                 <div class="muted" style="margin:6px 0 4px">先把下方「开放档位」调成「完全开放」，然后 iOS 装 Bark → 右上角「服务器」→ 填：</div>
-                 <div class="mono wrap" style="font-size:13px;padding:6px 0"><b>${esc(bark?.public_url || `${location.origin}/bark`)}</b></div>
-                 <button class="ghost sm" id="copyurl" type="button">复制地址</button>
-                 <div class="muted" style="margin-top:8px">App 首页会显示一串设备 Key，填到下面，然后把档位调回「允许推送」。</div>
+                 <b>第一步：把这台服务器加进 Bark App</b>
+                 <div class="muted" style="margin:6px 0 4px">先把下方「开放档位」调成「完全开放」，
+                 然后在 Bark App 的「服务器」页点右上角 <b>+</b> → 扫下面这个码：</div>
+                 <div id="barkqr" class="qr"></div>
+                 <div class="muted" style="text-align:center">扫不了就手动填这个地址：</div>
+                 <div class="mono wrap" style="font-size:13px;padding:6px 0;text-align:center"><b>${esc(bark?.public_url || `${location.origin}/bark`)}</b></div>
+                 <div style="text-align:center"><button class="ghost sm" id="copyurl" type="button">复制地址</button></div>
+                 <div class="muted" style="margin-top:10px"><b>第二步：把设备 Key 填到下面</b>，然后把档位调回「允许推送」。</div>
                </div>
                <label>推送地址（网关内部使用，不走公网）</label>
                <input id="f_server" class="mono" value="${esc(bark?.upstream || '')}" placeholder="http://bark:8080">
-               <label>设备 Key</label><input id="f_key" class="mono" placeholder="Bark App 首页显示的那串">
+               <label>设备 Key</label><input id="f_key" class="mono" placeholder="22 位左右的随机串">
+               <div class="muted">Bark App 首页不会单独把 Key 列出来，它藏在示例地址里：
+               <span class="mono">…/bark/<b>这一段就是 Key</b>/推送内容</span>。
+               嫌麻烦就点 App 里任意一条示例右上角的复制按钮，把整条地址粘到下面，自动认。</div>
+               <input id="f_paste" class="mono" placeholder="或粘贴整条推送地址，自动提取 Key">
+               <div class="muted" id="f_pastehint"></div>
                <div class="muted">验证码会放进通知标题，长按即可复制，无需打开任何 App。</div>`,
         collect: () => ({ server: $('#f_server').value.trim(), key: $('#f_key').value.trim() }),
       },
@@ -819,6 +1457,24 @@ async function channels() {
           }
         } catch (e) { $('#discovered').textContent = e.message }
         dis.disabled = false
+      }
+
+      // Bark 服务器二维码：内容就是服务器地址本身，Bark App 的「添加服务器」认这个
+      const qrBox = $('#barkqr')
+      if (qrBox) {
+        if (bark?.qr) qrBox.innerHTML = bark.qr
+        else qrBox.remove()
+      }
+
+      const paste = $('#f_paste')
+      if (paste) paste.oninput = () => {
+        const k = barkKeyFrom(paste.value)
+        if (!k) {
+          $('#f_pastehint').textContent = paste.value.trim() ? '没从这段文本里认出 Key' : ''
+          return
+        }
+        $('#f_key').value = k
+        $('#f_pastehint').innerHTML = `已填入 Key：<span class="mono">${esc(k)}</span>`
       }
 
       const cp = $('#copyurl')
@@ -954,6 +1610,31 @@ function channelEditor(c, bark) {
   }
 }
 
+/**
+ * 从 Bark App 复制出来的整条地址里取出设备 Key。
+ *
+ * Bark 首页只给「https://服务器/<key>/标题/内容」这种示例，不单独把 Key 列出来，
+ * 不少人因此不知道该往「设备 Key」里填什么。让人整条粘进来，我们自己认。
+ *
+ * 也接受直接粘一串裸 Key。
+ */
+function barkKeyFrom(text) {
+  const t = String(text || '').trim()
+  if (!t) return ''
+  // 裸 Key：Bark 的 key 是大小写字母加数字的随机串
+  if (/^[A-Za-z0-9]{10,40}$/.test(t)) return t
+  let path
+  try {
+    path = new URL(t).pathname
+  } catch {
+    // 不是完整 URL，就按路径处理
+    path = t.replace(/^https?:\/\/[^/]+/, '')
+  }
+  // 反代场景下前面还有 /bark，所以取第一个长得像 key 的段，而不是第一段
+  const seg = path.split('/').filter(Boolean)
+  return seg.find((x) => /^[A-Za-z0-9]{10,40}$/.test(x)) || ''
+}
+
 // ── 设备 ────────────────────────────────────────────────────
 
 async function devices() {
@@ -979,6 +1660,34 @@ async function devices() {
             ${d.has_location ? `上次定位 ${ago(d.location_at)} · <a href="#" data-showloc="${esc(d.id)}">查看</a>` : ''}
           </div>
         </div>`).join('')}</div>` : '<div class="card muted">还没有设备。</div>'}
+      ${ds.some((d) => d.status === 'online') ? `
+        <h2>导入手机里已有的记录</h2>
+        <div class="card">
+          <p class="muted">网关只能捕获<b>启用之后</b>发生的事。装网关之前手机里就存着的短信和通话，
+          可以从这里一次性导进来。</p>
+          <label>设备</label>
+          <select id="imp_dev">
+            ${ds.filter((d) => d.status === 'online').map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('')}
+          </select>
+          <label>导入多久以内的</label>
+          <select id="imp_days">
+            <option value="30">最近 30 天</option>
+            <option value="90">最近 90 天</option>
+            <option value="365">最近一年</option>
+            <option value="0">全部（可能很多）</option>
+          </select>
+          <label>每类最多导入</label>
+          <select id="imp_limit">
+            <option value="500">500 条</option>
+            <option value="1000" selected>1000 条</option>
+            <option value="5000">5000 条</option>
+          </select>
+          <div class="muted">导入的记录<b>只进历史，不会推送</b>——否则几千条旧短信会一次性砸到你手机上。
+          重复导入不会产生重复记录。</div>
+          <div class="btnrow"><button id="imp_go" class="sm">开始导入</button></div>
+          <div id="imp_out" class="muted"></div>
+        </div>` : ''}
+
       <h2>添加设备</h2>
       <div class="card">
         <label>设备名称</label><input id="dn" value="JP-Gateway-01">
@@ -986,12 +1695,35 @@ async function devices() {
         <div id="code"></div>
       </div>`)
 
+    const impGo = $('#imp_go')
+    if (impGo) impGo.onclick = async () => {
+      impGo.disabled = true
+      $('#imp_out').textContent = '正在读取手机里的记录，可能要一会儿…'
+      try {
+        const r = await api(`/devices/${$('#imp_dev').value}/import-history`, {
+          method: 'POST',
+          body: { days: Number($('#imp_days').value), limit: Number($('#imp_limit').value) },
+        })
+        $('#imp_out').innerHTML = `已读取短信 <b>${r.sms}</b> 条、通话 <b>${r.calls}</b> 条，正在陆续上传。` +
+          (r.skipped ? ` <span class="badge warn">有 ${r.skipped} 类因缺权限被跳过</span>` : '') +
+          '<br>稍等片刻到「消息」页查看。'
+      } catch (e) { $('#imp_out').innerHTML = `<span class="err-text">${esc(e.message)}</span>` }
+      impGo.disabled = false
+    }
+
     $('#gen').onclick = async () => {
       try {
         const r = await api('/devices/pairing-code', { method: 'POST', body: { name: $('#dn').value.trim() || '未命名设备' } })
         $('#code').innerHTML = `
+          ${r.qr ? `
+            <div class="qr">${r.qr}</div>
+            <div class="muted" style="text-align:center">用 Agent 里的「扫码配对」对准这个二维码，地址和配对码都不用手打。</div>
+            <div class="muted" style="text-align:center;margin-top:10px">扫不了就手动填：</div>` : ''}
           <div class="code mono">${esc(r.code)}</div>
-          <div class="muted" style="text-align:center">在 Agent 里输入这个配对码，${Math.floor(r.ttl_sec / 60)} 分钟内有效，只能用一次。</div>`
+          <div class="muted" style="text-align:center">
+            ${r.ws_url ? `服务器地址 <span class="mono">${esc(r.ws_url)}</span><br>` : ''}
+            ${Math.floor(r.ttl_sec / 60)} 分钟内有效，只能用一次。
+          </div>`
       } catch (e) { $('#code').innerHTML = `<div class="err-text">${esc(e.message)}</div>` }
     }
 
@@ -1066,11 +1798,14 @@ async function settings() {
 
     <div id="notify"></div>
     <div id="battery"></div>
+    <div id="smscmd"></div>
 
     <h2>时区</h2>
     <div class="card">
-      <p class="muted">计划任务按这个时区的墙上时间执行。服务端跑在 UTC，不设对的话「每天 9 点」会差几个小时。</p>
-      <input id="tz" class="mono" placeholder="Asia/Tokyo">
+      <p class="muted">计划任务的执行时间、规则的生效时段、推送模板里的 {time} 都按这个时区算。
+      服务端跑在 UTC，不设对的话「每天 9 点」会差几个小时。</p>
+      <select id="tz"></select>
+      <div class="muted" id="tz_now"></div>
       <div class="btnrow"><button id="tz_save" class="sm">保存</button></div>
       <div id="tz_err" class="err-text"></div>
     </div>
@@ -1109,6 +1844,7 @@ async function settings() {
 
   void paintNotifyCapture()
   void paintBattery()
+  void paintSmsCommand()
   void paintTimezone()
 
   $('#chpw').onclick = async () => {
@@ -1142,23 +1878,70 @@ async function settings() {
 async function paintTimezone() {
   const el = $('#tz')
   if (!el) return
+  let current
   try {
-    const r = await api('/timezone')
-    el.value = r.timezone
+    current = (await api('/timezone')).timezone
   } catch { return }
+
+  // 浏览器自带完整的 IANA 时区表，不用我们维护一份；老浏览器退回常用几个
+  let zones = []
+  try { zones = Intl.supportedValuesOf('timeZone') } catch { zones = [] }
+  if (zones.length === 0) zones = TZ_FALLBACK
+  // 当前值可能不在表里（服务端设过一个浏览器不认的），也要能选中，不能悄悄改掉
+  if (!zones.includes(current)) zones = [current, ...zones]
+
+  // 本机时区置顶：绝大多数情况下用户要的就是它
+  const local = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const top = [...new Set([current, local].filter((z) => z && zones.includes(z)))]
+
+  const group = (list) => {
+    const byRegion = new Map()
+    for (const z of list) {
+      const region = z.includes('/') ? z.split('/')[0] : '其它'
+      if (!byRegion.has(region)) byRegion.set(region, [])
+      byRegion.get(region).push(z)
+    }
+    return [...byRegion.entries()].map(([r, zs]) =>
+      `<optgroup label="${esc(r)}">${zs.map((z) => `<option value="${esc(z)}"${z === current ? ' selected' : ''}>${esc(z)}</option>`).join('')}</optgroup>`,
+    ).join('')
+  }
+
+  el.innerHTML =
+    `<optgroup label="常用">${top.map((z) =>
+      `<option value="${esc(z)}"${z === current ? ' selected' : ''}>${esc(z)}${z === local ? '（本机）' : ''}</option>`).join('')}</optgroup>` +
+    group(zones.filter((z) => !top.includes(z)))
+  el.value = current
+
+  // 把选中时区的当前时间显示出来：时区名看不出对不对，时间能看出来
+  const paintNow = () => {
+    try {
+      $('#tz_now').textContent = `该时区现在是 ${new Date().toLocaleString('zh-CN', { timeZone: el.value, hour12: false })}`
+    } catch { $('#tz_now').textContent = '' }
+  }
+  paintNow()
+  el.onchange = paintNow
+
   $('#tz_save').onclick = async () => {
     try {
-      await api('/timezone', { method: 'POST', body: { timezone: el.value.trim() } })
+      await api('/timezone', { method: 'POST', body: { timezone: el.value } })
+      current = el.value
       toast('已保存')
     } catch (e) { $('#tz_err').textContent = e.message }
   }
 }
 
+/** Intl.supportedValuesOf 不可用时的退路，覆盖这个项目实际会用到的几个。 */
+const TZ_FALLBACK = [
+  'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Taipei', 'Asia/Singapore',
+  'Asia/Seoul', 'Asia/Bangkok', 'Asia/Dubai', 'Europe/London', 'Europe/Paris',
+  'America/New_York', 'America/Los_Angeles', 'Australia/Sydney', 'UTC',
+]
+
 /**
  * 通知捕获设置。
  *
- * 很多验证码走 App 推送而不是短信。必须挑具体应用——手机上几十个应用每天
- * 产生成百上千条通知，全捕获会把验证码淹没。
+ * 两种范围：「全部应用」省心，新装的应用不用回来改列表，代价是通知量大；
+ * 「仅选定应用」精准但要维护列表。默认后者。
  */
 async function paintNotifyCapture() {
   const box = $('#notify')
@@ -1169,6 +1952,7 @@ async function paintNotifyCapture() {
   } catch { return }
 
   const online = devs.devices.filter((d) => d.status === 'online')
+  let scope = cfg.scope === 'all' ? 'all' : 'selected'
   let picked = new Set(cfg.packages)
   let apps = null
   let allApps = null
@@ -1182,27 +1966,42 @@ async function paintNotifyCapture() {
         捕获到的通知会像短信一样走规则与渠道。</p>
         <p class="muted">需要在 Agent 里单独授予「通知使用权」——这是系统的特殊权限，
         不能由 App 自己申请，要你在手机上手动打开。</p>
-        <label>启用</label>
+        <label>总开关</label>
         <select id="nc_on">
           <option value="1"${cfg.enabled ? ' selected' : ''}>启用</option>
           <option value="0"${cfg.enabled ? '' : ' selected'}>停用</option>
         </select>
 
-        <label>捕获哪些应用（已选 ${picked.size} 个）</label>
-        ${picked.size === 0 ? '<div class="muted">一个都没选等于不捕获。</div>' : ''}
-        <div id="nc_picked">
-          ${[...picked].map((p) => `
-            <label style="display:flex;gap:8px;align-items:center;margin:4px 0">
-              <input type="checkbox" checked data-pkg="${esc(p)}" style="width:auto">
-              <span class="mono" style="font-size:12px">${esc(p)}</span>
-            </label>`).join('')}
-        </div>
+        <div id="nc_scopebox"${cfg.enabled ? '' : ' hidden'}>
+          <label>捕获范围</label>
+          <select id="nc_scope">
+            <option value="selected"${scope === 'selected' ? ' selected' : ''}>仅选定应用</option>
+            <option value="all"${scope === 'all' ? ' selected' : ''}>全部应用（含以后新装的）</option>
+          </select>
+          <div class="muted">
+            ${scope === 'all'
+              ? '所有应用的通知都转发，手机上新装的应用无需回来更新列表。通知量会明显变大，建议配合规则过滤。'
+              : '只转发下面选中的应用。新装的应用要回到这里手动加。'}
+          </div>
 
-        ${online.length > 0 ? `
-          <div class="btnrow">
-            <button class="ghost sm" id="nc_load">从设备读取应用列表</button>
-          </div>` : '<div class="muted">没有在线设备，无法读取应用列表。</div>'}
-        <div id="nc_apps"></div>
+          <div id="nc_sel"${scope === 'all' ? ' hidden' : ''}>
+            <label>捕获哪些应用（已选 ${picked.size} 个）</label>
+            ${picked.size === 0 ? '<div class="muted">一个都没选等于不捕获。</div>' : ''}
+            <div id="nc_picked">
+              ${[...picked].map((p) => `
+                <label style="display:flex;gap:8px;align-items:center;margin:4px 0">
+                  <input type="checkbox" checked data-pkg="${esc(p)}" style="width:auto">
+                  <span class="mono" style="font-size:12px">${esc(p)}</span>
+                </label>`).join('')}
+            </div>
+
+            ${online.length > 0 ? `
+              <div class="btnrow">
+                <button class="ghost sm" id="nc_load">从设备读取应用列表</button>
+              </div>` : '<div class="muted">没有在线设备，无法读取应用列表。</div>'}
+            <div id="nc_apps"></div>
+          </div>
+        </div>
 
         <div class="btnrow"><button id="nc_save" class="sm">保存</button></div>
         <div class="muted">保存后设备会立即重连以应用新配置。</div>
@@ -1212,6 +2011,9 @@ async function paintNotifyCapture() {
     for (const c of box.querySelectorAll('[data-pkg]')) {
       c.onchange = () => { c.checked ? picked.add(c.dataset.pkg) : picked.delete(c.dataset.pkg); paint() }
     }
+
+    $('#nc_on').onchange = (e) => { $('#nc_scopebox').hidden = e.target.value !== '1' }
+    $('#nc_scope').onchange = (e) => { scope = e.target.value; paint() }
 
     const load = $('#nc_load')
     if (load) load.onclick = async () => {
@@ -1231,7 +2033,7 @@ async function paintNotifyCapture() {
       try {
         await api('/notify-capture', {
           method: 'POST',
-          body: { enabled: $('#nc_on').value === '1', packages: [...picked] },
+          body: { enabled: $('#nc_on').value === '1', scope, packages: [...picked] },
         })
         toast('已保存，设备正在重连')
         paintNotifyCapture()
@@ -1241,7 +2043,7 @@ async function paintNotifyCapture() {
 
   const paintApps = () => {
     const box2 = $('#nc_apps')
-    if (!box2 || !apps) return
+    if (!box2 || !apps || scope === 'all') return
     box2.innerHTML = `
       <label>设备上的应用</label>
       <input id="nc_filter" placeholder="筛选应用名或包名">
@@ -1276,6 +2078,132 @@ async function paintNotifyCapture() {
     }
   }
 
+  paint()
+}
+
+/**
+ * 短信指令清单。与 Agent 的 SmsCommand.ALIASES 对应，改一端要改两端。
+ *
+ * 写成「指令（用途）」而不是一串词：人在外面着急的时候，
+ * 看到「网络」两个字未必想得起来它到底答的是什么。
+ */
+const SMS_COMMANDS = [
+  ['状态', '一条短信看全：连没连上服务端、WiFi、电量、有没有积压', 'status / st'],
+  ['网络', 'WiFi 开没开、连的哪个、走的是 WiFi 还是移动数据', 'wifi / net'],
+  ['电量', '剩多少电、在不在充电', 'battery / bat'],
+  ['定位', '回一条带地图链接的位置', '位置 / locate'],
+  ['重连', '让网关立刻重连服务端，不用等退避', '重启 / reconnect'],
+]
+
+/**
+ * 短信指令。
+ *
+ * 场景：人不在手机旁，手机也联不上服务端——这时候唯一还通的就是短信。
+ * 所以指令必须在手机本地执行完，不经过服务端。
+ *
+ * 口令明文躺在短信里是这条链路的物理限制（人在外面算不了签名），
+ * 因此能力刻意做窄：只查状态、重连、定位，**不含发短信**。
+ */
+async function paintSmsCommand() {
+  const box = $('#smscmd')
+  if (!box) return
+  let cfg
+  try { cfg = await api('/sms-command') } catch { return }
+
+  const paint = () => {
+    box.innerHTML = `
+      <h2>短信指令</h2>
+      <div class="card">
+        <p class="muted">给这台设备的号码发一条短信就能查状态——手机断网、掉线、被挪走的时候，
+        这是唯一还通的一条路。指令在手机本地执行，不经过服务端。</p>
+        <label>启用</label>
+        <select id="sc_on">
+          <option value="1"${cfg.enabled ? ' selected' : ''}>启用</option>
+          <option value="0"${cfg.enabled ? '' : ' selected'}>停用</option>
+        </select>
+
+        <div id="sc_body"${cfg.enabled ? '' : ' hidden'}>
+          <label>口令</label>
+          <div class="row">
+            <code class="mono grow" id="sc_secret">${esc(cfg.secret || '（保存后生成）')}</code>
+            <button class="ghost sm" id="sc_regen">重置口令</button>
+          </div>
+
+          <label>怎么用</label>
+          <div class="card tight" style="background:var(--bg)">
+            <div>给<b>这台设备的手机号</b>发一条短信，内容是<b>口令 + 指令</b>：</div>
+            <div class="mono" style="font-size:15px;padding:8px 0">
+              ${esc(cfg.secret || 'xxxxxxxxx')} 状态
+            </div>
+            <div class="muted">
+              口令区分大小写。中间的空格<b>可有可无</b>，半角空格、全角空格、冒号、逗号都认——
+              <code class="mono">${esc(cfg.secret || 'xxxxxxxxx')}状态</code> 也一样能用。
+            </div>
+            ${cfg.secret ? `<div class="btnrow"><button class="ghost sm" id="sc_copy">复制「${esc(cfg.secret)} 状态」</button></div>` : ''}
+          </div>
+
+          <label>能用哪些指令</label>
+          <div class="card tight" style="background:var(--bg)">
+            ${SMS_COMMANDS.map(([cmd, use, alias]) => `
+              <div class="row" style="align-items:flex-start;padding:5px 0">
+                <code class="mono" style="min-width:3em"><b>${cmd}</b></code>
+                <div class="col grow" style="text-align:right">
+                  <span>${use}</span>
+                  <span class="muted" style="font-size:12px">也可以写 ${alias}</span>
+                </div>
+              </div>`).join('')}
+          </div>
+          <div class="muted">只发口令、不写指令，会回一条指令清单。
+          故意<b>不支持发短信</b>：口令是明文传输的，万一被人拿到，最多只能问出手机还活着，偷不走验证码。</div>
+
+          <label>允许下指令的号码（每行一个，留空表示不限制）</label>
+          <textarea id="sc_allow" rows="3" class="mono" placeholder="13800138000">${esc((cfg.allow_numbers || []).join('\n'))}</textarea>
+          <div class="muted">按号码后缀匹配，带不带国际区号都认。主叫号码可以伪造，
+          所以这只是第二道防线，真正拦人的是口令 + 限速。</div>
+
+          <label>短信回复结果</label>
+          <select id="sc_reply">
+            <option value="1"${cfg.reply ? ' selected' : ''}>回复（每条指令回一条短信，按条计费）</option>
+            <option value="0"${cfg.reply ? '' : ' selected'}>不回复（结果只推到渠道）</option>
+          </select>
+          <div class="muted">关掉的话，结果要走网络推送——而网络可能正是坏掉的那一环。</div>
+        </div>
+
+        <div class="btnrow"><button id="sc_save" class="sm">保存</button></div>
+        <div class="muted">保存后设备会立即重连以应用新配置。每次指令执行都会作为一条消息推送给你。</div>
+        <div id="sc_err" class="err-text"></div>
+      </div>`
+
+    $('#sc_on').onchange = (e) => { $('#sc_body').hidden = e.target.value !== '1' }
+
+    const copy = $('#sc_copy')
+    if (copy) copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(`${cfg.secret} 状态`); toast('已复制，粘到短信里发给这台设备') }
+      catch { toast('复制失败，请手动选择') }
+    }
+
+    const save = async (regenerate) => {
+      try {
+        cfg = await api('/sms-command', {
+          method: 'POST',
+          body: {
+            enabled: $('#sc_on').value === '1',
+            reply: $('#sc_reply')?.value !== '0',
+            allow_numbers: ($('#sc_allow')?.value ?? '').split('\n').map((x) => x.trim()).filter(Boolean),
+            regenerate,
+          },
+        })
+        toast(regenerate ? '口令已重置' : '已保存')
+        paint()
+      } catch (e) { $('#sc_err').textContent = e.message }
+    }
+    $('#sc_save').onclick = () => save(false)
+    const regen = $('#sc_regen')
+    if (regen) regen.onclick = () => {
+      if (!confirm('重置口令？旧口令立刻失效，记得更新你自己那边记的那份。')) return
+      save(true)
+    }
+  }
   paint()
 }
 
