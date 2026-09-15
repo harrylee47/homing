@@ -17,6 +17,13 @@ export interface DeviceRecord {
   battery: number | null
   /** 是否在充电。null 表示设备未上报（老版本 Agent） */
   charging: boolean | null
+  /**
+   * 最近一次上报的网络状态，JSON（结构见 protocol.ts 的 NetStatus）。
+   *
+   * 用一列 JSON 而不是拆成 wifi/ssid/signal 几列：这组字段随 Android 版本
+   * 增减，每加一项就来一次表迁移不值得，而且它只用于展示，不参与任何查询。
+   */
+  net_json: string | null
   /** 最近一次定位结果，加密存储。位置与短信正文同等敏感。 */
   location_enc: Uint8Array | null
   location_at: number | null
@@ -185,6 +192,19 @@ export interface Store {
   touchDevice(id: string, patch: Partial<Pick<DeviceRecord, 'status' | 'last_seen_at' | 'battery' | 'charging' | 'app_version'>>): Promise<void>
   /** 记录最近一次定位。单独一个方法，避免定位数据混进高频的心跳更新里 */
   setDeviceLocation(id: string, enc: Uint8Array, at: number): Promise<void>
+  /**
+   * 彻底删除设备记录。
+   *
+   * **只允许删已吊销的**（调用方负责检查）：删一台还在线的设备，
+   * 它的 Agent 下次握手会收到 AUTH_UNKNOWN_DEVICE 而彻底停下来，
+   * 得跑到手机跟前重新配对。吊销是那个「我确认这台不要了」的动作，
+   * 删除只是事后打扫。
+   *
+   * @returns 是否真的删掉了
+   */
+  deleteDevice(id: string): Promise<boolean>
+  /** 删除这台设备的全部发送记录，返回条数。删设备时可选一并清理。 */
+  deleteOutboundByDevice(deviceId: string): Promise<number>
   /**
    * 吊销设备：置为 revoked **并作废凭证**。
    *

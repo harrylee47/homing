@@ -24,6 +24,7 @@ import org.smsgateway.agent.protocol.*
 import org.smsgateway.agent.location.Locator
 import org.smsgateway.agent.sms.SmsSender
 import org.smsgateway.agent.util.Log
+import org.smsgateway.agent.util.NetStatus
 import org.smsgateway.agent.util.Prefs
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -238,6 +239,7 @@ class WsClient(
             androidSdk = android.os.Build.VERSION.SDK_INT,
             battery = battery(),
             charging = isCharging(),
+            net = netPayload(),
             pendingCount = _pending.value,
         )
         webSocket.send(frame("hello", hello))
@@ -299,7 +301,7 @@ class WsClient(
 
             "ping" -> {
                 val p = Protocol.json.decodeFromJsonElement(PingPayload.serializer(), env.payload)
-                webSocket.send(frame("pong", PongPayload(p.seq, battery(), isCharging(), _pending.value)))
+                webSocket.send(frame("pong", PongPayload(p.seq, battery(), isCharging(), _pending.value, netPayload())))
             }
 
             "cmd" -> {
@@ -527,6 +529,15 @@ class WsClient(
             }
         }
     }
+
+    /**
+     * 网络状态。读失败就报 null —— 掉线排查时「读不到」和「没网」是两回事，
+     * 不能把前者伪装成后者。
+     */
+    private fun netPayload(): NetPayload? = runCatching {
+        val n = NetStatus.read(ctx)
+        NetPayload(n.wifi, n.type, n.ssid, n.carrier, n.signal, n.online)
+    }.getOrNull()
 
     private fun battery(): Int {
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager

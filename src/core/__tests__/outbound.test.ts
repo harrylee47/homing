@@ -31,7 +31,7 @@ describe('发送任务状态机', () => {
     cipher = await createCipher(generateDek())
     store.devices.set(DEVICE, {
       id: DEVICE, name: 't', token_hash: await hashToken(TOKEN), status: 'offline',
-      last_seen_at: null, battery: null, charging: null, location_enc: null, location_at: null, app_version: null, created_at: NOW,
+      last_seen_at: null, battery: null, charging: null, location_enc: null, location_at: null, net_json: null, app_version: null, created_at: NOW,
     })
     session = new DeviceSession({ store, cipher, hub: new MemoryHub(), now: () => NOW, onStored: () => {} })
     await session.handle(encodeFrame(makeFrame('hello', {

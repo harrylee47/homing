@@ -239,6 +239,46 @@ function battery(d) {
   return ` · ${icon} ${d.battery}%`
 }
 
+/**
+ * 设备状态徽章：网络、信号、充电。
+ *
+ * 「设备不在线」只有一个比特的信息量，排查时真正有用的是「为什么」——
+ * WiFi 关了、信号 0 格、没插电，这三件事直接决定你要不要跑回去看一眼。
+ * 所以它们平铺在设备卡片上，而不是藏进详情。
+ */
+function statusBadges(d) {
+  const n = d.net || {}
+  if (!n.type && d.charging !== true) return ''
+  const out = []
+
+  // 充电：只有在充电时才高亮，没充电是常态不值得占一个亮色
+  if (d.charging === true) out.push('<span class="badge ok">⚡ 充电中</span>')
+  else if (d.battery != null && d.battery <= 20) out.push(`<span class="badge err">🪫 ${d.battery}%</span>`)
+
+  if (n.type === 'wifi') {
+    out.push(`<span class="badge info">📶 ${n.ssid ? esc(n.ssid) : 'WiFi'}</span>`)
+  } else if (n.type === 'cellular') {
+    const bars = n.signal == null ? '' : ` ${'▮'.repeat(n.signal)}${'▯'.repeat(4 - n.signal)}`
+    // 信号 0-1 格是要出事的前兆，标红
+    out.push(`<span class="badge ${n.signal != null && n.signal <= 1 ? 'warn' : ''}">📱 移动数据${bars}</span>`)
+  } else if (n.type === 'none') {
+    out.push('<span class="badge err">✕ 无网络</span>')
+  }
+
+  // WiFi 开着却没走 WiFi：多半是没连上或信号太弱，这种「半好不坏」最容易被忽略
+  if (n.wifi === false && n.type !== 'cellular') out.push('<span class="badge plain">WiFi 已关</span>')
+  if (n.type && n.type !== 'none' && n.online === false) out.push('<span class="badge warn">连着但没网</span>')
+  if (n.carrier) out.push(`<span class="badge plain">${esc(n.carrier)}</span>`)
+
+  if (out.length === 0) return ''
+  // 掉线设备也显示——「掉线前是 1 格信号」正是排查时最想知道的那一句。
+  // 但要标清楚是旧数据，不能让人以为它现在还是这样。
+  const stale = d.status !== 'online'
+  return `<div class="row" style="justify-content:flex-start;gap:6px;flex-wrap:wrap;margin-top:7px${stale ? ';opacity:.6' : ''}">
+    ${stale ? '<span class="muted" style="font-size:12px">掉线前</span>' : ''}${out.join('')}
+  </div>`
+}
+
 function toast(msg) {
   const el = document.createElement('div')
   el.className = 'toast'
@@ -423,6 +463,7 @@ async function overview() {
               <span class="dot ${d.status}"></span>
             </div>
             <div class="muted">最后心跳 ${ago(d.last_seen_at)}${battery(d)}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</div>
+            ${d.status === 'revoked' ? '' : statusBadges(d)}
           </div>
           <span class="badge ${d.status === 'online' ? 'ok' : d.status === 'revoked' ? 'err' : 'plain'}">${
             d.status === 'online' ? '在线' : d.status === 'revoked' ? '已吊销' : '离线'}</span>
@@ -1717,11 +1758,15 @@ async function devices() {
             <div class="col grow">
               <div><span class="dot ${d.status}"></span><b>${esc(d.name)}</b></div>
               <span class="muted mono" style="font-size:11px">${esc(d.id)}</span>
-              <span class="muted">心跳 ${ago(d.last_seen_at)}${battery(d)}</span>
+              <span class="muted">心跳 ${ago(d.last_seen_at)}${battery(d)}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</span>
+              ${d.status === 'revoked' ? '' : statusBadges(d)}
             </div>
             <div style="display:flex;gap:6px;flex-direction:column;align-items:flex-end">
               ${d.status === 'online' ? `<button class="ghost sm" data-locate="${esc(d.id)}">定位</button>` : ''}
-              ${d.status !== 'revoked' ? `<button class="danger sm" data-revoke="${esc(d.id)}">吊销</button>` : '<span class="badge err">已吊销</span>'}
+              ${d.status !== 'revoked'
+                ? `<button class="danger sm" data-revoke="${esc(d.id)}">吊销</button>`
+                : `<span class="badge err">已吊销</span>
+                   <button class="ghost sm" data-del="${esc(d.id)}">删除记录</button>`}
             </div>
           </div>
           <div class="muted" data-loc="${esc(d.id)}" style="margin-top:6px">
@@ -1891,6 +1936,31 @@ async function devices() {
         const id = a.dataset.showloc
         try {
           showLocation(id, await api(`/devices/${id}/location`))
+        } catch (e) { toast(e.message) }
+      }
+    }
+
+    /**
+     * 删除设备记录。只对已吊销的设备开放——删一台还在线的，
+     * 它的 Agent 会收到不可重试的 AUTH_UNKNOWN_DEVICE 彻底停下来，
+     * 得跑到手机跟前重新配对。
+     */
+    for (const b of app.querySelectorAll('[data-del]')) {
+      b.onclick = async () => {
+        const id = b.dataset.del
+        const dev = ds.find((d) => d.id === id)
+        // 先问清历史怎么处理：设备没了不代表那些验证码就不该存在
+        const purge = confirm(
+          `删除设备「${dev?.name ?? id}」的记录。\n\n` +
+          `它的历史消息怎么处理？\n\n` +
+          `确定 = 连历史消息和发送记录一起删掉\n` +
+          `取消 = 只删设备，历史消息留着`,
+        )
+        if (!confirm(`最后确认：删除设备「${dev?.name ?? id}」${purge ? '**以及它的全部历史消息**' : '（历史消息保留）'}？`)) return
+        try {
+          const r = await api(`/devices/${id}${purge ? '?purge=1' : ''}`, { method: 'DELETE' })
+          toast(purge ? `已删除，清理了 ${r.events} 条消息` : '已删除')
+          devices()
         } catch (e) { toast(e.message) }
       }
     }

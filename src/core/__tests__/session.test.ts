@@ -31,7 +31,7 @@ describe('会话状态机', () => {
     store = new MemoryStore()
     store.devices.set(DEVICE, {
       id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
-      status: 'offline', last_seen_at: null, battery: null, charging: null,
+      status: 'offline', last_seen_at: null, battery: null, charging: null, net_json: null,
       location_enc: null, location_at: null, app_version: null, created_at: NOW,
     })
     session = new DeviceSession({
@@ -147,7 +147,7 @@ describe('历史导入的去重', () => {
     const cipher = await createCipher(generateDek())
     store.devices.set(DEVICE, {
       id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
-      status: 'offline', last_seen_at: null, battery: null, charging: null,
+      status: 'offline', last_seen_at: null, battery: null, charging: null, net_json: null,
       location_enc: null, location_at: null, app_version: null, created_at: NOW,
     })
     const session = new DeviceSession({
@@ -234,7 +234,7 @@ describe('吊销必须真的吊销得掉', () => {
     const store = new MemoryStore()
     store.devices.set(DEVICE, {
       id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
-      status: 'offline', last_seen_at: null, battery: null, charging: null,
+      status: 'offline', last_seen_at: null, battery: null, charging: null, net_json: null,
       location_enc: null, location_at: null, app_version: null, created_at: NOW,
     })
     const session = new DeviceSession({

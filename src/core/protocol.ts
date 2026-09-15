@@ -126,6 +126,29 @@ export type CmdStatus = z.infer<typeof CmdStatus>
 // ─────────────────────────────────────────────────────────────
 
 /** Agent → 服务端：握手。 */
+/**
+ * 设备的网络状态快照。
+ *
+ * 随心跳上报，控制台据此显示「连的是 WiFi 还是流量、信号几格」。
+ * 掉线排查时这是最有用的一组信息——「手机在不在线」只有一个比特，
+ * 「WiFi 关了」「信号 0 格」才说明是为什么。
+ */
+export const NetStatus = z.object({
+  /** WiFi 开关是否打开 */
+  wifi: z.boolean().nullish(),
+  /** 当前走的是哪条路 */
+  type: z.enum(['wifi', 'cellular', 'none', 'other']).nullish(),
+  /** 连着 WiFi 时的名字。取不到（缺权限或未连接）为 null */
+  ssid: z.string().max(64).nullish(),
+  /** 运营商 */
+  carrier: z.string().max(64).nullish(),
+  /** 移动信号格数 0–4 */
+  signal: z.number().int().min(0).max(4).nullish(),
+  /** 网络是否真的通（连上 WiFi 但没网的情况很常见） */
+  online: z.boolean().nullish(),
+})
+export type NetStatus = z.infer<typeof NetStatus>
+
 export const HelloPayload = z.object({
   device_id: DeviceId,
   /** 长期凭证明文；服务端只存哈希（计划 §6.1）。 */
@@ -143,6 +166,8 @@ export const HelloPayload = z.object({
   charging: z.boolean().nullish(),
   /** 本地待补传条数，服务端用于显示与告警 */
   pending_count: z.number().int().min(0),
+  /** 连上就报一次网络状态，不用等第一个心跳 */
+  net: NetStatus.nullish(),
 })
 
 /**
@@ -396,12 +421,14 @@ export const CmdResultPayload = z.object({
 
 /** 心跳。seq 用于匹配 ping/pong，便于测量 RTT。 */
 export const PingPayload = z.object({ seq: z.number().int().nonnegative() })
+
 export const PongPayload = z.object({
   seq: z.number().int().nonnegative(),
   /** Agent 顺带上报的实时状态，服务端用于控制台展示与电量告警 */
   battery: z.number().int().min(0).max(100).optional(),
   charging: z.boolean().nullish(),
   pending_count: z.number().int().min(0).optional(),
+  net: NetStatus.nullish(),
 })
 
 // ─────────────────────────────────────────────────────────────

@@ -154,6 +154,7 @@ export class DeviceSession {
     battery: number
     charging?: boolean | null | undefined
     pending_count: number
+    net?: unknown
   }): Promise<SessionAction> {
     const device = await this.deps.store.getDevice(p.device_id)
 
@@ -181,6 +182,7 @@ export class DeviceSession {
       // 老版本 Agent 不上报充电状态，此时保持原值而不是写成 null，
       // 否则升级前后会反复清空
       ...(p.charging !== undefined && p.charging !== null ? { charging: p.charging } : {}),
+      ...(p.net ? { net_json: JSON.stringify(p.net) } : {}),
       app_version: p.app_version,
     })
 
@@ -326,12 +328,15 @@ export class DeviceSession {
     battery?: number | undefined
     charging?: boolean | null | undefined
     pending_count?: number | undefined
+    net?: unknown
   }): Promise<SessionAction> {
     if (!this.deviceId) return NONE
     await this.deps.store.touchDevice(this.deviceId, {
       last_seen_at: this.now(),
       ...(p.battery !== undefined ? { battery: p.battery } : {}),
       ...(p.charging !== undefined && p.charging !== null ? { charging: p.charging } : {}),
+      // 网络状态每次心跳都刷新：掉线排查时「WiFi 关了」比「不在线」有用得多
+      ...(p.net ? { net_json: JSON.stringify(p.net) } : {}),
     })
     return NONE
   }

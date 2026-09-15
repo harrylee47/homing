@@ -80,6 +80,7 @@ export async function redeemPairing(
     last_seen_at: null,
     battery: null,
     charging: null,
+    net_json: null,
     location_enc: null,
     location_at: null,
     app_version: null,

@@ -63,6 +63,17 @@ data class Envelope(
 
 // ── 上行 payload ────────────────────────────────────────────
 
+/** 网络状态快照。与服务端 protocol.ts 的 NetStatus 对应。 */
+@Serializable
+data class NetPayload(
+    val wifi: Boolean? = null,
+    val type: String? = null,
+    val ssid: String? = null,
+    val carrier: String? = null,
+    val signal: Int? = null,
+    val online: Boolean? = null,
+)
+
 @Serializable
 data class HelloPayload(
     @SerialName("device_id") val deviceId: String,
@@ -73,6 +84,8 @@ data class HelloPayload(
     /** 是否正在充电 */
     val charging: Boolean,
     @SerialName("pending_count") val pendingCount: Int,
+    /** 连上就报一次，不用等第一个心跳 */
+    val net: NetPayload? = null,
 )
 
 @Serializable
@@ -139,6 +152,7 @@ data class PongPayload(
     val battery: Int? = null,
     val charging: Boolean? = null,
     @SerialName("pending_count") val pendingCount: Int? = null,
+    val net: NetPayload? = null,
 )
 
 // ── 下行 payload ────────────────────────────────────────────

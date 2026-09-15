@@ -28,6 +28,12 @@ export class MemoryStore implements Store {
     // 吊销是终态，断线时写入的 offline 不能把它改回去
     if (d && d.status !== 'revoked') this.devices.set(id, { ...d, ...patch })
   }
+  async deleteDevice(id: string) { return this.devices.delete(id) }
+  async deleteOutboundByDevice(deviceId: string) {
+    const hit = [...this.outbound.values()].filter((o) => o.device_id === deviceId)
+    for (const o of hit) this.outbound.delete(o.id)
+    return hit.length
+  }
   async revokeDevice(id: string) {
     const d = this.devices.get(id)
     // 与 SQLite 实现一致：同时作废凭证，否则设备重连就又活了

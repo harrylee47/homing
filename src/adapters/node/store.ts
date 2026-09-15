@@ -56,6 +56,7 @@ const MIGRATIONS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_id, occurred_at DESC)`,
   `ALTER TABLE events ADD COLUMN direction TEXT`,
+  `ALTER TABLE devices ADD COLUMN net_json TEXT`,
   `CREATE TABLE IF NOT EXISTS channels (
      id         TEXT PRIMARY KEY,
      type       TEXT NOT NULL,
@@ -215,7 +216,7 @@ export class SqliteStore implements Store {
 
   async touchDevice(
     id: string,
-    patch: Partial<Pick<DeviceRecord, 'status' | 'last_seen_at' | 'battery' | 'app_version'>>,
+    patch: Partial<Pick<DeviceRecord, 'status' | 'last_seen_at' | 'battery' | 'app_version' | 'net_json'>>,
   ): Promise<void> {
     const cols = Object.keys(patch) as (keyof typeof patch)[]
     if (cols.length === 0) return
@@ -228,6 +229,14 @@ export class SqliteStore implements Store {
     })
     // 吊销是终态：断线时写入的 status='offline' 不能把它改回去（见 revokeDevice）
     this.db.prepare(`UPDATE devices SET ${set} WHERE id = ? AND status != 'revoked'`).run(...vals, id)
+  }
+
+  async deleteDevice(id: string): Promise<boolean> {
+    return Number(this.db.prepare('DELETE FROM devices WHERE id = ?').run(id).changes) > 0
+  }
+
+  async deleteOutboundByDevice(deviceId: string): Promise<number> {
+    return Number(this.db.prepare('DELETE FROM outbound WHERE device_id = ?').run(deviceId).changes)
   }
 
   /**

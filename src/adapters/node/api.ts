@@ -308,6 +308,8 @@ route('GET', '/api/devices', async ({ res, deps }) => {
       // 以实际连接状态为准：库里的 status 在服务端异常退出后可能是陈旧的
       status: d.status === 'revoked' ? 'revoked' : online.has(d.id) ? 'online' : 'offline',
       last_seen_at: d.last_seen_at, battery: d.battery, charging: d.charging,
+      // 网络状态只用于展示，解析失败就当没有，不要让整个列表挂掉
+      net: d.net_json ? (JSON.parse(d.net_json) as unknown) : null,
       // 只给出「有没有、什么时候」，坐标要单独请求并留审计
       has_location: d.location_enc !== null, location_at: d.location_at,
       app_version: d.app_version, created_at: d.created_at,
@@ -387,6 +389,63 @@ route('DELETE', '/api/devices/:id/token', async ({ res, params, deps, ip }) => {
   deps.hub.get(id)?.close(4001, 'AUTH_DEVICE_REVOKED')
   await deps.store.audit({ actor: 'console', action: 'device.revoke', detail: id, ip, created_at: now() })
   json(res, 200, { ok: true })
+})
+
+/**
+ * 彻底删除设备记录。
+ *
+ * **必须先吊销**。删一台还在线的设备，它的 Agent 下次握手会收到
+ * AUTH_UNKNOWN_DEVICE 而彻底停下来（那是不可重试的错误码），得跑到手机跟前
+ * 重新配对。吊销是「我确认这台不要了」那一下，删除只是事后打扫。
+ *
+ * 被计划任务或规则引用时拒绝删除并说清楚是谁在引用——静默删掉会让保号任务
+ * 永远跳过、让限定设备的规则永远不命中，两种都是不报错的失效。
+ */
+route('DELETE', '/api/devices/:id', async ({ res, params, url, deps, ip }) => {
+  const id = params.id!
+  const device = await deps.store.getDevice(id)
+  if (!device) return json(res, 404, { error: '设备不存在' })
+  if (device.status !== 'revoked') {
+    return json(res, 409, { error: '请先吊销这台设备，再删除记录' })
+  }
+
+  const tasks = (await deps.store.listTasks()).filter((t) => t.device_id === id)
+  if (tasks.length > 0) {
+    return json(res, 409, {
+      error: `还有计划任务绑定着这台设备：${tasks.map((t) => t.name).join('、')}。请先改掉或删掉这些任务。`,
+    })
+  }
+
+  const rules = (await deps.store.listRules()).filter((r) => {
+    try { return ((JSON.parse(r.match_json) as { device_ids?: string[] }).device_ids ?? []).includes(id) }
+    catch { return false }
+  })
+  if (rules.length > 0) {
+    return json(res, 409, {
+      error: `还有规则限定了这台设备：${rules.map((r) => r.name).join('、')}。请先在规则里去掉它。`,
+    })
+  }
+
+  // 历史消息默认保留：设备没了不代表那些验证码就不该存在。
+  //
+  // 用查询串而不是请求体：handleApi 只对 POST/PUT 解析 body，
+  // DELETE 带的 body 会被直接丢掉——写成 body 就是个永远为 false 的死参数。
+  const purge = url.searchParams.get('purge') === '1'
+  let events = 0
+  let outbound = 0
+  if (purge) {
+    events = await deps.store.deleteEvents({ device_id: id })
+    outbound = await deps.store.deleteOutboundByDevice(id)
+  }
+
+  await deps.store.deleteDevice(id)
+  log.warn('设备记录已删除', { device_id: id, name: device.name, purge, events, outbound })
+  await deps.store.audit({
+    actor: 'admin', action: 'device.delete',
+    detail: `${device.name}(${id})${purge ? ` 并清理 ${events} 条消息、${outbound} 条发送记录` : '，历史保留'}`,
+    ip, created_at: now(),
+  })
+  json(res, 200, { ok: true, events, outbound })
 })
 
 /** Agent 调用，无需鉴权——配对码本身就是凭证。 */
@@ -1129,6 +1188,8 @@ route('GET', '/api/stats', async ({ res, deps }) => {
       id: d.id, name: d.name,
       status: d.status === 'revoked' ? 'revoked' : online.has(d.id) ? 'online' : 'offline',
       last_seen_at: d.last_seen_at, battery: d.battery, charging: d.charging,
+      // 网络状态只用于展示，解析失败就当没有，不要让整个列表挂掉
+      net: d.net_json ? (JSON.parse(d.net_json) as unknown) : null,
       app_version: d.app_version,
     })),
     today: {

@@ -15,6 +15,7 @@ import org.smsgateway.agent.net.ConnState
 import org.smsgateway.agent.protocol.Protocol
 import org.smsgateway.agent.sms.SmsSender
 import org.smsgateway.agent.util.Log
+import org.smsgateway.agent.util.NetStatus
 import java.util.UUID
 
 /**
@@ -121,35 +122,10 @@ class SmsCommandHandler(private val ctx: Context) {
      * 只读不改：Android 10 起 setWifiEnabled 对普通应用是空操作，
      * 远程开关 WiFi 在非系统应用上做不到——能查到「WiFi 关了」已经解决了
      * 大半问题（知道要回家开，而不是以为手机丢了）。
+     *
+     * 与心跳上报共用同一份采集逻辑（util/NetStatus），两个出口一套实现。
      */
-    @Suppress("DEPRECATION")
-    private fun networkText(): String = buildString {
-        val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val on = wifi?.isWifiEnabled == true
-        append("WiFi ").append(if (on) "开" else "关")
-
-        val cm = ctx.getSystemService(ConnectivityManager::class.java)
-        val caps = runCatching { cm?.getNetworkCapabilities(cm.activeNetwork) }.getOrNull()
-        val online = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-        val via = when {
-            caps == null -> "无网络"
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> {
-                // SSID 需要定位权限且手机要处于已连接状态，取不到就只说「已连 WiFi」
-                val ssid = if (on) wifi?.connectionInfo?.ssid?.trim('"')?.takeIf {
-                    it.isNotBlank() && it != "<unknown ssid>"
-                } else null
-                if (ssid != null) "已连 $ssid" else "已连 WiFi"
-            }
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "走移动数据"
-            else -> "其他网络"
-        }
-        append("，").append(via)
-        if (caps != null && !online) append("（未验证）")
-
-        val tm = ctx.getSystemService(TelephonyManager::class.java)
-        val signal = runCatching { tm?.networkOperatorName }.getOrNull()
-        if (!signal.isNullOrBlank()) append("，运营商 ").append(signal)
-    }
+    private fun networkText(): String = NetStatus.read(ctx).describe()
 
     private fun batteryText(): String {
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager

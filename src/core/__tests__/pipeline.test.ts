@@ -197,7 +197,7 @@ describe('多设备时标出来源', () => {
   const addDevice = (id: string, name: string) => {
     store.devices.set(id, {
       id, name, token_hash: 'h', status: 'offline',
-      last_seen_at: null, battery: null, charging: null, location_enc: null, location_at: null, app_version: null, created_at: 0,
+      last_seen_at: null, battery: null, charging: null, location_enc: null, location_at: null, net_json: null, app_version: null, created_at: 0,
     })
   }
 
@@ -418,5 +418,44 @@ describe('删除消息', () => {
     add('a'); add('b')
     expect(await store.deleteEvents({})).toBe(2)
     expect(store.events.size).toBe(0)
+  })
+})
+
+describe('删除设备记录', () => {
+  let store: MemoryStore
+
+  beforeEach(async () => {
+    store = new MemoryStore()
+    store.devices.set('dev_1', {
+      id: 'dev_1', name: '旧手机', token_hash: 'x', status: 'offline',
+      last_seen_at: null, battery: null, charging: null, net_json: null,
+      location_enc: null, location_at: null, app_version: null, created_at: 0,
+    })
+  })
+
+  it('吊销会作废凭证，之后才谈得上删除', async () => {
+    await store.revokeDevice('dev_1')
+    const d = store.devices.get('dev_1')!
+    expect(d.status).toBe('revoked')
+    expect(d.token_hash).toBe('')
+  })
+
+  it('删掉设备记录', async () => {
+    expect(await store.deleteDevice('dev_1')).toBe(true)
+    expect(store.devices.size).toBe(0)
+  })
+
+  it('删不存在的返回 false', async () => {
+    expect(await store.deleteDevice('nope')).toBe(false)
+  })
+
+  it('只清这台设备的发送记录，别的设备不受影响', async () => {
+    const mk = (id: string, dev: string) => store.outbound.set(id, {
+      id, device_id: dev, to_number: '138', content_enc: new Uint8Array(),
+      sim_slot: null, status: 'sent', error: null, created_at: 0, updated_at: 0,
+    })
+    mk('a', 'dev_1'); mk('b', 'dev_1'); mk('c', 'dev_2')
+    expect(await store.deleteOutboundByDevice('dev_1')).toBe(2)
+    expect([...store.outbound.keys()]).toEqual(['c'])
   })
 })
