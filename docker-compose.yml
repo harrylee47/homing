@@ -1,0 +1,36 @@
+services:
+  gateway:
+    build: .
+    image: sms-gateway:local
+    container_name: sms-gateway
+    restart: unless-stopped
+
+    # 只绑宿主机回环：公网入口由 1Panel 的 OpenResty 反代提供，
+    # 容器端口不暴露在任何对外接口上。
+    ports:
+      - "127.0.0.1:2333:8070"
+
+    volumes:
+      - ./data:/data
+
+    environment:
+      # 容器看到的来源是 Docker 网桥网关，不是宿主机回环 ——
+      # OpenResty（host 网络）连 127.0.0.1:2333，Docker NAT 后在容器内呈现为网桥地址。
+      # 不能写 0.0.0.0，否则 X-Forwarded-For 可伪造，限速与 IP 告警全部失效（计划 §11.6）。
+      GW_TRUSTED_PROXY: "172.27.0.0/16"
+      GW_BASE_URL: "https://smsgw.of.ci"
+
+    # 生产加固（计划 §12.4）
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
