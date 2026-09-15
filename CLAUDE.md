@@ -103,9 +103,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 规则引擎**不要写成 if-else 硬编码**，定义为可配置 JSON（`match_json` / `action_json`）。同规则内多条件 AND，数组内多值 OR，空值不限制。
 - 移动端适配是**硬要求**不是加分项：Bark 点击跳转落地在手机浏览器，发送页小屏不可用则整条 Bark 链路是断的。
 
+## Telegram 必须模糊正文（踩过的坑）
+
+发往 Telegram 的消息，**正文必须包在 `<tg-spoiler>` 里，验证码不得单独明文显示**（`parse_mode` 用 HTML，MarkdownV2 没有 spoiler）。发件人号码可明文。
+
+原因：Telegram 反欺诈系统会封禁转发验证码的 Bot，上一版网关实际被封过。Bot 一封所有通知全断，是单点故障。
+
+连带影响：计划 §8.2 说 `extract_code` 要让「通知栏直接可见无需展开」——**这个体验在 Telegram 上做不到**，只能留给自建的 Bark。新增任何 Telegram 功能（推送、Bot 命令回复、历史查询）都要遵守这条。
+
 ## 两个体验关键点（别当成小功能砍掉）
 
-- **`extract_code`**：正则提取 4–8 位验证码放进推送标题，通知栏无需展开即可见。
+- **`extract_code`**：正则提取 4–8 位验证码。**仅 Bark 可放进推送标题**——Telegram 见上一节。提取只认关键词邻近的数字并要求数字边界，避免把订单号截成验证码。
 - **Bark 的 `copy` + `autoCopy`**：长按通知即复制验证码，常见场景下完全不需要打开任何 App。这是日常体感提升最大的一处。
 
 对应地，两个"看起来可选实则必须"的功能：渠道**测试按钮**（配错渠道是最常见故障，且故障时你收不到任何通知——静默失败）、规则**用历史消息试跑**（否则调试反馈周期是"等下一条真实短信"）。

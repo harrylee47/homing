@@ -159,6 +159,17 @@ describe('事件处理管线', () => {
     expect(sent).toHaveLength(1)
   })
 
+  it('老渠道配置缺少新字段时，schema 默认值仍然生效', async () => {
+    // 模拟「新增配置项之前就存下的渠道」：config 里没有 tag 之外的字段
+    store.channels.set('ch_old', {
+      id: 'ch_old', type: 'stub', name: 'old',
+      config_enc: await cipher.encrypt(JSON.stringify({ tag: 'old', extra: 'ignored' })),
+      enabled: true, created_at: 0,
+    })
+    await processEvent({ store, cipher, retryBaseMs: 1 }, 'evt_1', evt())
+    expect(sent).toHaveLength(1)
+  })
+
   it('管线异常不向外抛，采集链路不受影响', async () => {
     const broken = { ...store, listRules: () => { throw new Error('db down') } } as unknown as MemoryStore
     await expect(processEvent({ store: broken, cipher, retryBaseMs: 1 }, 'evt_1', evt())).resolves.toBeUndefined()

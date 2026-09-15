@@ -7,7 +7,7 @@
  */
 import type { Cipher } from './crypto.js'
 import { log } from './logging.js'
-import { crossChannelAlert, dispatch, type ChannelConfig } from './notifier.js'
+import { crossChannelAlert, dispatch, PROVIDERS, type ChannelConfig } from './notifier.js'
 import type { NotifyMessage } from './providers/types.js'
 import {
   defaultAction, evaluate, extractCode, render,
@@ -131,20 +131,35 @@ async function loadRules(store: Store): Promise<Rule[]> {
   return out
 }
 
-/** 同理：某个渠道配置解不开不应阻断其他渠道。 */
+/**
+ * 同理：某个渠道配置解不开不应阻断其他渠道。
+ *
+ * 解密后必须再过一遍 provider 的 schema —— 不能只 JSON.parse。
+ * 否则新增带默认值的配置项对**已存在的渠道**不生效（存的是旧结构，
+ * 字段缺失就是 undefined），而这种失效是静默的：
+ * 比如 telegram 的 spoiler 默认 true，不过 schema 就会退化成不模糊。
+ */
 async function loadChannels(deps: PipelineDeps): Promise<ChannelConfig[]> {
   const rows = await deps.store.listChannels()
   const out: ChannelConfig[] = []
   for (const c of rows) {
     if (!c.enabled) continue
     try {
-      out.push({
-        id: c.id,
-        type: c.type,
-        name: c.name,
-        config: JSON.parse(await deps.cipher.decrypt(c.config_enc)),
-        enabled: true,
-      })
+      const raw: unknown = JSON.parse(await deps.cipher.decrypt(c.config_enc))
+      const provider = PROVIDERS[c.type]
+      if (!provider) {
+        log.error('渠道类型未注册，已跳过', { channel_id: c.id, type: c.type })
+        continue
+      }
+      const parsed = provider.configSchema.safeParse(raw)
+      if (!parsed.success) {
+        log.error('渠道配置校验失败，已跳过', {
+          channel_id: c.id, type: c.type,
+          detail: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+        })
+        continue
+      }
+      out.push({ id: c.id, type: c.type, name: c.name, config: parsed.data, enabled: true })
     } catch (e) {
       log.error('渠道配置解密失败，已跳过', { channel_id: c.id, type: c.type, error: String(e) })
     }

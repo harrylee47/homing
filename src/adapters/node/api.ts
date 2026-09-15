@@ -167,9 +167,14 @@ route('POST', '/api/channels/:id/test', async ({ res, params, deps }) => {
   const c = await deps.store.getChannel(params.id!)
   if (!c) return json(res, 404, { error: '渠道不存在' })
 
+  const provider = PROVIDERS[c.type]
+  if (!provider) return json(res, 400, { error: `未知渠道类型 ${c.type}` })
+  // 与 pipeline 一致：过一遍 schema，让默认值对老配置也生效
+  const parsed = provider.configSchema.safeParse(JSON.parse(await deps.cipher.decrypt(c.config_enc)))
+  if (!parsed.success) return json(res, 400, { error: '渠道配置已失效，请重新保存' })
+
   const cfg: ChannelConfig = {
-    id: c.id, type: c.type, name: c.name,
-    config: JSON.parse(await deps.cipher.decrypt(c.config_enc)), enabled: true,
+    id: c.id, type: c.type, name: c.name, config: parsed.data, enabled: true,
   }
   const [r] = await dispatch([cfg], {
     title: '短信网关', body: '这是一条测试消息，收到即说明渠道配置正确。',
