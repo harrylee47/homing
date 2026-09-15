@@ -20,11 +20,36 @@ android {
         versionName = "0.1.0"
     }
 
+    /**
+     * 发布签名。
+     *
+     * 密钥**不在仓库里**：从环境变量或 ~/.gradle/gradle.properties 读。
+     * 没配的话 release 构建会退回调试签名——能装能跑，但换机器构建出的包
+     * 签名不同，无法覆盖安装。正式发版必须配好。
+     */
+    signingConfigs {
+        create("release") {
+            val storePath = (project.findProperty("SMSGW_KEYSTORE") as String?)
+                ?: System.getenv("SMSGW_KEYSTORE")
+            if (storePath != null && file(storePath).exists()) {
+                storeFile = file(storePath)
+                storePassword = (project.findProperty("SMSGW_KEYSTORE_PASSWORD") as String?)
+                    ?: System.getenv("SMSGW_KEYSTORE_PASSWORD")
+                keyAlias = (project.findProperty("SMSGW_KEY_ALIAS") as String?)
+                    ?: System.getenv("SMSGW_KEY_ALIAS") ?: "smsgateway"
+                keyPassword = (project.findProperty("SMSGW_KEY_PASSWORD") as String?)
+                    ?: System.getenv("SMSGW_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            val rel = signingConfigs.getByName("release")
+            signingConfig = if (rel.storeFile != null) rel else signingConfigs.getByName("debug")
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -65,6 +90,7 @@ dependencies {
     implementation(libs.material)
 
     implementation(libs.okhttp)
+    implementation(libs.zxing.embedded)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
 

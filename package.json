@@ -18,7 +18,7 @@
     "lint:core": "node scripts/check-core-purity.mjs",
     "check": "pnpm typecheck && pnpm lint:core && pnpm test && pnpm audit:deps",
     "audit:deps": "node scripts/audit-deps.mjs",
-    "deploy:arm": "bash scripts/deploy.sh"
+    "deploy": "bash scripts/deploy.sh"
   },
   "dependencies": {
     "@noble/hashes": "^2.4.0",

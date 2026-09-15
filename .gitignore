@@ -26,3 +26,7 @@ agent/**/build/
 # Gradle
 agent/.gradle/
 agent/local.properties
+
+# 发布签名凭据（放在仓库外的 ~/.smsgateway-release.properties）
+release.properties
+*.apk

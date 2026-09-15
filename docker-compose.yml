@@ -18,7 +18,7 @@ services:
       # OpenResty（host 网络）连 127.0.0.1:2333，Docker NAT 后在容器内呈现为网桥地址。
       # 不能写 0.0.0.0，否则 X-Forwarded-For 可伪造，限速与 IP 告警全部失效（计划 §11.6）。
       GW_TRUSTED_PROXY: "172.27.0.0/16"
-      GW_BASE_URL: "https://smsgw.of.ci"
+      GW_BASE_URL: "${GW_BASE_URL:?请在 .env 里填对外访问地址}"
       # 自建 Bark 挂在网关自己的域名下（/bark/*），不必单独建站。
       # 必须用 compose 服务名：容器里的 127.0.0.1 指向网关自己。
       GW_BARK_UPSTREAM: "http://bark:8080"
@@ -45,7 +45,7 @@ services:
     image: finab/bark-server:latest
     container_name: bark-server
     restart: unless-stopped
-    # 同时发布到宿主机回环：arm 上的其它服务可以直接用
+    # 同时发布到宿主机回环：本机上的其它服务可以直接用
     # http://127.0.0.1:2334 推送，不必经过公网路径。
     # 公网入口由网关的 /bark/* 提供，档位在控制台里调。
     ports:
