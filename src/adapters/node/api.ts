@@ -21,10 +21,12 @@ import { createPairing, redeemPairing } from '../../core/pairing.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import type { DownstreamFrame } from '../../core/protocol.js'
 import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
+import { DEFAULT_KEEPALIVE, loadConfig as loadKeepAlive, SETTING_KEY as KEEPALIVE_KEY } from '../../core/keepalive.js'
 import { toSvg } from '../../core/qr.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
 import type { BarkAccess } from './barkproxy.js'
+import { clientIp as resolveClientIp } from './clientip.js'
 import type { Store } from '../../core/store.js'
 
 export interface ApiDeps {
@@ -39,6 +41,8 @@ export interface ApiDeps {
   adminToken: string
   /** 登录失败达到阈值时的告警回调。计划 §6.3 要求「失败立即告警到 Telegram」。 */
   onLoginLockout?: ((ip: string, attempts: number) => void) | undefined
+  /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
+  trustedProxy?: string | null
 }
 
 /** 设置表的键。initialized 未置位前，除向导外一切请求都拒绝。 */
@@ -614,6 +618,35 @@ route('POST', '/api/bot/rotate-token', async ({ res, deps, ip }) => {
   json(res, 200, { ok: true })
 })
 
+// ── 保号任务 ────────────────────────────────────────────────
+
+route('GET', '/api/keepalive', async ({ res, deps }) => {
+  const cfg = await loadKeepAlive(deps.store)
+  const last = await deps.store.getSetting('keepalive_last_run')
+  const fails = Number((await deps.store.getSetting('keepalive_fail_count')) ?? 0)
+  json(res, 200, { ...cfg, last_run: last, consecutive_failures: fails })
+})
+
+route('POST', '/api/keepalive', async ({ res, body, deps, ip }) => {
+  const b = body as Partial<typeof DEFAULT_KEEPALIVE>
+  const to = (b.to ?? '').trim()
+  if (b.enabled && !to) return json(res, 400, { error: '启用时必须填目标号码' })
+
+  const cfg = {
+    enabled: b.enabled === true,
+    to,
+    day: Math.min(Math.max(Number(b.day) || 1, 1), 28),
+    text: (b.text ?? '').trim() || DEFAULT_KEEPALIVE.text,
+  }
+  await deps.store.setSetting(KEEPALIVE_KEY, JSON.stringify(cfg))
+  await deps.store.audit({
+    actor: 'admin', action: 'keepalive.config',
+    detail: cfg.enabled ? `每月 ${cfg.day} 日 → ${maskNumber(cfg.to)}` : '已停用',
+    ip, created_at: now(),
+  })
+  json(res, 200, { ok: true })
+})
+
 // ── 总览统计 ────────────────────────────────────────────────
 
 route('GET', '/api/stats', async ({ res, deps }) => {
@@ -767,7 +800,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
   // 未匹配的 /api/* 返回 404 而不是 405，不泄漏有哪些路由存在
   if (!match) { json(res, 404, { error: 'not found' }); return true }
 
-  const ip = clientIp(req)
+  const ip = resolveClientIp(req, deps.trustedProxy ?? null)
 
   // 未完成初始化时，除向导外一切拒绝（计划 §12.1①）
   if (!match.setup && !(await isInitialized(deps.store))) {
@@ -838,17 +871,6 @@ async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string, scope:
   }
 
   return timingSafeEqual(presented, deps.adminToken)
-}
-
-/**
- * 客户端 IP。
- *
- * X-Forwarded-For 只有在确知请求来自可信反代时才可采信；
- * GW_TRUSTED_PROXY 的校验尚未实现，因此这里暂时只用连接地址——
- * 宁可限速粒度粗一点，也不能让 IP 可被伪造（计划 §11.6）。
- */
-function clientIp(req: IncomingMessage): string {
-  return req.socket.remoteAddress ?? 'unknown'
 }
 
 const MAX_BODY = 256 * 1024

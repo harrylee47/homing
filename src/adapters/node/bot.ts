@@ -89,8 +89,12 @@ export class TelegramBot {
           await sleep(60_000)
           continue
         }
-        // 网络抖动、Telegram 限流走这里；退避后继续，不要放弃轮询
-        log.warn('Bot 轮询失败', { error: String(e) })
+        // 网络抖动、Telegram 限流走这里；退避后继续，不要放弃轮询。
+        // 带上 cause：fetch 的顶层错误一律是 "fetch failed"，
+        // 真正的原因（ENETUNREACH / ETIMEDOUT / ECONNRESET）在 cause 里，
+        // 不打出来就只能靠猜。
+        const cause = e instanceof Error ? (e.cause as { code?: string } | undefined)?.code : undefined
+        log.warn('Bot 轮询失败', { error: String(e), cause: cause ?? null })
         await sleep(5000)
       }
     }

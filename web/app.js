@@ -896,6 +896,7 @@ async function settings() {
       <span>通知渠道</span>
       <a href="/channels"><button class="ghost sm">管理</button></a>
     </div>
+    <div id="ka"></div>
     <h2>修改口令</h2>
     <div class="card">
       <label>当前口令</label><input id="old" type="password" autocomplete="current-password">
@@ -909,6 +910,8 @@ async function settings() {
       <span class="muted">退出登录</span>
       <button class="ghost sm" id="logout">退出</button>
     </div>`)
+
+  void paintKeepAlive()
 
   $('#chpw').onclick = async () => {
     const bad = checkPassword($('#new').value)
@@ -925,6 +928,57 @@ async function settings() {
     try { await api('/auth/logout', { method: 'POST' }) } catch { /* 本地清掉即可 */ }
     setToken('')
     go('/login')
+  }
+}
+
+/**
+ * 保号任务设置。
+ *
+ * 国内号码长期零消费 + 异地漫游可能被停机，而停机是静默的——
+ * 到你需要验证码那天才会发现。
+ */
+async function paintKeepAlive() {
+  const box = $('#ka')
+  if (!box) return
+  let k
+  try { k = await api('/keepalive') } catch { return }
+
+  box.innerHTML = `
+    <h2>保号任务</h2>
+    <div class="card">
+      <p class="muted">每月定时发一条短信产生使用记录。国内号码长期零消费加异地漫游可能被停机，而停机不会有任何提示。</p>
+      <label>启用</label>
+      <select id="ka_on">
+        <option value="1"${k.enabled ? ' selected' : ''}>启用</option>
+        <option value="0"${k.enabled ? '' : ' selected'}>停用</option>
+      </select>
+      <label>目标号码</label>
+      <input id="ka_to" inputmode="tel" value="${esc(k.to || '')}" placeholder="发给自己的另一个号码即可">
+      <label>每月第几天（1-28）</label>
+      <input id="ka_day" type="number" min="1" max="28" value="${k.day}">
+      <label>内容</label>
+      <input id="ka_text" value="${esc(k.text)}">
+      <div class="muted" style="margin-top:8px">
+        上次执行：${k.last_run || '从未'}${k.consecutive_failures > 0 ? ` · <span class="badge err">连续失败 ${k.consecutive_failures} 次</span>` : ''}
+      </div>
+      <div class="btnrow"><button id="ka_save" class="sm">保存</button></div>
+      <div id="ka_err" class="err-text"></div>
+    </div>`
+
+  $('#ka_save').onclick = async () => {
+    try {
+      await api('/keepalive', {
+        method: 'POST',
+        body: {
+          enabled: $('#ka_on').value === '1',
+          to: $('#ka_to').value.trim(),
+          day: Number($('#ka_day').value),
+          text: $('#ka_text').value,
+        },
+      })
+      toast('已保存')
+      paintKeepAlive()
+    } catch (e) { $('#ka_err').textContent = e.message }
   }
 }
 
