@@ -67,3 +67,39 @@ describe('二维码', () => {
     expect(svg).not.toContain('<image')
   })
 })
+
+describe('从 Bark 复制来的地址里认 Key', () => {
+  // 与 web/app.js 的 barkKeyFrom 同一套规则，两处漂移的表现是
+  // 「粘了地址但 Key 没填进去」，用户只会觉得这个功能坏了
+  const keyFrom = (text: string): string => {
+    const t = String(text || '').trim()
+    if (!t) return ''
+    if (/^[A-Za-z0-9]{10,40}$/.test(t)) return t
+    let path: string
+    try { path = new URL(t).pathname } catch { path = t.replace(/^https?:\/\/[^/]+/, '') }
+    return path.split('/').filter(Boolean).find((x) => /^[A-Za-z0-9]{10,40}$/.test(x)) ?? ''
+  }
+
+  const KEY = 'fH55uRPBkfDRgjDUV46ksU'
+
+  it('反代路径下也能认出来（前面还有 /bark 这一段）', () => {
+    expect(keyFrom(`https://gw.example.com/bark/${KEY}/这里改成你自己的推送内容`)).toBe(KEY)
+  })
+
+  it('带标题和参数的整条示例地址', () => {
+    expect(keyFrom(`https://gw.example.com/bark/${KEY}/推送标题/正文?sound=minuet`)).toBe(KEY)
+  })
+
+  it('直接粘裸 Key', () => {
+    expect(keyFrom(KEY)).toBe(KEY)
+  })
+
+  it('没有域名、只有路径也行', () => {
+    expect(keyFrom(`/bark/${KEY}/hi`)).toBe(KEY)
+  })
+
+  it('认不出来时返回空串，而不是瞎猜一段', () => {
+    expect(keyFrom('https://gw.example.com/bark/')).toBe('')
+    expect(keyFrom('随便一段中文')).toBe('')
+  })
+})

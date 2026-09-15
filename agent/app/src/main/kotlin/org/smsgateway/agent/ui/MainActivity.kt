@@ -10,6 +10,13 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import android.text.Editable
+import android.text.TextWatcher
+import android.content.pm.PackageManager
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -18,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.smsgateway.agent.net.PairPayload
 import org.smsgateway.agent.net.PairingClient
 import org.smsgateway.agent.notification.NotificationCapture
 import org.smsgateway.agent.App
@@ -28,9 +36,11 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 唯一的界面（计划 §4.4）：状态 + 配对信息 + 两个权限入口。
+ * 唯一的界面（计划 §4.4）：状态 + 配对 + 几个权限入口。
  *
- * 配对暂时是手工填写。M1 上线扫码配对后，这三个输入框会被二维码扫描替代。
+ * 配对首选扫码：手打一个 wss 地址加一串区分大小写的配对码，
+ * 是整个接入流程里最容易打错的一步。手工填写保留为退路
+ * （没有摄像头、扫不出来、或者用模拟器时）。
  */
 class MainActivity : AppCompatActivity() {
 
@@ -44,6 +54,34 @@ class MainActivity : AppCompatActivity() {
         else toast("以下权限被拒绝：${denied.joinToString { it.substringAfterLast('.') }}")
     }
 
+    /** 扫码结果。内容格式见服务端 api.ts 的 pairPayload。 */
+    private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
+        val text = result.contents ?: return@registerForActivityResult   // 用户取消
+        val p = PairPayload.parse(text)
+        if (p == null) {
+            toast("这不是配对二维码")
+            return@registerForActivityResult
+        }
+        // 先让人看清要连到哪：扫错一个码，这台手机之后收到的每一条验证码
+        // 都会发给别人。这一次确认的成本远小于那个后果。
+        AlertDialog.Builder(this)
+            .setTitle("确认配对")
+            .setMessage("将把这台手机接入：\n\n${p.url}\n\n之后收到的短信、来电、通知都会上报到这个地址。")
+            .setPositiveButton("配对") { _, _ ->
+                vb.urlInput.setText(p.url)
+                vb.codeInput.setText(p.code)
+                pair()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private val cameraPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) launchScanner() else toast("没有摄像头权限，只能手动填写")
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         vb = ActivityMainBinding.inflate(layoutInflater)
@@ -52,6 +90,26 @@ class MainActivity : AppCompatActivity() {
         val app = App.get()
         vb.urlInput.setText(app.prefs.serverUrl ?: "")
 
+        vb.scanButton.setOnClickListener { scan() }
+        // 二维码内容粘进地址框也认：同一台手机上打开控制台时，复制比扫码更顺手。
+        //
+        // 只认「一次插入一大段」，不是每敲一个字都去试着解析——
+        // 逐字输入时会在配对码只到一半的时候就匹配成功，把输入框改掉，
+        // 剩下的字符继续落在后面，结果两个框里都是半截内容。
+        vb.urlInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun afterTextChanged(s: Editable?) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (count < PASTE_MIN_CHARS) return
+                val p = PairPayload.find(s?.toString()) ?: return
+                vb.urlInput.post {
+                    vb.urlInput.setText(p.url)
+                    vb.urlInput.setSelection(p.url.length)
+                    vb.codeInput.setText(p.code)
+                    toast("已识别配对信息，确认后点「配对」")
+                }
+            }
+        })
         vb.pairButton.setOnClickListener { pair() }
         vb.unpairButton.setOnClickListener { unpair() }
         vb.permButton.setOnClickListener { requestPerms() }
@@ -82,8 +140,8 @@ class MainActivity : AppCompatActivity() {
         vb.detailText.text = buildString {
             val p = App.get().prefs
             if (paired) {
-                appendLine("设备：\${p.deviceName}")
-                appendLine("服务端：\${p.serverUrl}")
+                appendLine("设备：${p.deviceName}")
+                appendLine("服务端：${p.serverUrl}")
             }
             when (s) {
                 is ConnState.Connected -> appendLine("连接于 ${fmt.format(Date(s.since))}")
@@ -95,6 +153,24 @@ class MainActivity : AppCompatActivity() {
             appendLine("电池优化白名单：${if (isIgnoringBattery()) "已加入" else "未加入"}")
             appendLine("通知使用权：${if (NotificationCapture.isEnabled(this@MainActivity)) "已授予" else "未授予"}")
         }
+    }
+
+    private fun scan() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            launchScanner()
+        } else {
+            cameraPermLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun launchScanner() {
+        scanLauncher.launch(
+            ScanOptions()
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                .setPrompt("对准控制台「设备」页生成的二维码")
+                .setBeepEnabled(false)
+                .setOrientationLocked(false),
+        )
     }
 
     /** 用一次性配对码换长期凭证。凭证由服务端生成，本机不产生也不显示。 */
@@ -130,7 +206,7 @@ class MainActivity : AppCompatActivity() {
                     vb.codeInput.setText("")   // 配对码用过即弃，不留在界面上
                     app.ws.stop()
                     app.ws.start()
-                    toast("配对成功：\${r.data.deviceName}")
+                    toast("配对成功：${r.data.deviceName}")
                 }
             }
         }
@@ -205,4 +281,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    private companion object {
+        /** 一次插入这么多字符只可能是粘贴；配对内容本身有 60 字符上下 */
+        const val PASTE_MIN_CHARS = 20
+    }
 }

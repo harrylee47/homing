@@ -24,6 +24,14 @@
             android:layout_width="match_parent" android:layout_height="wrap_content"
             android:orientation="vertical">
 
+            <Button android:id="@+id/scanButton"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp" android:text="扫码配对" />
+
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="或者手动填写" android:textSize="12sp"
+                android:paddingBottom="6dp" android:alpha="0.6" />
+
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:text="服务端地址" android:textSize="12sp" />
             <EditText android:id="@+id/urlInput"
