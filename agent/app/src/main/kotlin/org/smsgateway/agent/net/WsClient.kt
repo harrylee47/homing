@@ -333,9 +333,11 @@ class WsClient(
     private fun onImportHistory(cmd: CmdPayload) {
         report(cmd.cmdId, "accepted", null)
         scope.launch {
-            val since = (cmd.args["since"] as? String)?.toLongOrNull()
-            val limit = (cmd.args["limit"] as? String)?.toIntOrNull() ?: 1000
-            val r = runCatching { HistoryImporter.run(ctx, since, limit) }
+            val args = runCatching {
+                Protocol.json.decodeFromJsonElement(ImportArgs.serializer(), cmd.args)
+            }.getOrElse { ImportArgs() }
+            Log.i("历史导入 since=${args.since} limit=${args.limit}")
+            val r = runCatching { HistoryImporter.run(ctx, args.since, args.limit) }
             r.fold(
                 onSuccess = { out ->
                     val socket = ws ?: return@launch

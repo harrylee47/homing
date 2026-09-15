@@ -203,6 +203,19 @@ data class CmdPayload(
     val args: JsonObject = JsonObject(emptyMap()),
 )
 
+/**
+ * 历史导入参数。
+ *
+ * **必须按类型解码**，不能对 `cmd.args["since"]` 做 `as? String` ——
+ * args 是 JsonObject，取出来的是 JsonPrimitive，那个转换永远返回 null，
+ * 于是时间范围和条数上限被静默忽略，界面上选什么都等于「全部、按默认上限」。
+ */
+@Serializable
+data class ImportArgs(
+    val since: Long? = null,
+    val limit: Int = 1000,
+)
+
 @Serializable
 data class SendSmsArgs(
     val to: String,

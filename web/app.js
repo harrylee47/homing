@@ -502,7 +502,10 @@ async function events() {
         <div class="btnrow">
           <button id="f_apply" class="sm">应用筛选</button>
           <button id="f_clear" class="ghost sm">清空</button>
+          <button id="f_del" class="danger sm">删除符合条件的</button>
         </div>
+        <div class="muted">删除按上面的<b>设备、类型、方向、时间范围</b>执行，
+        不含关键词与号码——那两项要逐条解密才能判断，条件写错就是不可逆的误删。</div>
       </details>
     </div>
     <div id="list"><div class="loading">加载中…</div></div>`)
@@ -530,6 +533,34 @@ async function events() {
   }
 
   const apply = (over) => go(`/events?${buildQuery(over).toString()}`)
+
+  $('#f_del').onclick = async () => {
+    const body = {
+      device: $('#f_device')?.value || undefined,
+      kind: kindNow || undefined,
+      direction: $('#f_direction')?.value || undefined,
+      since: $('#f_since')?.value ? new Date(`${$('#f_since').value}T00:00:00`).getTime() : undefined,
+      until: $('#f_until')?.value ? new Date(`${$('#f_until').value}T23:59:59`).getTime() : undefined,
+      confirm: true,
+    }
+    const conds = [
+      body.device ? `设备 ${activeDevs.find((d) => d.id === body.device)?.name ?? body.device}` : '',
+      body.kind ? `类型 ${(RULE_KINDS.find(([v]) => v === body.kind) || [, body.kind])[1]}` : '',
+      body.direction ? (body.direction === 'out' ? '本机发出的' : '收到的') : '',
+      body.since || body.until ? '指定时间范围内' : '',
+    ].filter(Boolean)
+
+    const what = conds.length ? conds.join('、') : '【全部消息】'
+    if (!confirm(`要删除的是：${what}\n\n删了就没了，没有回收站。确定吗？`)) return
+    // 无条件清空是最危险的一种，再问一次
+    if (conds.length === 0 && !confirm('再确认一次：这会清空所有历史消息。')) return
+
+    try {
+      const r = await api('/events/bulk-delete', { method: 'POST', body })
+      toast(`已删除 ${r.deleted} 条`)
+      events()
+    } catch (e) { toast(e.message) }
+  }
   $('#f_apply').onclick = () => apply({})
   // 清空筛选但保留当前类别：在「通话」页点清空却跳回「全部」是反直觉的
   $('#f_clear').onclick = () => go(kindNow ? `/events?kind=${kindNow}` : '/events')
@@ -649,7 +680,18 @@ async function eventDetail(id) {
         ${e.kind === 'call' ? `<a href="tel:${encodeURIComponent(e.from)}"><button class="sm">拨回</button></a>` : ''}
         <a href="/compose?to=${encodeURIComponent(e.from)}&ref=${encodeURIComponent(e.id)}&dev=${encodeURIComponent(e.device_id)}"><button class="${e.kind === 'call' ? 'ghost sm' : 'sm'}">${e.kind === 'call' ? '发短信' : '回复'}</button></a>
         ${e.kind === 'call' ? '' : '<button class="ghost sm" id="copy">复制正文</button>'}
+        <button class="danger sm" id="del">删除</button>
       </div>`)
+
+    $('#del').onclick = async () => {
+      // 没有回收站，所以确认框里要把内容摆出来，让人看清删的是哪条
+      if (!confirm(`删除这条消息？\n\n${e.from}：${e.content.slice(0, 40)}\n\n删了就没了，没有回收站。`)) return
+      try {
+        await api(`/events/${encodeURIComponent(e.id)}`, { method: 'DELETE' })
+        toast('已删除')
+        go('/events')
+      } catch (err) { toast(err.message) }
+    }
 
     const copy = $('#copy')
     if (copy) copy.onclick = async () => {
@@ -876,7 +918,18 @@ async function sentDetail(id) {
       <div class="btnrow">
         <a href="/compose?to=${encodeURIComponent(o.to)}&dev=${encodeURIComponent(o.device_id)}"><button class="sm">再发一条</button></a>
         <button class="ghost sm" id="copy">复制正文</button>
+        <button class="danger sm" id="del">删除记录</button>
       </div>`)
+
+    $('#del').onclick = async () => {
+      // 说清楚删的是什么：短信早就发出去了，删记录不等于撤回
+      if (!confirm(`删除这条发送记录？\n\n→ ${o.to}：${o.text.slice(0, 40)}\n\n短信已经发出去了，删的只是这条记录。`)) return
+      try {
+        await api(`/outbound/${encodeURIComponent(o.id)}`, { method: 'DELETE' })
+        toast('已删除')
+        go('/sent')
+      } catch (err) { toast(err.message) }
+    }
 
     $('#copy').onclick = async () => {
       try { await navigator.clipboard.writeText(o.text); toast('已复制') }
@@ -1641,6 +1694,7 @@ async function devices() {
   render('<div class="loading">加载中…</div>')
   try {
     const { devices: ds } = await api('/devices')
+    const online = ds.filter((d) => d.status === 'online')
     render(`
       <h1>设备</h1>
       ${ds.length ? `<div class="card list">${ds.map((d) => `
@@ -1660,14 +1714,17 @@ async function devices() {
             ${d.has_location ? `上次定位 ${ago(d.location_at)} · <a href="#" data-showloc="${esc(d.id)}">查看</a>` : ''}
           </div>
         </div>`).join('')}</div>` : '<div class="card muted">还没有设备。</div>'}
-      ${ds.some((d) => d.status === 'online') ? `
-        <h2>导入手机里已有的记录</h2>
-        <div class="card">
-          <p class="muted">网关只能捕获<b>启用之后</b>发生的事。装网关之前手机里就存着的短信和通话，
-          可以从这里一次性导进来。</p>
+      <h2>同步手机里已有的短信和通话</h2>
+      <div class="card">
+        <p class="muted">网关只能捕获<b>启用之后</b>发生的事。装网关之前手机里就存着的短信、
+        通话记录（收发都算），可以从这里一次性同步进来。</p>
+        ${online.length === 0 ? `
+          <div class="badge warn">没有在线设备</div>
+          <div class="muted" style="margin-top:8px">同步要现读手机本地的数据库，设备必须在线。
+          等它连上再回来。</div>` : `
           <label>设备</label>
           <select id="imp_dev">
-            ${ds.filter((d) => d.status === 'online').map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('')}
+            ${online.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('')}
           </select>
           <label>导入多久以内的</label>
           <select id="imp_days">
@@ -1682,11 +1739,11 @@ async function devices() {
             <option value="1000" selected>1000 条</option>
             <option value="5000">5000 条</option>
           </select>
-          <div class="muted">导入的记录<b>只进历史，不会推送</b>——否则几千条旧短信会一次性砸到你手机上。
-          重复导入不会产生重复记录。</div>
-          <div class="btnrow"><button id="imp_go" class="sm">开始导入</button></div>
-          <div id="imp_out" class="muted"></div>
-        </div>` : ''}
+          <div class="muted">同步进来的记录<b>只进历史，不会推送</b>——否则几千条旧短信会一次性
+          砸到你手机上。重复同步不会产生重复记录，放心多点几次。</div>
+          <div class="btnrow"><button id="imp_go" class="sm">开始同步</button></div>
+          <div id="imp_out" class="muted"></div>`}
+      </div>
 
       <h2>添加设备</h2>
       <div class="card">

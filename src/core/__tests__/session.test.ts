@@ -221,3 +221,53 @@ describe('历史导入的去重', () => {
     expect(store.events.size).toBe(1)
   })
 })
+
+describe('吊销必须真的吊销得掉', () => {
+  /**
+   * 这一组针对一条完整的绕回路径：
+   * 吊销 → 踢掉连接 → 断线回调写 status=offline 把 revoked 覆盖 →
+   * Agent 拿原 token 重连 → 握手看到的是 offline → 验证通过，设备又活了。
+   *
+   * 也就是说吊销恰好在「设备在线」时失效——而手机丢了要紧急吊销时它多半在线。
+   */
+  const fresh = async () => {
+    const store = new MemoryStore()
+    store.devices.set(DEVICE, {
+      id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
+      status: 'offline', last_seen_at: null, battery: null, charging: null,
+      location_enc: null, location_at: null, app_version: null, created_at: NOW,
+    })
+    const session = new DeviceSession({
+      store, hub: new MemoryHub(),
+      cipher: await createCipher(generateDek()),
+      now: () => NOW, onStored: () => {},
+    })
+    return { store, session }
+  }
+
+  it('断线不会把吊销状态改回离线', async () => {
+    const { store, session } = await fresh()
+    await session.handle(helloFrame())
+    await store.revokeDevice(DEVICE)
+    await session.onDisconnect()
+    expect(store.devices.get(DEVICE)!.status).toBe('revoked')
+  })
+
+  it('吊销后原凭证无法再握手——哪怕状态被改回去了', async () => {
+    const { store, session } = await fresh()
+    await store.revokeDevice(DEVICE)
+    // 模拟「状态被某条路径覆盖回 offline」这种最坏情况
+    store.devices.set(DEVICE, { ...store.devices.get(DEVICE)!, status: 'offline' })
+
+    const a = await session.handle(helloFrame())
+    expect(a.send[0]!.type).toBe('hello_reject')
+    expect(session.authenticatedDeviceId).toBeNull()
+  })
+
+  it('吊销后正常路径也拒绝，且给出的是吊销这个原因', async () => {
+    const { store, session } = await fresh()
+    await store.revokeDevice(DEVICE)
+    const a = await session.handle(helloFrame())
+    expect((a.send[0]!.payload as { code: string }).code).toBe(ErrorCode.AUTH_DEVICE_REVOKED)
+  })
+})

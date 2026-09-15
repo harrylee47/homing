@@ -181,9 +181,16 @@ export interface Store {
   listDevices(): Promise<DeviceRecord[]>
   createDevice(d: DeviceRecord): Promise<void>
   /** 握手成功后更新在线状态与遥测 */
+  /** 更新心跳与电量等。**不得把 revoked 状态改回去**——吊销是终态。 */
   touchDevice(id: string, patch: Partial<Pick<DeviceRecord, 'status' | 'last_seen_at' | 'battery' | 'charging' | 'app_version'>>): Promise<void>
   /** 记录最近一次定位。单独一个方法，避免定位数据混进高频的心跳更新里 */
   setDeviceLocation(id: string, enc: Uint8Array, at: number): Promise<void>
+  /**
+   * 吊销设备：置为 revoked **并作废凭证**。
+   *
+   * 两件事缺一不可——只改状态的话，断线时的 touchDevice 会把它覆盖回 offline，
+   * 设备拿着原 token 重连就又活了。实现必须保证吊销后无法再握手成功。
+   */
   revokeDevice(id: string): Promise<void>
 
   // 渠道
@@ -237,6 +244,8 @@ export interface Store {
   listOutbound(limit: number, offset: number, filter?: OutboundFilter): Promise<OutboundRecord[]>
   /** 分页要的总数。过滤条件与 listOutbound 一致。 */
   countOutbound(filter?: OutboundFilter): Promise<number>
+  /** 删除一条发送记录。返回是否真的删掉了 */
+  deleteOutbound(id: string): Promise<boolean>
   /**
    * 状态机推进。只允许前进不允许后退：delivered 之后再收到 sent 必须忽略，
    * 因为多段短信的回执顺序不保证。
@@ -258,6 +267,15 @@ export interface Store {
   countEvents(f: EventFilter): Promise<number>
   /** 记录命中的规则 id，事件已入库后回填 */
   setMatchedRules(eventId: string, ruleIds: string[]): Promise<void>
+  /** 删除单条。返回是否真的删掉了（不存在时为 false） */
+  deleteEvent(id: string): Promise<boolean>
+  /**
+   * 按条件批量删除，返回删除条数。
+   *
+   * 只接受 SQL 能过滤的维度——关键词要逐条解密，而「解密一遍再删」这种
+   * 操作一旦条件写错就是不可逆的批量误删，不值得为它承担风险。
+   */
+  deleteEvents(filter: EventFilter): Promise<number>
 
   close(): Promise<void>
 }

@@ -376,3 +376,47 @@ describe('历史导入只归档不推送', () => {
     expect(sent).toHaveLength(1)
   })
 })
+
+describe('删除消息', () => {
+  let store: MemoryStore
+
+  const add = (id: string, over: Partial<Parameters<MemoryStore['insertEvent']>[0]> = {}) =>
+    store.events.set(id, {
+      id, device_id: 'dev_1', kind: 'sms', direction: 'in',
+      sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
+      enc_ver: 1, occurred_at: 1_700_000_000_000, received_at: 0,
+      matched_rules: null, created_at: 0, ...over,
+    })
+
+  beforeEach(() => { store = new MemoryStore() })
+
+  it('删单条', async () => {
+    add('a'); add('b')
+    expect(await store.deleteEvent('a')).toBe(true)
+    expect(store.events.size).toBe(1)
+  })
+
+  it('删不存在的返回 false，而不是假装成功', async () => {
+    expect(await store.deleteEvent('nope')).toBe(false)
+  })
+
+  it('按设备删只动那台设备的', async () => {
+    add('a'); add('b', { device_id: 'dev_2' }); add('c')
+    expect(await store.deleteEvents({ device_id: 'dev_1' })).toBe(2)
+    expect([...store.events.keys()]).toEqual(['b'])
+  })
+
+  it('按类型与时间范围删', async () => {
+    add('a', { kind: 'call' })
+    add('b', { kind: 'call', occurred_at: 1_600_000_000_000 })
+    add('c')
+    expect(await store.deleteEvents({ kind: 'call', since: 1_650_000_000_000 })).toBe(1)
+    expect([...store.events.keys()].sort()).toEqual(['b', 'c'])
+  })
+
+  it('不带条件就是清空——调用方必须自己确认过', async () => {
+    add('a'); add('b')
+    expect(await store.deleteEvents({})).toBe(2)
+    expect(store.events.size).toBe(0)
+  })
+})

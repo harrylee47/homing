@@ -1122,6 +1122,16 @@ route('GET', '/api/outbound/:id', async ({ res, params, deps }) => {
   })
 }, true, false, 'bot')
 
+/** 删除一条发送记录。任务本身不会被撤回——短信早就发出去了，删的只是这条记录。 */
+route('DELETE', '/api/outbound/:id', async ({ res, params, deps, ip }) => {
+  const ok = await deps.store.deleteOutbound(params.id!)
+  if (!ok) return json(res, 404, { error: '记录不存在' })
+  await deps.store.audit({
+    actor: 'admin', action: 'outbound.delete', detail: params.id!, ip, created_at: now(),
+  })
+  json(res, 200, { ok: true })
+})
+
 const OUTBOUND_STATUS = new Set(['pending', 'accepted', 'sent', 'delivered', 'failed'])
 
 /**
@@ -1215,6 +1225,47 @@ route('GET', '/api/events/:id', async ({ res, params, deps }) => {
       : [],
   })
 }, true, false, 'bot')
+
+/** 删除单条消息。删了就没了，没有回收站——这一点在界面上要说清楚。 */
+route('DELETE', '/api/events/:id', async ({ res, params, deps, ip }) => {
+  const ok = await deps.store.deleteEvent(params.id!)
+  if (!ok) return json(res, 404, { error: '消息不存在' })
+  await deps.store.audit({
+    actor: 'admin', action: 'event.delete', detail: params.id!, ip, created_at: now(),
+  })
+  json(res, 200, { ok: true })
+})
+
+/**
+ * 按条件批量删除。
+ *
+ * 用 POST 而不是带查询串的 DELETE：一个能清空历史的操作不该出现在
+ * 浏览器地址栏里，也不该被任何「预取链接」之类的行为误触发。
+ *
+ * 只认 SQL 能过滤的维度。关键词过滤要逐条解密，条件写错就是不可逆的批量误删。
+ */
+route('POST', '/api/events/bulk-delete', async ({ res, body, deps, ip }) => {
+  const b = body as { device?: string; kind?: string; direction?: string; since?: number; until?: number; confirm?: boolean }
+  if (b?.confirm !== true) return json(res, 400, { error: '缺少确认' })
+
+  const kind = b.kind === 'sms' || b.kind === 'call' || b.kind === 'notification' ? b.kind : undefined
+  const filter: EventFilter = {
+    ...(kind ? { kind } : {}),
+    ...(b.device ? { device_id: b.device } : {}),
+    ...(b.direction === 'in' || b.direction === 'out' ? { direction: b.direction } : {}),
+    ...(Number.isFinite(b.since) ? { since: Number(b.since) } : {}),
+    ...(Number.isFinite(b.until) ? { until: Number(b.until) } : {}),
+  }
+
+  const deleted = await deps.store.deleteEvents(filter)
+  const desc = Object.entries(filter).map(([k, v]) => `${k}=${String(v)}`).join(' ') || '全部'
+  log.warn('批量删除消息', { deleted, filter: desc })
+  await deps.store.audit({
+    actor: 'admin', action: 'event.bulk_delete',
+    detail: `${deleted} 条（${desc}）`, ip, created_at: now(),
+  })
+  json(res, 200, { deleted })
+})
 
 route('GET', '/api/events', async ({ res, url, deps }) => {
   const p = url.searchParams

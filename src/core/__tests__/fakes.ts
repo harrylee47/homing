@@ -25,9 +25,14 @@ export class MemoryStore implements Store {
   async createDevice(d: DeviceRecord) { this.devices.set(d.id, d) }
   async touchDevice(id: string, patch: Partial<DeviceRecord>) {
     const d = this.devices.get(id)
-    if (d) this.devices.set(id, { ...d, ...patch })
+    // 吊销是终态，断线时写入的 offline 不能把它改回去
+    if (d && d.status !== 'revoked') this.devices.set(id, { ...d, ...patch })
   }
-  async revokeDevice(id: string) { await this.touchDevice(id, { status: 'revoked' }) }
+  async revokeDevice(id: string) {
+    const d = this.devices.get(id)
+    // 与 SQLite 实现一致：同时作废凭证，否则设备重连就又活了
+    if (d) this.devices.set(id, { ...d, status: 'revoked', token_hash: '' })
+  }
   async setDeviceLocation(id: string, enc: Uint8Array, at: number) {
     const d = this.devices.get(id)
     if (d) this.devices.set(id, { ...d, location_enc: enc, location_at: at })
@@ -52,6 +57,12 @@ export class MemoryStore implements Store {
         (f.since === undefined || e.occurred_at >= f.since) &&
         (f.until === undefined || e.occurred_at <= f.until))
       .sort((a, b) => b.occurred_at - a.occurred_at || b.id.localeCompare(a.id))
+  }
+  async deleteEvent(id: string) { return this.events.delete(id) }
+  async deleteEvents(f: EventFilter) {
+    const hit = this.filtered(f)
+    for (const e of hit) this.events.delete(e.id)
+    return hit.length
   }
   async setMatchedRules(id: string, ruleIds: string[]) {
     const e = this.events.get(id)
@@ -133,6 +144,7 @@ export class MemoryStore implements Store {
   async listOutbound(limit: number, offset: number, filter?: OutboundFilter) {
     return this.filteredOutbound(filter).slice(offset, offset + limit)
   }
+  async deleteOutbound(id: string) { return this.outbound.delete(id) }
   async countOutbound(filter?: OutboundFilter) {
     return this.filteredOutbound(filter).length
   }

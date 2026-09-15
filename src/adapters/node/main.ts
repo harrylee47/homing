@@ -181,7 +181,7 @@ async function queryDevice(
   deviceId: string,
   action: 'get_location' | 'list_apps' | 'import_history',
   timeoutMs: number,
-  args: Record<string, string> = {},
+  args: Record<string, unknown> = {},
 ): Promise<{ ok: boolean; detail: Record<string, unknown> | null; error: string | null }> {
   const cmdId = `cmd_${crypto.randomUUID()}`
   const frame = makeFrame('cmd', { cmd_id: cmdId, action, args }) as DownstreamFrame
@@ -230,8 +230,8 @@ async function listApps(deviceId: string): Promise<{ ok: boolean; apps?: unknown
 async function importHistory(
   deviceId: string, since: number | null, limit: number,
 ): Promise<{ ok: boolean; result?: unknown; error?: string }> {
-  const args: Record<string, string> = { limit: String(limit) }
-  if (since !== null) args.since = String(since)
+  const args: Record<string, unknown> = { limit }
+  if (since !== null) args.since = since
   const r = await queryDevice(deviceId, 'import_history', 120_000, args)
   if (!r.ok) return { ok: false, error: r.error ?? '导入失败' }
   const parsed = ImportResult.safeParse(r.detail)

@@ -407,3 +407,20 @@ cd agent && set -a && . ~/.smsgateway-release.properties && set +a
 
 提交到公开仓库前先扫一遍：网关域名、服务器别名、token 都不能进去。
 个人部署参数一律走环境变量（`HOMING_DEPLOY_HOST`、`GW_BASE_URL`）。
+
+## 吊销必须真的吊销得掉
+
+`revokeDevice` 要**同时作废凭证**，`touchDevice` 要**拒绝把 revoked 改回去**。
+缺任何一半，就存在这条完整的绕回路径：
+
+吊销 → 服务端踢掉连接 → Agent 的 onDisconnect 走 `touchDevice({status:'offline'})`
+把 revoked 覆盖掉 → Agent 拿原 token 重连 → 握手看到的状态是 offline → 验证通过，设备又活了。
+
+也就是吊销**恰好在「设备在线」时失效**——而手机丢了要紧急吊销时，它多半正在线。
+
+## 指令参数必须按类型解码
+
+`CmdPayload.args` 是 `JsonObject`，对它写 `args["since"] as? String` **永远返回 null**
+（取出来的是 JsonPrimitive）。表现是界面上选的时间范围和条数上限被静默忽略，
+选什么都等于「全部、按默认上限」——不报错、不告警，只有对着结果数数才能发现。
+一律 `decodeFromJsonElement(XxxArgs.serializer(), cmd.args)`。

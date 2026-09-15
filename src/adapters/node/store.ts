@@ -226,11 +226,23 @@ export class SqliteStore implements Store {
       if (typeof v === 'boolean') return v ? 1 : 0
       return v as string | number | null
     })
-    this.db.prepare(`UPDATE devices SET ${set} WHERE id = ?`).run(...vals, id)
+    // 吊销是终态：断线时写入的 status='offline' 不能把它改回去（见 revokeDevice）
+    this.db.prepare(`UPDATE devices SET ${set} WHERE id = ? AND status != 'revoked'`).run(...vals, id)
   }
 
+  /**
+   * 吊销设备。
+   *
+   * **必须同时作废凭证**。只改状态的话有一条完整的绕回路径：
+   * 吊销 → 服务端踢掉连接 → Agent 的 onDisconnect 走 touchDevice({status:'offline'})
+   * 把 revoked 覆盖掉 → Agent 拿着原来的 token 重连 → 握手时看到的状态是 offline
+   * → 验证通过，设备又活了。
+   *
+   * 也就是说，吊销恰好在「设备在线」这个最要紧的场景下无效——而手机丢了要紧急
+   * 吊销时，它多半正在线。
+   */
   async revokeDevice(id: string): Promise<void> {
-    this.db.prepare(`UPDATE devices SET status = 'revoked' WHERE id = ?`).run(id)
+    this.db.prepare(`UPDATE devices SET status = 'revoked', token_hash = '' WHERE id = ?`).run(id)
   }
 
   /**
@@ -269,6 +281,18 @@ export class SqliteStore implements Store {
     const { clause, args } = buildWhere(f)
     const row = this.db.prepare(`SELECT COUNT(*) c FROM events ${clause}`).get(...args) as { c: number }
     return Number(row.c)
+  }
+
+  async deleteEvent(id: string): Promise<boolean> {
+    const r = this.db.prepare('DELETE FROM events WHERE id = ?').run(id)
+    return Number(r.changes) > 0
+  }
+
+  async deleteEvents(f: EventFilter): Promise<number> {
+    const { clause, args } = buildWhere(f)
+    // 没有任何条件时 clause 为空 —— 那是「清空全部」，调用方必须自己确认过
+    const r = this.db.prepare(`DELETE FROM events ${clause}`).run(...args)
+    return Number(r.changes)
   }
 
   async setMatchedRules(eventId: string, ruleIds: string[]): Promise<void> {
@@ -366,6 +390,10 @@ export class SqliteStore implements Store {
     return this.db
       .prepare(`SELECT * FROM outbound ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
       .all(...args, limit, offset) as unknown as OutboundRecord[]
+  }
+
+  async deleteOutbound(id: string): Promise<boolean> {
+    return Number(this.db.prepare('DELETE FROM outbound WHERE id = ?').run(id).changes) > 0
   }
 
   async countOutbound(filter?: OutboundFilter): Promise<number> {
