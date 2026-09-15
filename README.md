@@ -35,6 +35,32 @@ node scripts/add-device.mjs "JP-Gateway-01"     # 打印 device_id 与 token
 node scripts/sim-agent.mjs <device_id> <token>  # 模拟 Agent 接入并上报一条短信
 ```
 
+## 安卓 Agent 开发环境
+
+命令行工具链即可，不需要 Android Studio：
+
+```bash
+brew install --cask temurin@21 android-commandlinetools
+export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
+yes | sdkmanager --licenses
+sdkmanager --install "platform-tools" "emulator" "platforms;android-34" \
+  "build-tools;35.0.0" "system-images;android-34;google_apis;arm64-v8a"
+avdmanager create avd -n gw-test -k "system-images;android-34;google_apis;arm64-v8a" -d pixel_6
+```
+
+无界面启动模拟器并注入事件：
+
+```bash
+$ANDROID_HOME/emulator/emulator -avd gw-test -no-window -no-audio -no-boot-anim &
+adb emu sms send 95533 "【建设银行】验证码 123456"   # 注入短信
+adb emu gsm call 13800138000                        # 模拟来电
+adb emu power capacity 15                           # 改电量
+adb shell svc wifi disable                          # 断网，测离线补传
+```
+
+模拟器覆盖除**保活、真实运营商送达回执、双卡、长稳**以外的全部场景，
+这几项必须在目标真机上验收（计划 §13 M0 / M5）。
+
 ## 文档
 
 - [开发计划](docs/dev-plan.md) —— 架构决策、里程碑、威胁模型
