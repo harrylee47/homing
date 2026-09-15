@@ -51,8 +51,27 @@ export async function processEvent(
     const targetIds = result.matched.length > 0 ? result.channels : action.channels
     const targets = channels.filter((c) => targetIds.includes(c.id))
 
+    // 规则指向了已不存在的渠道 —— 命中了却推不出去，是最隐蔽的漏报形态：
+    // 事件正常入库、规则正常命中，只是没人收到。必须喊出来。
+    const dangling = targetIds.filter((id) => !channels.some((c) => c.id === id))
+    if (dangling.length > 0) {
+      log.error('规则引用了不存在的渠道，这些推送不会送达', {
+        event_id: eventId, matched: matchedIds, missing_channels: dangling,
+      })
+      await deps.store.audit({
+        actor: 'notifier', action: 'notify.dangling_channel',
+        detail: `规则 ${matchedIds.join(',')} 引用了已删除的渠道 ${dangling.join(',')}`,
+        ip: null, created_at: Date.now(),
+      })
+    }
+
     if (targets.length === 0) {
-      log.info('事件无推送目标，仅归档', { event_id: eventId, matched: matchedIds })
+      // 区分「规则本就不推送」与「推送目标丢失」：前者是设计，后者是故障
+      if (targetIds.length > 0) {
+        log.error('事件命中规则但无有效推送目标', { event_id: eventId, matched: matchedIds })
+      } else {
+        log.info('事件无推送目标，仅归档', { event_id: eventId, matched: matchedIds })
+      }
       return
     }
 

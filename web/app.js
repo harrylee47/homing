@@ -442,6 +442,7 @@ async function rules() {
             <div class="col grow">
               <b>${esc(r.name)}</b>
               <span class="muted">优先级 ${r.priority} · ${r.action.channels.length} 个渠道${r.action.extract_code ? ' · 提取验证码' : ''}</span>
+              ${r.dangling_channels?.length ? '<span class="badge err">推送目标已失效，命中后不会送达</span>' : ''}
             </div>
             <span class="badge ${r.enabled ? 'ok' : ''}">${r.enabled ? '启用' : '停用'}</span>
           </div>
@@ -586,11 +587,12 @@ async function channels() {
         <div class="item">
           <div class="row">
             <div class="col grow">
-              <b>${esc(c.name)}</b><span class="muted">${esc(c.type)}</span>
+              <b>${esc(c.name)}</b>
+              <span class="muted">${esc(c.type)}${c.enabled ? '' : ' · 已停用'}</span>
             </div>
             <div style="display:flex;gap:6px">
+              <button class="ghost sm" data-edit="${esc(c.id)}">编辑</button>
               <button class="ghost sm" data-test="${esc(c.id)}">测试</button>
-              <button class="danger sm" data-del="${esc(c.id)}">删除</button>
             </div>
           </div>
           <div class="muted" data-result="${esc(c.id)}"></div>
@@ -662,9 +664,14 @@ async function channels() {
       },
       telegram: {
         name: '主 Telegram',
-        html: `<label>Bot Token</label><input id="f_bt" class="mono" type="password">
-               <label>Chat ID</label><input id="f_cid" class="mono">
-               <div class="muted">正文会以模糊形式发送，点击才可见——明文转发验证码会导致 Bot 被封禁。</div>`,
+        html: `<label>Bot Token</label><input id="f_bt" class="mono" type="password" autocomplete="off">
+               <label>Chat ID</label>
+               <input id="f_cid" class="mono" autocomplete="off">
+               <button class="ghost sm" id="discover" type="button" style="margin-top:8px">自动获取 Chat ID</button>
+               <div class="muted" id="discovered" style="margin-top:6px">
+                 Chat ID 是「你」的标识，和用哪个 Bot 无关。换 Bot 后先给它发一条 /start，再点上面的按钮。
+               </div>
+               <div class="muted" style="margin-top:8px">正文会以模糊形式发送，点击才可见——明文转发验证码会导致 Bot 被封禁。</div>`,
         collect: () => ({ bot_token: $('#f_bt').value.trim(), chat_id: $('#f_cid').value.trim() }),
       },
       webhook: {
@@ -679,6 +686,28 @@ async function channels() {
       const t = $('#type').value
       $('#fields').innerHTML = FORMS[t].html
       if (!$('#name').value.trim()) $('#name').value = FORMS[t].name
+      const dis = $('#discover')
+      if (dis) dis.onclick = async () => {
+        const bt = $('#f_bt').value.trim()
+        if (!bt) { $('#discovered').textContent = '请先填 Bot Token'; return }
+        dis.disabled = true
+        $('#discovered').textContent = '查询中…'
+        try {
+          const r = await api('/channels/telegram/discover-chat', { method: 'POST', body: { bot_token: bt } })
+          if (r.chats.length === 0) {
+            $('#discovered').textContent = r.hint || '没读到消息'
+          } else {
+            $('#discovered').innerHTML = r.chats.map((c) =>
+              `<button class="ghost sm" type="button" data-chat="${esc(c.id)}" style="margin:4px 4px 0 0">${esc(c.id)}${c.name ? ` · ${esc(c.name)}` : ''}</button>`,
+            ).join('')
+            for (const b of $('#discovered').querySelectorAll('[data-chat]')) {
+              b.onclick = () => { $('#f_cid').value = b.dataset.chat; toast('已填入') }
+            }
+          }
+        } catch (e) { $('#discovered').textContent = e.message }
+        dis.disabled = false
+      }
+
       const cp = $('#copyurl')
       if (cp) cp.onclick = async () => {
         try { await navigator.clipboard.writeText(bark?.public_url || `${location.origin}/bark`); toast('已复制') }
@@ -704,13 +733,8 @@ async function channels() {
       }
     }
 
-    for (const b of app.querySelectorAll('[data-del]')) {
-      b.onclick = async () => {
-        if (!confirm('删除这个渠道？')) return
-        await api(`/channels/${b.dataset.del}`, { method: 'DELETE' })
-        toast('已删除')
-        channels()
-      }
+    for (const b of app.querySelectorAll('[data-edit]')) {
+      b.onclick = () => channelEditor(cs.find((c) => c.id === b.dataset.edit), bark)
     }
 
     $('#add').onclick = async () => {
@@ -725,6 +749,96 @@ async function channels() {
       } catch (e) { $('#err').textContent = e.message }
     }
   } catch (e) { fail(e) }
+}
+
+/**
+ * 渠道编辑。
+ *
+ * 密钥字段一律留空显示——服务端从不把它们返回给前端。留空提交即沿用旧值，
+ * 想更换才填新的。
+ */
+function channelEditor(c, bark) {
+  const SECRET_FIELDS = {
+    telegram: [
+      { key: 'bot_token', label: 'Bot Token', secret: true },
+      { key: 'chat_id', label: 'Chat ID', secret: false },
+    ],
+    bark: [
+      { key: 'server', label: '推送地址（内部）', secret: false, placeholder: bark?.upstream || 'http://bark:8080' },
+      { key: 'key', label: '设备 Key', secret: true },
+    ],
+    webhook: [{ key: 'url', label: '目标地址', secret: false }],
+  }
+  const fields = SECRET_FIELDS[c.type] ?? []
+
+  render(`
+    <h1>编辑渠道</h1>
+    <div class="card">
+      <label>名称</label><input id="c_name" value="${esc(c.name)}">
+      <label>类型</label>
+      <div class="mono muted">${esc(c.type)}（不可更改，需要换类型请新建）</div>
+      <label>状态</label>
+      <select id="c_enabled">
+        <option value="1"${c.enabled ? ' selected' : ''}>启用</option>
+        <option value="0"${c.enabled ? '' : ' selected'}>停用</option>
+      </select>
+    </div>
+    <h2>配置</h2>
+    <div class="card">
+      <p class="muted">留空表示不修改。密钥不会回显，这是有意的。</p>
+      ${fields.map((f) => `
+        <label>${esc(f.label)}</label>
+        <input id="c_${esc(f.key)}" class="mono" type="${f.secret ? 'password' : 'text'}"
+               placeholder="${esc(f.placeholder || (f.secret ? '留空则不变' : '留空则不变'))}" autocomplete="off">
+      `).join('')}
+    </div>
+    <div class="btnrow">
+      <button id="c_save">保存</button>
+      <button class="ghost sm" id="c_test">测试</button>
+      <button class="danger sm" id="c_del">删除</button>
+      <button class="ghost sm" id="c_back">返回</button>
+    </div>
+    <div id="c_err" class="err-text"></div>
+    <div id="c_result" class="muted" style="margin-top:8px"></div>`)
+
+  $('#c_back').onclick = () => go('/channels')
+
+  $('#c_save').onclick = async () => {
+    const config = {}
+    for (const f of fields) {
+      const v = $(`#c_${f.key}`).value.trim()
+      if (v) config[f.key] = v
+    }
+    try {
+      await api(`/channels/${c.id}`, {
+        method: 'PUT',
+        body: {
+          name: $('#c_name').value.trim(),
+          enabled: $('#c_enabled').value === '1',
+          ...(Object.keys(config).length ? { config } : {}),
+        },
+      })
+      toast('已保存')
+      go('/channels')
+    } catch (e) { $('#c_err').textContent = e.message }
+  }
+
+  $('#c_test').onclick = async () => {
+    $('#c_result').textContent = '发送中…'
+    try {
+      const r = await api(`/channels/${c.id}/test`, { method: 'POST' })
+      $('#c_result').innerHTML = r.ok
+        ? '<span class="badge ok">测试消息已发出</span>'
+        : `<span class="badge err">失败：${esc(r.error)}</span>`
+    } catch (e) { $('#c_result').innerHTML = `<span class="badge err">${esc(e.message)}</span>` }
+  }
+
+  $('#c_del').onclick = async () => {
+    if (!confirm(`删除渠道「${c.name}」？命中它的规则将不再推送到这里。`)) return
+    await api(`/channels/${c.id}`, { method: 'DELETE' })
+    toast('已删除')
+    go('/channels')
+  }
 }
 
 // ── 设备 ────────────────────────────────────────────────────

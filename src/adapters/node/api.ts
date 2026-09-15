@@ -302,7 +302,7 @@ route('GET', '/api/channels', async ({ res, deps }) => {
   })
 })
 
-route('POST', '/api/channels', async ({ res, body, deps }) => {
+route('POST', '/api/channels', async ({ res, body, deps, ip }) => {
   const b = body as { type?: string; name?: string; config?: unknown; enabled?: boolean }
   const provider = b.type ? PROVIDERS[b.type] : undefined
   if (!provider) return json(res, 400, { error: `未知渠道类型 ${b.type}` })
@@ -313,6 +313,7 @@ route('POST', '/api/channels', async ({ res, body, deps }) => {
   }
 
   const id = newId('ch')
+  await deps.store.audit({ actor: 'admin', action: 'channel.create', detail: `${b.type}:${b.name ?? b.type}`, ip, created_at: now() })
   await deps.store.upsertChannel({
     id, type: b.type!, name: b.name ?? b.type!,
     config_enc: await deps.cipher.encrypt(JSON.stringify(parsed.data)),
@@ -321,8 +322,96 @@ route('POST', '/api/channels', async ({ res, body, deps }) => {
   json(res, 200, { id })
 })
 
-route('DELETE', '/api/channels/:id', async ({ res, params, deps }) => {
+/**
+ * 编辑渠道。
+ *
+ * 配置里的密钥（Bot token 等）从不返回给前端，所以编辑时留空表示「沿用旧值」：
+ * 解密旧配置 → 用请求里的非空字段覆盖 → 校验 → 重新加密。
+ * 否则用户每次改个名字都得重新输一遍 token。
+ */
+route('PUT', '/api/channels/:id', async ({ res, params, body, deps, ip }) => {
+  const c = await deps.store.getChannel(params.id!)
+  if (!c) return json(res, 404, { error: '渠道不存在' })
+
+  const b = body as { name?: string; enabled?: boolean; config?: Record<string, unknown> }
+  const provider = PROVIDERS[c.type]
+  if (!provider) return json(res, 400, { error: `未知渠道类型 ${c.type}` })
+
+  let configEnc = c.config_enc
+  if (b.config) {
+    const old = JSON.parse(await deps.cipher.decrypt(c.config_enc)) as Record<string, unknown>
+    const merged = { ...old }
+    for (const [k, v] of Object.entries(b.config)) {
+      // 空字符串 = 不修改这一项，而不是把它清空
+      if (v === '' || v === undefined || v === null) continue
+      merged[k] = v
+    }
+    const parsed = provider.configSchema.safeParse(merged)
+    if (!parsed.success) {
+      return json(res, 400, { error: '配置校验失败', detail: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) })
+    }
+    configEnc = await deps.cipher.encrypt(JSON.stringify(parsed.data))
+  }
+
+  await deps.store.upsertChannel({
+    id: c.id, type: c.type,
+    name: b.name?.trim() || c.name,
+    config_enc: configEnc,
+    enabled: b.enabled ?? c.enabled,
+    created_at: c.created_at,
+  })
+  await deps.store.audit({ actor: 'admin', action: 'channel.update', detail: c.id, ip, created_at: now() })
+  json(res, 200, { ok: true })
+})
+
+/**
+ * 从 Bot token 反查 chat_id。
+ *
+ * chat_id 是「人」的标识，与用哪个 Bot 无关；但换新 Bot 后用户必须先给它
+ * 发一条消息，Telegram 才允许 Bot 主动发消息过去。这个接口顺带验证了这一点：
+ * 取不到更新就说明还没发过。
+ */
+route('POST', '/api/channels/telegram/discover-chat', async ({ res, body }) => {
+  const token = (body as { bot_token?: string })?.bot_token?.trim()
+  if (!token) return json(res, 400, { error: '缺少 bot_token' })
+
+  const r = await fetch(`https://api.telegram.org/bot${token}/getUpdates?limit=20`, {
+    signal: AbortSignal.timeout(20_000),
+  }).catch(() => null)
+
+  if (!r) return json(res, 502, { error: '无法连接 Telegram' })
+  if (r.status === 409) {
+    return json(res, 409, { error: '该 token 正被另一个程序长轮询，无法读取更新。请换用独立的 Bot。' })
+  }
+  if (!r.ok) return json(res, 400, { error: `Telegram 返回 ${r.status}，token 可能不正确` })
+
+  const data = (await r.json()) as {
+    result?: { message?: { chat?: { id?: number; type?: string; username?: string; first_name?: string } } }[]
+  }
+  const seen = new Map<string, { id: string; type: string; name: string }>()
+  for (const u of data.result ?? []) {
+    const c = u.message?.chat
+    if (c?.id == null) continue
+    seen.set(String(c.id), {
+      id: String(c.id), type: c.type ?? '?',
+      name: c.username ? `@${c.username}` : (c.first_name ?? ''),
+    })
+  }
+
+  json(res, 200, {
+    chats: [...seen.values()],
+    hint: seen.size === 0 ? '没读到任何消息。请先在 Telegram 里给这个 Bot 发一条 /start，再点一次。' : null,
+  })
+})
+
+route('DELETE', '/api/channels/:id', async ({ res, params, deps, ip }) => {
+  const c = await deps.store.getChannel(params.id!)
   await deps.store.deleteChannel(params.id!)
+  // 删除必须留痕：渠道没了等于通知全断，而这种故障是静默的
+  await deps.store.audit({
+    actor: 'admin', action: 'channel.delete',
+    detail: c ? `${c.type}:${c.name}` : params.id!, ip, created_at: now(),
+  })
   json(res, 200, { ok: true })
 })
 
@@ -354,15 +443,21 @@ route('POST', '/api/channels/:id/test', async ({ res, params, deps }) => {
 
 route('GET', '/api/rules', async ({ res, deps }) => {
   const rows = await deps.store.listRules()
+  const live = new Set((await deps.store.listChannels()).map((c) => c.id))
   json(res, 200, {
-    rules: rows.map((r) => ({
-      id: r.id, name: r.name, priority: r.priority, enabled: r.enabled,
-      match: JSON.parse(r.match_json), action: JSON.parse(r.action_json), created_at: r.created_at,
-    })),
+    rules: rows.map((r) => {
+      const action = JSON.parse(r.action_json) as { channels?: string[] }
+      return {
+        id: r.id, name: r.name, priority: r.priority, enabled: r.enabled,
+        match: JSON.parse(r.match_json), action, created_at: r.created_at,
+        // 让控制台能直接标红，而不是等用户某天发现没收到通知
+        dangling_channels: (action.channels ?? []).filter((c) => !live.has(c)),
+      }
+    }),
   })
 }, true, false, 'bot')
 
-route('POST', '/api/rules', async ({ res, body, deps }) => {
+route('POST', '/api/rules', async ({ res, body, deps, ip }) => {
   const b = body as { id?: string; name?: string; priority?: number; enabled?: boolean; match?: unknown; action?: unknown }
   const m = RuleMatch.safeParse(b.match ?? {})
   const a = RuleAction.safeParse(b.action ?? {})
@@ -371,6 +466,7 @@ route('POST', '/api/rules', async ({ res, body, deps }) => {
     return json(res, 400, { error: '规则校验失败', detail: issues.map((i) => `${i.path.join('.')}: ${i.message}`) })
   }
   const id = b.id ?? newId('rule')
+  await deps.store.audit({ actor: 'admin', action: b.id ? 'rule.update' : 'rule.create', detail: `${id}:${b.name ?? ''}`, ip, created_at: now() })
   await deps.store.upsertRule({
     id, name: b.name ?? '未命名规则', priority: b.priority ?? 100,
     enabled: b.enabled ?? true,
@@ -380,8 +476,9 @@ route('POST', '/api/rules', async ({ res, body, deps }) => {
   json(res, 200, { id })
 })
 
-route('DELETE', '/api/rules/:id', async ({ res, params, deps }) => {
+route('DELETE', '/api/rules/:id', async ({ res, params, deps, ip }) => {
   await deps.store.deleteRule(params.id!)
+  await deps.store.audit({ actor: 'admin', action: 'rule.delete', detail: params.id!, ip, created_at: now() })
   json(res, 200, { ok: true })
 })
 
