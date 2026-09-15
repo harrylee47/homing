@@ -11,11 +11,14 @@
   "scripts": {
     "dev": "tsx watch src/adapters/node/main.ts",
     "start": "node dist/adapters/node/main.js",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint:core": "node scripts/check-core-purity.mjs"
+    "lint:core": "node scripts/check-core-purity.mjs",
+    "check": "pnpm typecheck && pnpm lint:core && pnpm test && pnpm audit:deps",
+    "audit:deps": "node scripts/audit-deps.mjs",
+    "deploy:arm": "bash scripts/deploy.sh"
   },
   "dependencies": {
     "@noble/hashes": "^2.4.0",
@@ -28,7 +31,8 @@
     "@types/ws": "^8.18.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

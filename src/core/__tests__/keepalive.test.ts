@@ -7,8 +7,9 @@ const feb5 = Date.UTC(2026, 1, 5)
 
 describe('保号任务', () => {
   let store: MemoryStore
-  let send: ReturnType<typeof vi.fn>
-  let alert: ReturnType<typeof vi.fn>
+  // vitest 5 的 vi.fn 不再从赋值推断签名，要显式给出函数类型
+  let send: ReturnType<typeof vi.fn<(deviceId: string, to: string, text: string) => Promise<boolean>>>
+  let alert: ReturnType<typeof vi.fn<(title: string, body: string) => Promise<void>>>
 
   const deps = (now: number, online: string | null = 'dev_1') => ({
     store, onlineDevice: () => online, send, alert, now: () => now,
@@ -22,8 +23,8 @@ describe('保号任务', () => {
 
   beforeEach(() => {
     store = new MemoryStore()
-    send = vi.fn(async () => true)
-    alert = vi.fn(async () => {})
+    send = vi.fn<(deviceId: string, to: string, text: string) => Promise<boolean>>(async () => true)
+    alert = vi.fn<(title: string, body: string) => Promise<void>>(async () => {})
   })
 
   it('未启用时不发送', async () => {

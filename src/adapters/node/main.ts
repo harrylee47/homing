@@ -78,6 +78,16 @@ const apiDeps = {
   trustedProxy: cfg.trustedProxy,
   barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
+  onUnknownIpLogin: (ip: string) => void (async () => {
+    const channels = await liveChannels()
+    if (channels.length === 0) return
+    const { dispatch } = await import('../../core/notifier.js')
+    await dispatch(channels, {
+      title: '🔑 控制台异地登录',
+      body: `有人从 ${ip} 登录了控制台，这个网段此前没见过。若非本人操作，请立即修改口令并全端下线。`,
+      priority: 'high', code: null, eventId: '', occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
+    }).catch(() => { /* 告警失败不应影响登录本身 */ })
+  })(),
 }
 
 const server = createServer((req, res) => {

@@ -41,6 +41,8 @@ export interface ApiDeps {
   adminToken: string
   /** 登录失败达到阈值时的告警回调。计划 §6.3 要求「失败立即告警到 Telegram」。 */
   onLoginLockout?: ((ip: string, attempts: number) => void) | undefined
+  /** 陌生网段登录成功时的告警回调 */
+  onUnknownIpLogin?: ((ip: string) => void) | undefined
   /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
   trustedProxy?: string | null
 }
@@ -53,6 +55,8 @@ const S_INITIALIZED = 'initialized'
 const S_BARK_ACCESS = 'bark_access'
 /** Bot 专用的 service token。权限比 Web 会话低一档，可单独吊销（计划 §11.4）。 */
 const S_BOT_TOKEN = 'bot_service_token'
+/** 见过的登录来源网段，用于识别异地登录。 */
+const S_KNOWN_IPS = 'known_login_ips'
 
 type Handler = (ctx: Ctx) => Promise<void>
 interface Ctx {
@@ -204,6 +208,22 @@ route('POST', '/api/auth/login', async ({ req, res, body, deps, ip }) => {
   }
 
   loginFails.delete(ip)
+
+  // 异地登录告警（计划 §11.6「异常访问模式告警」）。
+  // 按网段而非具体地址判断：移动网络出口 IP 会在同网段内漂移，
+  // 按地址判断会天天误报，误报多了就没人看了。
+  const prefix = ipPrefix(ip)
+  const knownRaw = (await deps.store.getSetting(S_KNOWN_IPS)) ?? ''
+  const known = knownRaw.split(',').filter(Boolean)
+  if (known.length > 0 && !known.includes(prefix)) {
+    log.warn('来自陌生网段的登录', { ip })
+    void deps.onUnknownIpLogin?.(ip)
+  }
+  if (!known.includes(prefix)) {
+    // 只保留最近 10 个，避免无限增长
+    await deps.store.setSetting(S_KNOWN_IPS, [...known, prefix].slice(-10).join(','))
+  }
+
   const token = generateSessionToken()
   const t = now()
   await deps.store.createSession({
@@ -225,6 +245,13 @@ route('POST', '/api/auth/logout', async ({ req, res, deps }) => {
 })
 
 route('GET', '/api/auth/me', async ({ res }) => {
+  json(res, 200, { ok: true })
+})
+
+/** 全端下线：怀疑凭证泄露时立刻断开所有会话，不必改口令（计划 §11.6）。 */
+route('POST', '/api/auth/revoke-all', async ({ res, deps, ip }) => {
+  await deps.store.revokeAllSessions()
+  await deps.store.audit({ actor: 'admin', action: 'auth.revoke_all', detail: null, ip, created_at: now() })
   json(res, 200, { ok: true })
 })
 

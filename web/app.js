@@ -906,10 +906,27 @@ async function settings() {
       <div id="err" class="err-text"></div>
     </div>
     <h2>会话</h2>
-    <div class="card tight row">
-      <span class="muted">退出登录</span>
-      <button class="ghost sm" id="logout">退出</button>
+    <div class="card">
+      <div class="row">
+        <span class="muted">退出当前设备</span>
+        <button class="ghost sm" id="logout">退出</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="col grow">
+          <span>全端下线</span>
+          <span class="muted">断开所有已登录会话。怀疑凭证泄露时用，不必改口令。</span>
+        </div>
+        <button class="danger sm" id="revokeall">全端下线</button>
+      </div>
     </div>`)
+
+  $('#revokeall').onclick = async () => {
+    if (!confirm('断开所有会话？你也会被登出。')) return
+    try { await api('/auth/revoke-all', { method: 'POST' }) } catch { /* 已经失效也算成功 */ }
+    setToken('')
+    toast('已全端下线')
+    go('/login')
+  }
 
   void paintKeepAlive()
 

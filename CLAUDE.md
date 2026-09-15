@@ -93,6 +93,14 @@ Telegram 因封禁风险只能发模糊正文，所以「通知栏直接看到�
 Bark 的 level/group/copy 等参数配在**规则的 action 里**而非渠道配置里，
 因为它随消息类型变化：验证码要穿透专注模式，广告短信不该。
 
+## 部署
+
+用 `pnpm run deploy:arm`（`scripts/deploy.sh`），不要手敲 rsync + docker compose。
+
+脚本会先本地跑类型检查、core 纯度检查与测试，再同步构建，**构建失败即中止并原样打印错误**。手敲时容易用 `tail -1` 截输出，结果 tsc 报错被吞掉、显示「部署成功」但跑的还是旧镜像——这比 bug 本身更糟，你以为修好了。
+
+`pnpm` 有若干内置命令会吃掉同名 script：`audit`、`deploy` 都踩过。自定义脚本起名避开，或用 `pnpm run <name>`。
+
 ## 与旧系统共存（重要）
 
 目标机器上有一套**正在使用的旧方案**必须保持运行：`frps` 容器（手机端 frpc 在线，为 SmsForwarder 打洞）+ `smsf-bot` 容器（Python + Telegram long polling）。这是当前收验证码的唯一链路，停掉当天就失效。

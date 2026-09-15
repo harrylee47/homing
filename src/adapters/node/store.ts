@@ -5,6 +5,7 @@
  * SQL 限制在 D1 兼容子集（硬约束②）：无触发器、无自定义函数、无 ATTACH、
  * 检索用 LIKE 而非 FTS5。
  */
+import { chmodSync, existsSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import type {
   ChannelRecord,
@@ -127,6 +128,13 @@ export class SqliteStore implements Store {
 
   constructor(path: string) {
     this.db = new DatabaseSync(path)
+    // 库里是全部短信（密文）与设备凭证哈希，同机其他用户不该能读（计划 §11.6）。
+    // WAL 与 shm 同样包含数据页，一并收紧。
+    for (const f of [path, `${path}-wal`, `${path}-shm`]) {
+      if (existsSync(f)) {
+        try { chmodSync(f, 0o600) } catch { /* 某些文件系统不支持，不致命 */ }
+      }
+    }
     // WAL 提升并发读性能；D1 侧无此概念，属适配层细节，不泄漏到 core
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA foreign_keys = ON')
