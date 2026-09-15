@@ -38,6 +38,7 @@ export const webhookProvider: Provider<WebhookConfig> = {
         code: msg.code,
         priority: msg.priority,
         event_id: msg.eventId,
+        device: msg.deviceName ?? null,
         occurred_at: msg.occurredAt,
         console_url: msg.consoleUrl ?? null,
       }),

@@ -42,12 +42,18 @@ export const barkProvider: Provider<BarkConfig> = {
   async send(cfg, msg) {
     const o = BarkOptions.parse((msg.options?.bark as unknown) ?? {})
 
+    // 多设备时把设备名并进分组：Bark 的通知中心按 group 分栏，
+    // 这样两张卡的消息不会混在一起
+    const group = msg.deviceName
+      ? (o.group ? `${o.group} · ${msg.deviceName}` : msg.deviceName)
+      : (o.group ?? undefined)
+
     const body: Record<string, unknown> = {
-      title: msg.title,
+      title: msg.deviceName ? `${msg.title} · ${msg.deviceName}` : msg.title,
       body: msg.body,
       // high 的规则统一升级为可穿透专注模式：银行验证码半夜也得响
       level: msg.priority === 'high' && o.level === 'active' ? 'timeSensitive' : o.level,
-      group: o.group ?? undefined,
+      group,
       isArchive: 1,
     }
 

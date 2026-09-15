@@ -59,3 +59,21 @@ describe('Telegram 消息构造', () => {
     expect(cfg.spoiler).toBe(true)
   })
 })
+
+describe('多设备', () => {
+  it('填了设备名就在 spoiler 外显示 —— 设备名不是敏感信息', () => {
+    const t = buildText(msg({ deviceName: 'JP-Gateway-01' }), true)
+    expect(t).toContain('设备: JP-Gateway-01')
+    const before = t.slice(0, t.indexOf('<tg-spoiler>'))
+    expect(before).toContain('JP-Gateway-01')
+  })
+
+  it('单设备场景不显示设备行', () => {
+    expect(buildText(msg({ deviceName: null }), true)).not.toContain('设备:')
+    expect(buildText(msg(), true)).not.toContain('设备:')
+  })
+
+  it('设备名同样转义', () => {
+    expect(buildText(msg({ deviceName: '<b>x</b>' }), true)).toContain('&lt;b&gt;x&lt;/b&gt;')
+  })
+})

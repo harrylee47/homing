@@ -288,12 +288,17 @@ async function events() {
 
   const load = async (query) => {
     try {
-      const r = await api(`/events?limit=50${query ? `&q=${encodeURIComponent(query)}` : ''}`)
+      const [r, devs] = await Promise.all([
+        api(`/events?limit=50${query ? `&q=${encodeURIComponent(query)}` : ''}`),
+        api('/devices').catch(() => ({ devices: [] })),
+      ])
+      // 单设备时不显示设备名，那是噪音；多设备时不显示就分不清来源
+      const multi = devs.devices.filter((d) => d.status !== 'revoked').length > 1
       $('#list').innerHTML = r.events.length ? `<div class="card list">${r.events.map((e) => `
         <div class="item" data-id="${esc(e.id)}">
           <div class="row">
             <b class="truncate">${esc(e.from)}</b>
-            <span class="muted">${fmt(e.occurred_at)}</span>
+            <span class="muted">${multi ? `${esc(e.device_name)} · ` : ''}${fmt(e.occurred_at)}</span>
           </div>
           <div class="muted truncate">${esc(e.content)}</div>
         </div>`).join('')}</div>` : '<div class="card muted">没有匹配的消息。</div>'
@@ -328,10 +333,11 @@ async function eventDetail(id) {
         <div class="row"><span class="muted">发生时间</span><span>${new Date(e.occurred_at).toLocaleString('zh-CN', { hour12: false })}</span></div>
         <div class="row"><span class="muted">上报延迟</span><span>${e.received_at - e.occurred_at} ms</span></div>
         <div class="row"><span class="muted">类型</span><span>${esc(e.kind)}</span></div>
+        <div class="row"><span class="muted">接收设备</span><span>${esc(e.device_name || e.device_id)}</span></div>
         <div class="row"><span class="muted">命中规则</span><span>${e.matched_rules.length ? esc(e.matched_rules.join(', ')) : '兜底规则'}</span></div>
       </div>
       <div class="btnrow">
-        <a href="/compose?to=${encodeURIComponent(e.from)}&ref=${encodeURIComponent(e.id)}"><button class="sm">回复</button></a>
+        <a href="/compose?to=${encodeURIComponent(e.from)}&ref=${encodeURIComponent(e.id)}&dev=${encodeURIComponent(e.device_id)}"><button class="sm">回复</button></a>
         <button class="ghost sm" id="copy">复制正文</button>
       </div>`)
 
@@ -351,13 +357,19 @@ async function compose() {
     const { devices: ds } = await api('/devices')
     const online = ds.filter((d) => d.status === 'online')
 
+    // 从消息详情点「回复」过来时预选原设备：多卡场景下必须从收到短信的
+    // 那张卡发回去，否则对方看到的是一个陌生号码
+    const preferred = p.get('dev')
     render(`
       <h1>发送短信</h1>
       <div class="card">
         <label>设备</label>
         <select id="dev">${online.length
-          ? online.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('')
+          ? online.map((d) => `<option value="${esc(d.id)}"${d.id === preferred ? ' selected' : ''}>${esc(d.name)}</option>`).join('')
           : '<option value="">没有在线设备</option>'}</select>
+        ${preferred && !online.some((d) => d.id === preferred)
+          ? '<div class="muted" style="color:var(--warn)">收到这条消息的设备当前不在线，换用其他设备发送时对方看到的会是另一个号码。</div>'
+          : ''}
         <label>收件人</label>
         <input id="to" inputmode="tel" value="${esc(p.get('to') || '')}">
         <label>内容</label>
@@ -901,7 +913,8 @@ async function settings() {
     <div class="card">
       <label>当前口令</label><input id="old" type="password" autocomplete="current-password">
       <label>新口令（至少 8 位，含英文 / 数字 / 符号中的两类）</label><input id="new" type="password" autocomplete="new-password">
-      <div class="muted">修改后所有已登录的会话都会失效，包括当前这个。</div>
+      <label>再输一次新口令</label><input id="new2" type="password" autocomplete="new-password">
+      <div class="muted">修改后所有已登录的会话都会失效，包括当前这个。没有找回流程，请先存好。</div>
       <div class="btnrow"><button id="chpw">修改</button></div>
       <div id="err" class="err-text"></div>
     </div>
@@ -931,6 +944,10 @@ async function settings() {
   void paintKeepAlive()
 
   $('#chpw').onclick = async () => {
+    // 两次输入一致再校验强度：口令改错又无找回流程，等于把自己锁在门外
+    if ($('#new').value !== $('#new2').value) {
+      return ($('#err').textContent = '两次输入的新口令不一致')
+    }
     const bad = checkPassword($('#new').value)
     if (bad) return ($('#err').textContent = bad)
     try {
@@ -960,10 +977,18 @@ async function paintKeepAlive() {
   let k
   try { k = await api('/keepalive') } catch { return }
 
+  // datetime-local 要本地时间且不带时区，这里把 epoch 转成本地时间字符串
+  const toLocalInput = (ts) => {
+    const d = new Date(ts)
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+  const fmtTs = (ts) => (ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—')
+
   box.innerHTML = `
     <h2>保号任务</h2>
     <div class="card">
-      <p class="muted">每月定时发一条短信产生使用记录。国内号码长期零消费加异地漫游可能被停机，而停机不会有任何提示。</p>
+      <p class="muted">定期发一条短信产生使用记录。国内号码长期零消费加异地漫游可能被停机，而停机不会有任何提示——到你需要验证码那天才会发现。</p>
       <label>启用</label>
       <select id="ka_on">
         <option value="1"${k.enabled ? ' selected' : ''}>启用</option>
@@ -971,31 +996,61 @@ async function paintKeepAlive() {
       </select>
       <label>目标号码</label>
       <input id="ka_to" inputmode="tel" value="${esc(k.to || '')}" placeholder="发给自己的另一个号码即可">
-      <label>每月第几天（1-28）</label>
-      <input id="ka_day" type="number" min="1" max="28" value="${k.day}">
       <label>内容</label>
       <input id="ka_text" value="${esc(k.text)}">
-      <div class="muted" style="margin-top:8px">
-        上次执行：${k.last_run || '从未'}${k.consecutive_failures > 0 ? ` · <span class="badge err">连续失败 ${k.consecutive_failures} 次</span>` : ''}
+      <label>每隔多少天发一次</label>
+      <input id="ka_interval" type="number" min="1" max="365" value="${k.interval_days}">
+      <label>首次执行时间</label>
+      <input id="ka_first" type="datetime-local" value="${k.first_run_at ? toLocalInput(k.first_run_at) : ''}">
+      <div class="muted">留空表示保存后立即开始第一次。之后按间隔天数从上次执行时间往后推。</div>
+
+      <div class="card tight" style="background:var(--bg);margin-top:12px">
+        <div class="row"><span class="muted">上次执行</span><span>${fmtTs(k.last_run_at)}</span></div>
+        <div class="row"><span class="muted">下次执行</span><span>${k.enabled ? fmtTs(k.next_due_at) : '未启用'}</span></div>
+        ${k.consecutive_failures > 0 ? `<div class="row"><span class="muted">连续失败</span><span class="badge err">${k.consecutive_failures} 次</span></div>` : ''}
       </div>
-      <div class="btnrow"><button id="ka_save" class="sm">保存</button></div>
+
+      <div class="btnrow">
+        <button id="ka_save" class="sm">保存</button>
+        <button id="ka_test" class="ghost sm">立即测试发送</button>
+      </div>
       <div id="ka_err" class="err-text"></div>
+      <div id="ka_result" class="muted" style="margin-top:6px"></div>
     </div>`
 
   $('#ka_save').onclick = async () => {
+    const firstRaw = $('#ka_first').value
     try {
       await api('/keepalive', {
         method: 'POST',
         body: {
           enabled: $('#ka_on').value === '1',
           to: $('#ka_to').value.trim(),
-          day: Number($('#ka_day').value),
           text: $('#ka_text').value,
+          interval_days: Number($('#ka_interval').value),
+          // datetime-local 没有时区，按浏览器本地时间解析成绝对时刻
+          first_run_at: firstRaw ? new Date(firstRaw).getTime() : null,
         },
       })
       toast('已保存')
       paintKeepAlive()
     } catch (e) { $('#ka_err').textContent = e.message }
+  }
+
+  // 配好之后必须能当场验证链路是通的：保号失败是静默的，
+  // 真到停机那天才发现就晚了
+  $('#ka_test').onclick = async () => {
+    $('#ka_result').textContent = '发送中…'
+    $('#ka_test').disabled = true
+    try {
+      const r = await api('/keepalive/test', { method: 'POST' })
+      $('#ka_result').innerHTML = r.sent
+        ? '<span class="badge ok">已下发，到发送记录里看状态机流转</span>'
+        : `<span class="badge err">${esc(r.reason || '失败')}</span>`
+    } catch (e) {
+      $('#ka_result').innerHTML = `<span class="badge err">${esc(e.message)}</span>`
+    }
+    $('#ka_test').disabled = false
   }
 }
 

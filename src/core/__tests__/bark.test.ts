@@ -49,3 +49,43 @@ describe('Bark 选项默认值', () => {
     expect(BarkOptions.safeParse({ level: 'timeSensitive' }).success).toBe(true)
   })
 })
+
+describe('Bark 多设备', () => {
+  it('设备名并进标题与分组，通知中心按设备分栏', async () => {
+    let captured: Record<string, unknown> | null = null
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+      captured = JSON.parse(init!.body!) as Record<string, unknown>
+      return { ok: true, status: 200 } as Response
+    }) as typeof fetch
+
+    const { barkProvider } = await import('../providers/bark.js')
+    await barkProvider.send(
+      { server: 'https://b.example.com', key: 'k' },
+      { ...msg(), deviceName: 'JP-01', options: { bark: { group: '验证码' } } },
+    )
+    globalThis.fetch = originalFetch
+
+    expect(captured!.title).toBe('95533 · JP-01')
+    expect(captured!.group).toBe('验证码 · JP-01')
+  })
+
+  it('无设备名时标题与分组保持原样', async () => {
+    let captured: Record<string, unknown> | null = null
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+      captured = JSON.parse(init!.body!) as Record<string, unknown>
+      return { ok: true, status: 200 } as Response
+    }) as typeof fetch
+
+    const { barkProvider } = await import('../providers/bark.js')
+    await barkProvider.send(
+      { server: 'https://b.example.com', key: 'k' },
+      { ...msg(), deviceName: null, options: { bark: { group: '验证码' } } },
+    )
+    globalThis.fetch = originalFetch
+
+    expect(captured!.title).toBe('95533')
+    expect(captured!.group).toBe('验证码')
+  })
+})

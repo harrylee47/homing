@@ -171,7 +171,83 @@ describe('事件处理管线', () => {
   })
 
   it('管线异常不向外抛，采集链路不受影响', async () => {
-    const broken = { ...store, listRules: () => { throw new Error('db down') } } as unknown as MemoryStore
+    // 用 Proxy 而不是展开：展开会丢掉原型上的方法，导致其余调用因
+    // 「不是函数」而失败，掩盖真正要测的东西
+    const broken = new Proxy(store, {
+      get: (t, k) => (k === 'listRules' ? () => { throw new Error('db down') } : Reflect.get(t, k)),
+    }) as MemoryStore
     await expect(processEvent({ store: broken, cipher, retryBaseMs: 1 }, 'evt_1', evt())).resolves.toBeUndefined()
+  })
+
+  it('加载规则失败时不推送，也不让 rejection 逃逸 —— 逃逸会终止进程', async () => {
+    const broken = new Proxy(store, {
+      get: (t, k) => (k === 'listChannels' ? async () => { throw new Error('db down') } : Reflect.get(t, k)),
+    }) as MemoryStore
+    sent.length = 0
+    await expect(processEvent({ store: broken, cipher, retryBaseMs: 1 }, 'evt_1', evt())).resolves.toBeUndefined()
+    expect(sent).toHaveLength(0)
+  })
+})
+
+describe('多设备时标出来源', () => {
+  let store: MemoryStore
+  let cipher: Cipher
+
+  const addDevice = (id: string, name: string) => {
+    store.devices.set(id, {
+      id, name, token_hash: 'h', status: 'offline',
+      last_seen_at: null, battery: null, app_version: null, created_at: 0,
+    })
+  }
+
+  beforeEach(async () => {
+    store = new MemoryStore()
+    cipher = await createCipher(generateDek())
+    sent.length = 0
+    failTimes = 0
+    store.events.set('evt_1', {
+      id: 'evt_1', device_id: 'dev_1', kind: 'sms',
+      sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
+      enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
+    })
+    store.channels.set('ch_a', {
+      id: 'ch_a', type: 'stub', name: 'ch_a',
+      config_enc: await cipher.encrypt(JSON.stringify({ tag: 'a' })),
+      enabled: true, created_at: 0,
+    })
+  })
+
+  it('只有一台设备时不带设备名', async () => {
+    addDevice('dev_1', 'JP-Gateway-01')
+    await processEvent({ store, cipher, retryBaseMs: 1 }, 'evt_1', evt())
+    expect(sent[0]!.deviceName).toBeNull()
+  })
+
+  it('多台设备时带上设备名', async () => {
+    addDevice('dev_1', 'JP-Gateway-01')
+    addDevice('dev_2', 'CN-Gateway-02')
+    await processEvent({ store, cipher, retryBaseMs: 1 }, 'evt_1', evt())
+    expect(sent[0]!.deviceName).toBe('JP-Gateway-01')
+  })
+
+  it('已吊销的设备不计入设备数', async () => {
+    addDevice('dev_1', 'JP-Gateway-01')
+    addDevice('dev_2', 'old')
+    store.devices.set('dev_2', { ...store.devices.get('dev_2')!, status: 'revoked' })
+    await processEvent({ store, cipher, retryBaseMs: 1 }, 'evt_1', evt())
+    expect(sent[0]!.deviceName).toBeNull()
+  })
+
+  it('模板里的 {device} 是设备名而不是 id', async () => {
+    addDevice('dev_1', 'JP-Gateway-01')
+    store.rules.set('r', {
+      id: 'r', name: 'r', priority: 10, enabled: true,
+      match_json: JSON.stringify(RuleMatch.parse({})),
+      action_json: JSON.stringify(RuleAction.parse({ channels: ['ch_a'], template: '{device}: {content}' })),
+      created_at: 0,
+    })
+    await processEvent({ store, cipher, retryBaseMs: 1 }, 'evt_1', evt())
+    expect(sent[0]!.body).toContain('JP-Gateway-01')
+    expect(sent[0]!.body).not.toContain('dev_1')
   })
 })

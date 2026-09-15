@@ -19,7 +19,10 @@ export interface BotApi {
     channels: number
   }>
   events(params: { limit?: number; q?: string }): Promise<{
-    events: { id: string; from: string; content: string; kind: string; occurred_at: number }[]
+    events: {
+      id: string; from: string; content: string; kind: string
+      occurred_at: number; device_name?: string
+    }[]
   }>
   rules(): Promise<{ rules: { name: string; priority: number; enabled: boolean }[] }>
   sendSms(deviceId: string, to: string, text: string): Promise<{ id: string; status: string; error?: string }>
@@ -134,20 +137,32 @@ async function devices(api: BotApi): Promise<BotMessage> {
 }
 
 async function recent(api: BotApi, n: number): Promise<BotMessage> {
-  const { events } = await api.events({ limit: n })
+  const [{ events }, s] = await Promise.all([api.events({ limit: n }), api.stats()])
   if (events.length === 0) return { text: '还没有消息' }
-  return { text: [`<b>最近 ${events.length} 条</b>`, '', ...events.map(renderEvent)].join('\n\n') }
+  const multi = s.devices.filter((d) => d.status !== 'revoked').length > 1
+  return { text: [`<b>最近 ${events.length} 条</b>`, '', ...events.map((e) => renderEvent(e, multi))].join('\n\n') }
 }
 
 async function search(api: BotApi, q: string): Promise<BotMessage> {
-  const { events } = await api.events({ limit: 15, q })
+  const [{ events }, s] = await Promise.all([api.events({ limit: 15, q }), api.stats()])
   if (events.length === 0) return { text: `没有匹配「${esc(q)}」的消息` }
-  return { text: [`<b>「${esc(q)}」共 ${events.length} 条</b>`, '', ...events.map(renderEvent)].join('\n\n') }
+  const multi = s.devices.filter((d) => d.status !== 'revoked').length > 1
+  return { text: [`<b>「${esc(q)}」共 ${events.length} 条</b>`, '', ...events.map((e) => renderEvent(e, multi))].join('\n\n') }
 }
 
-/** 列表里的正文同样进 spoiler —— /recent 和 /search 是最容易漏掉的两处。 */
-const renderEvent = (e: { from: string; content: string; occurred_at: number }): string =>
-  `${esc(e.from)} · ${fmtTime(e.occurred_at)}\n💬 ${spoiler(e.content)}`
+/**
+ * 列表里的正文同样进 spoiler —— /recent 和 /search 是最容易漏掉的两处。
+ * 设备名只在多设备时显示，单设备下每行都缀一遍是噪音。
+ */
+const renderEvent = (
+  e: { from: string; content: string; occurred_at: number; device_name?: string },
+  showDevice: boolean,
+): string => {
+  const head = showDevice && e.device_name
+    ? `${esc(e.from)} · ${esc(e.device_name)} · ${fmtTime(e.occurred_at)}`
+    : `${esc(e.from)} · ${fmtTime(e.occurred_at)}`
+  return `${head}\n💬 ${spoiler(e.content)}`
+}
 
 async function rules(api: BotApi): Promise<BotMessage> {
   const { rules: rs } = await api.rules()
@@ -189,6 +204,8 @@ export async function handleReply(api: BotApi, replyToRef: string, text: string)
   // 引用的不是我们推送的短信（比如回复了 /status 的输出），忽略
   if (!ref) return null
 
+  // 用原事件所属的那台设备回复：多卡场景下必须从收到短信的那张卡发回去，
+  // 否则对方看到的是一个陌生号码
   const r = await api.sendSms(ref.device_id, ref.sender, text)
   return {
     text: r.status === 'failed'

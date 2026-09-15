@@ -35,7 +35,29 @@ export async function processEvent(
   e: MatchableEvent,
 ): Promise<void> {
   try {
-    const [rules, channels] = await Promise.all([loadRules(deps.store), loadChannels(deps)])
+    // 用 allSettled 而非 all：all 在第一个 Promise 失败后，其余 Promise 的
+    // rejection 会成为 unhandled rejection，而 Node 默认因此**终止进程**。
+    // 一次数据库抖动就能把整个网关打挂，这个代价不能接受。
+    const [rulesR, channelsR, devicesR] = await Promise.allSettled([
+      loadRules(deps.store), loadChannels(deps), deps.store.listDevices(),
+    ])
+    if (rulesR.status === 'rejected' || channelsR.status === 'rejected') {
+      log.error('加载规则或渠道失败，本条事件不推送', {
+        event_id: eventId,
+        error: String((rulesR.status === 'rejected' ? rulesR.reason : channelsR.status === 'rejected' ? channelsR.reason : '')),
+      })
+      return
+    }
+    const rules = rulesR.value
+    const channels = channelsR.value
+    // 设备列表只用于标注来源，取不到就降级为不标注，不该阻断推送
+    const devices = devicesR.status === 'fulfilled' ? devicesR.value : []
+
+    // 多设备时才在通知里标出来源设备：单设备场景下那是噪音，
+    // 多设备时不标就分不清这条验证码是哪张卡收到的
+    const active = devices.filter((d) => d.status !== 'revoked')
+    const deviceName = active.find((d) => d.id === e.device_id)?.name ?? e.device_id
+    const showDevice = active.length > 1
 
     const result = evaluate(rules, e, deps.tzOffsetMin ?? 0)
 
@@ -83,13 +105,15 @@ export async function processEvent(
         content: e.content,
         code: code ?? '',
         time: new Date(e.occurred_at).toISOString(),
-        device: e.device_id,
+        // 模板里的 {device} 给设备名而不是 id：id 是给机器看的
+        device: deviceName,
       }),
       priority: result.matched.length > 0 ? result.priority : action.priority,
       code,
       eventId,
       occurredAt: e.occurred_at,
       consoleUrl: deps.baseUrl ?? null,
+      deviceName: showDevice ? deviceName : null,
       ...(action.bark ? { options: { bark: action.bark } } : {}),
     }
 

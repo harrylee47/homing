@@ -76,6 +76,8 @@ const apiDeps = {
   store, cipher, hub, adminToken: cfg.adminToken,
   barkUpstream: cfg.barkUpstream,
   trustedProxy: cfg.trustedProxy,
+  // apiDeps 在 keepAliveDeps 之前定义，用函数包一层避免 TDZ
+  runKeepAlive: (force: boolean) => runKeepAlive(force),
   barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
   onUnknownIpLogin: (ip: string) => void (async () => {
@@ -243,12 +245,14 @@ const monitorTimer = setInterval(() => {
   }).catch((e: unknown) => log.error('掉线检测异常', { error: String(e) }))
 }, 60_000)
 
-/** 保号任务。每小时检查一次「本月是否已执行」，服务端短暂停机不会漏月。 */
-const keepAliveTimer = setInterval(() => {
-  void keepAliveTick({
+/**
+ * 保号任务的依赖。抽出来是因为控制台的「立即测试」要复用同一条路径——
+ * 测试走的和定时执行不是两套代码，否则测得通不代表定时能通。
+ */
+const keepAliveDeps = () => ({
     store,
     onlineDevice: () => hub.onlineDevices()[0] ?? null,
-    send: async (deviceId, to, text) => {
+    send: async (deviceId: string, to: string, text: string) => {
       const id = `cmd_${crypto.randomUUID()}`
       const t = Date.now()
       await store.createOutbound({
@@ -263,16 +267,22 @@ const keepAliveTimer = setInterval(() => {
       await store.advanceOutbound(id, 'failed', '设备离线', Date.now())
       return false
     },
-    alert: async (title, body) => {
+    alert: async (title: string, body: string) => {
       const channels = await liveChannels()
       if (channels.length === 0) return
       const { dispatch } = await import('../../core/notifier.js')
       await dispatch(channels, {
-        title, body, priority: 'high', code: null, eventId: '',
+        title, body, priority: 'high' as const, code: null, eventId: '',
         occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
       })
     },
-  }).catch((e: unknown) => log.error('保号任务异常', { error: String(e) }))
+  })
+
+const runKeepAlive = (force: boolean) => keepAliveTick(keepAliveDeps(), force)
+
+/** 每小时检查一次是否到期。排期基于绝对时刻，服务端短暂停机不会漏掉。 */
+const keepAliveTimer = setInterval(() => {
+  void runKeepAlive(false).catch((e: unknown) => log.error('保号任务异常', { error: String(e) }))
 }, 3600_000)
 
 /** 回复映射保留 7 天：超过这个窗口的推送，用户基本不会再去引用回复。 */
@@ -294,5 +304,18 @@ const shutdown = async (sig: string) => {
   await store.close()
   process.exit(0)
 }
+/**
+ * 兜底：未捕获的 Promise rejection 默认会终止 Node 进程。
+ *
+ * 这台服务在收验证码，因为一次数据库抖动或第三方接口异常就整个挂掉，
+ * 代价远大于让它带病运行——记下来、发告警，但继续跑。
+ */
+process.on('unhandledRejection', (reason) => {
+  log.error('未捕获的 Promise rejection（进程继续运行）', { error: String(reason) })
+})
+process.on('uncaughtException', (err) => {
+  log.error('未捕获的异常（进程继续运行）', { error: String(err), stack: err.stack?.slice(0, 500) })
+})
+
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 process.on('SIGINT', () => void shutdown('SIGINT'))

@@ -72,7 +72,9 @@ export const telegramProvider: Provider<TelegramConfig> = {
 
 export function buildText(msg: NotifyMessage, useSpoiler: boolean): string {
   const time = new Date(msg.occurredAt).toLocaleString('zh-CN', { hour12: false })
-  const head = `📩 新消息 · ${esc(time)}\n\n来自: ${esc(msg.title)}`
+  let head = `📩 新消息 · ${esc(time)}\n\n来自: ${esc(msg.title)}`
+  // 设备名不是敏感信息，放在 spoiler 外便于一眼区分来源
+  if (msg.deviceName) head += `\n设备: ${esc(msg.deviceName)}`
 
   if (!msg.body) return head
 

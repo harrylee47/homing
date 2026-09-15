@@ -17,6 +17,13 @@ export interface NotifyMessage {
   /** 控制台里这条事件的完整地址。未配置 GW_BASE_URL 时为 null。 */
   consoleUrl?: string | null
   /**
+   * 来源设备名。
+   *
+   * **只在有多台设备时才填**：单设备场景下每条通知都缀一个设备名是纯噪音，
+   * 而多设备时不写就分不清这条验证码是哪张卡收到的。
+   */
+  deviceName?: string | null
+  /**
    * 渠道私有选项，按渠道类型分组（如 `{ bark: { level: 'timeSensitive' } }`）。
    * 放在消息上而不是渠道配置里，是因为它随规则变化：
    * 银行验证码要穿透专注模式，广告短信不该。

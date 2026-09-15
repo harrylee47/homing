@@ -21,7 +21,10 @@ import { createPairing, redeemPairing } from '../../core/pairing.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import type { DownstreamFrame } from '../../core/protocol.js'
 import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
-import { DEFAULT_KEEPALIVE, loadConfig as loadKeepAlive, SETTING_KEY as KEEPALIVE_KEY } from '../../core/keepalive.js'
+import {
+  DEFAULT_KEEPALIVE, loadConfig as loadKeepAlive,
+  SETTING_KEY as KEEPALIVE_KEY, status as keepAliveStatus,
+} from '../../core/keepalive.js'
 import { toSvg } from '../../core/qr.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
@@ -43,6 +46,8 @@ export interface ApiDeps {
   onLoginLockout?: ((ip: string, attempts: number) => void) | undefined
   /** 陌生网段登录成功时的告警回调 */
   onUnknownIpLogin?: ((ip: string) => void) | undefined
+  /** 执行一次保号任务。force=true 表示忽略排期立即发送。 */
+  runKeepAlive?: ((force: boolean) => Promise<{ sent: boolean; reason?: string }>) | undefined
   /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
   trustedProxy?: string | null
 }
@@ -649,29 +654,46 @@ route('POST', '/api/bot/rotate-token', async ({ res, deps, ip }) => {
 
 route('GET', '/api/keepalive', async ({ res, deps }) => {
   const cfg = await loadKeepAlive(deps.store)
-  const last = await deps.store.getSetting('keepalive_last_run')
-  const fails = Number((await deps.store.getSetting('keepalive_fail_count')) ?? 0)
-  json(res, 200, { ...cfg, last_run: last, consecutive_failures: fails })
+  json(res, 200, { ...cfg, ...(await keepAliveStatus(deps.store)) })
 })
 
 route('POST', '/api/keepalive', async ({ res, body, deps, ip }) => {
-  const b = body as Partial<typeof DEFAULT_KEEPALIVE>
-  const to = (b.to ?? '').trim()
-  if (b.enabled && !to) return json(res, 400, { error: '启用时必须填目标号码' })
+  const b = body as Partial<Record<keyof typeof DEFAULT_KEEPALIVE, unknown>>
+  const to = String(b.to ?? '').trim()
+  if (b.enabled === true && !to) return json(res, 400, { error: '启用时必须填目标号码' })
 
+  const interval = Math.min(Math.max(Math.round(Number(b.interval_days) || 30), 1), 365)
+  const firstRaw = Number(b.first_run_at)
   const cfg = {
     enabled: b.enabled === true,
     to,
-    day: Math.min(Math.max(Number(b.day) || 1, 1), 28),
-    text: (b.text ?? '').trim() || DEFAULT_KEEPALIVE.text,
+    text: String(b.text ?? '').trim() || DEFAULT_KEEPALIVE.text,
+    interval_days: interval,
+    first_run_at: Number.isFinite(firstRaw) && firstRaw > 0 ? firstRaw : null,
   }
   await deps.store.setSetting(KEEPALIVE_KEY, JSON.stringify(cfg))
   await deps.store.audit({
     actor: 'admin', action: 'keepalive.config',
-    detail: cfg.enabled ? `每月 ${cfg.day} 日 → ${maskNumber(cfg.to)}` : '已停用',
+    detail: cfg.enabled ? `每 ${cfg.interval_days} 天 → ${maskNumber(cfg.to)}` : '已停用',
     ip, created_at: now(),
   })
   json(res, 200, { ok: true })
+})
+
+/**
+ * 立即测试发送。
+ *
+ * 保号任务的失败是静默的——真到停机那天才会发现，所以配好之后必须能
+ * 当场验证链路是通的。测试不写排期、不计入失败统计。
+ */
+route('POST', '/api/keepalive/test', async ({ res, deps, ip }) => {
+  if (!deps.runKeepAlive) return json(res, 500, { error: '未接入保号任务' })
+  const r = await deps.runKeepAlive(true)
+  await deps.store.audit({
+    actor: 'admin', action: 'keepalive.test',
+    detail: r.sent ? '已下发' : (r.reason ?? '失败'), ip, created_at: now(),
+  })
+  json(res, r.sent ? 200 : 400, r)
 })
 
 // ── 总览统计 ────────────────────────────────────────────────
@@ -763,8 +785,10 @@ route('POST', '/api/outbound', async ({ res, body, deps, ip }) => {
 route('GET', '/api/outbound/:id', async ({ res, params, deps }) => {
   const o = await deps.store.getOutbound(params.id!)
   if (!o) return json(res, 404, { error: '任务不存在' })
+  const dev = await deps.store.getDevice(o.device_id)
   json(res, 200, {
-    id: o.id, device_id: o.device_id, to: o.to_number,
+    id: o.id, device_id: o.device_id, device_name: dev?.name ?? o.device_id,
+    to: o.to_number,
     text: await deps.cipher.decrypt(o.content_enc),
     sim_slot: o.sim_slot, status: o.status, error: o.error,
     created_at: o.created_at, updated_at: o.updated_at,
@@ -775,9 +799,11 @@ route('GET', '/api/outbound', async ({ res, url, deps }) => {
   const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 200)
   const offset = Math.max(Number(url.searchParams.get('offset') ?? 0), 0)
   const rows = await deps.store.listOutbound(limit, offset)
+  const names = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
   json(res, 200, {
     outbound: await Promise.all(rows.map(async (o) => ({
-      id: o.id, device_id: o.device_id, to: o.to_number,
+      id: o.id, device_id: o.device_id, device_name: names.get(o.device_id) ?? o.device_id,
+      to: o.to_number,
       text: await deps.cipher.decrypt(o.content_enc),
       status: o.status, error: o.error, created_at: o.created_at, updated_at: o.updated_at,
     }))),
@@ -800,8 +826,11 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
     limit: q ? Math.min(limit * 10, 500) : limit, offset,
     ...(kindParam === 'sms' || kindParam === 'call' || kindParam === 'notification' ? { kind: kindParam } : {}),
   })
+  const deviceNames = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
   let items = await Promise.all(rows.map(async (e) => ({
-    id: e.id, device_id: e.device_id, kind: e.kind,
+    id: e.id, device_id: e.device_id,
+    device_name: deviceNames.get(e.device_id) ?? e.device_id,
+    kind: e.kind,
     from: await deps.cipher.decrypt(e.sender_enc),
     content: await deps.cipher.decrypt(e.content_enc),
     occurred_at: e.occurred_at, received_at: e.received_at,
