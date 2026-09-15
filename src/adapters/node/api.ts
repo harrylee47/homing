@@ -25,6 +25,7 @@ import { DEFAULT_TIMEZONE, Schedule, describe as describeSchedule, formatWallTim
 import { BATTERY_SETTING_KEY, loadBatteryConfig } from '../../core/monitor.js'
 import { parseTask, taskNextRun, type ParsedTask } from '../../core/tasks.js'
 import { toSvg } from '../../core/qr.js'
+import { eventFingerprint, planReconcile } from '../../core/fingerprint.js'
 import { scanMatches } from '../../core/search.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
@@ -57,6 +58,9 @@ export interface ApiDeps {
   /** 让设备导入本机已有的历史短信与通话 */
   importHistory?: ((deviceId: string, since: number | null, limit: number) =>
     Promise<{ ok: boolean; result?: unknown; error?: string }>) | undefined
+  /** 取设备本地当前还有哪些记录的指纹，用于镜像同步 */
+  listFingerprints?: ((deviceId: string, since: number | null, limit: number) =>
+    Promise<{ ok: boolean; items?: { fp: string; at: number }[]; truncated?: boolean; error?: string }>) | undefined
   /** 断开全部设备连接，迫使它们重连并拉取新配置 */
   reconnectDevices?: (() => void) | undefined
   /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
@@ -908,6 +912,93 @@ route('POST', '/api/devices/:id/import-history', async ({ res, params, body, dep
     ip, created_at: now(),
   })
   json(res, 200, r.result)
+})
+
+/**
+ * 与手机对齐：手机有网关没有的补进来，网关有手机已经没有的删掉。
+ *
+ * 删除方向是不可逆的，所以默认只出计划不动手（`apply` 为 false 时返回将要删什么），
+ * 由界面确认后再调一次带 `apply` 的。
+ *
+ * 安全边界全部在 core/fingerprint.ts 的 planReconcile 里，这里只负责取数据。
+ */
+route('POST', '/api/devices/:id/reconcile', async ({ res, params, body, deps, ip }) => {
+  if (!deps.importHistory || !deps.listFingerprints) return json(res, 500, { error: '未接入' })
+  const b = body as { days?: number; limit?: number; apply?: boolean }
+  const days = Number(b?.days)
+  const since = Number.isFinite(days) && days > 0 ? now() - days * 86_400_000 : null
+  const limit = Math.min(Math.max(Number(b?.limit) || 2000, 1), 20000)
+  const id = params.id!
+
+  // 第一步：把手机上有、网关没有的补进来（只归档不推送，见 HistoryImporter）
+  const imp = await deps.importHistory(id, since, limit)
+  if (!imp.ok) return json(res, 502, { error: imp.error ?? '同步失败' })
+
+  // 第二步：问手机「你现在还有哪些」
+  const fps = await deps.listFingerprints(id, since, limit)
+  if (!fps.ok) return json(res, 502, { error: fps.error ?? '读取手机记录失败' })
+
+  // 第三步：把网关里这台设备的短信与通话拿出来算指纹
+  const rows = await deps.store.listEvents({
+    device_id: id,
+    ...(since !== null ? { since } : {}),
+    limit: 50_000, offset: 0,
+  })
+  const gatewayEvents = await Promise.all(
+    rows
+      // 应用通知不在手机的短信/通话库里，拿它去比对等于全判成「已删除」
+      .filter((e) => e.kind === 'sms' || e.kind === 'call')
+      .map(async (e) => ({
+        id: e.id,
+        kind: e.kind,
+        occurred_at: e.occurred_at,
+        fp: await eventFingerprint(
+          e.kind,
+          await deps.cipher.decrypt(e.sender_enc),
+          await deps.cipher.decrypt(e.content_enc),
+        ),
+      })),
+  )
+
+  // 上界留 60 秒余量：刚收到、还没落进手机库的那条不能被判成「已删除」
+  const plan = planReconcile(gatewayEvents, fps.items ?? [], { until: now() - 60_000 })
+
+  if (b?.apply !== true) {
+    // 预览：把要删的挑几条出来，让人看清删的是什么再决定
+    const preview = await Promise.all(
+      plan.stale.slice(0, 5).map(async (sid) => {
+        const e = await deps.store.getEvent(sid)
+        if (!e) return null
+        return {
+          from: await deps.cipher.decrypt(e.sender_enc),
+          content: (await deps.cipher.decrypt(e.content_enc)).slice(0, 40),
+          occurred_at: e.occurred_at,
+        }
+      }),
+    )
+    return json(res, 200, {
+      imported: imp.result,
+      phone_count: fps.items?.length ?? 0,
+      truncated: fps.truncated ?? false,
+      stale: plan.stale.length,
+      window: plan.window,
+      reason: plan.reason ?? null,
+      preview: preview.filter(Boolean),
+    })
+  }
+
+  let deleted = 0
+  for (const sid of plan.stale) {
+    if (await deps.store.deleteEvent(sid)) deleted++
+  }
+  if (deleted > 0) {
+    log.warn('镜像同步删除了手机上已不存在的记录', { device_id: id, deleted })
+    await deps.store.audit({
+      actor: 'admin', action: 'device.reconcile',
+      detail: `${id} 删除 ${deleted} 条（手机上已不存在）`, ip, created_at: now(),
+    })
+  }
+  json(res, 200, { imported: imp.result, deleted, window: plan.window })
 })
 
 /** 让设备列出已安装应用，供控制台挑选。 */

@@ -1741,7 +1741,12 @@ async function devices() {
           </select>
           <div class="muted">同步进来的记录<b>只进历史，不会推送</b>——否则几千条旧短信会一次性
           砸到你手机上。重复同步不会产生重复记录，放心多点几次。</div>
-          <div class="btnrow"><button id="imp_go" class="sm">开始同步</button></div>
+          <div class="btnrow">
+            <button id="imp_go" class="sm">同步（只增不删）</button>
+            <button id="rec_go" class="ghost sm">与手机对齐</button>
+          </div>
+          <div class="muted"><b>对齐</b>会双向：手机上有网关没有的补进来，<b>手机上已经删掉的，网关里也删掉</b>。
+          删之前会先让你看一眼要删什么。</div>
           <div id="imp_out" class="muted"></div>`}
       </div>
 
@@ -1761,11 +1766,63 @@ async function devices() {
           method: 'POST',
           body: { days: Number($('#imp_days').value), limit: Number($('#imp_limit').value) },
         })
-        $('#imp_out').innerHTML = `已读取短信 <b>${r.sms}</b> 条、通话 <b>${r.calls}</b> 条，正在陆续上传。` +
+        $('#imp_out').innerHTML = `已从手机读取短信 <b>${r.sms}</b> 条、通话 <b>${r.calls}</b> 条，正在陆续上传。` +
           (r.skipped ? ` <span class="badge warn">有 ${r.skipped} 类因缺权限被跳过</span>` : '') +
-          '<br>稍等片刻到「消息」页查看。'
+          '<br>其中已经在库里的会自动跳过，所以「消息」页增加的条数通常比这个少。'
       } catch (e) { $('#imp_out').innerHTML = `<span class="err-text">${esc(e.message)}</span>` }
       impGo.disabled = false
+    }
+
+    /**
+     * 与手机对齐。
+     *
+     * 分两步：先拿计划（不动手），让人看清要删什么再确认。
+     * 删除不可逆，而「手机上那条到底还在不在」的判断依赖指纹比对，
+     * 不给人一次看清楚的机会是不负责任的。
+     */
+    const recGo = $('#rec_go')
+    if (recGo) recGo.onclick = async () => {
+      const days = Number($('#imp_days').value)
+      const limit = Number($('#imp_limit').value)
+      const dev = $('#imp_dev').value
+      recGo.disabled = true
+      $('#imp_out').textContent = '正在比对手机上的记录…'
+      try {
+        const plan = await api(`/devices/${dev}/reconcile`, { method: 'POST', body: { days, limit } })
+        const imp = plan.imported || {}
+        const range = plan.window
+          ? `${fmtDate(plan.window.since)} 到 ${fmtDate(plan.window.until)}`
+          : '（无）'
+
+        if (plan.stale === 0) {
+          $('#imp_out').innerHTML =
+            `已从手机读取短信 <b>${imp.sms ?? 0}</b> 条、通话 <b>${imp.calls ?? 0}</b> 条（重复的自动跳过）。` +
+            `<br>比对范围 ${range}，<b>没有需要删除的</b>，两边是一致的。` +
+            (plan.reason ? `<br><span class="badge warn">${esc(plan.reason)}</span>` : '')
+          recGo.disabled = false
+          return
+        }
+
+        const sample = (plan.preview || [])
+          .map((p) => `· ${p.from}：${p.content}`).join('\n')
+        const ok = confirm(
+          `手机上已经没有、网关里还留着的：${plan.stale} 条\n\n` +
+          `${sample}${plan.stale > 5 ? `\n…等共 ${plan.stale} 条` : ''}\n\n` +
+          `比对范围：${range}\n（比这更早的记录不会被动——那是网关的长期归档）\n\n` +
+          `删掉它们？删了就没了。`,
+        )
+        if (!ok) {
+          $('#imp_out').innerHTML = `已从手机读取短信 <b>${imp.sms ?? 0}</b> 条、通话 <b>${imp.calls ?? 0}</b> 条。删除已取消。`
+          recGo.disabled = false
+          return
+        }
+
+        const r = await api(`/devices/${dev}/reconcile`, { method: 'POST', body: { days, limit, apply: true } })
+        $('#imp_out').innerHTML =
+          `对齐完成：从手机读取 <b>${(r.imported?.sms ?? 0) + (r.imported?.calls ?? 0)}</b> 条（重复的自动跳过），` +
+          `删除手机上已不存在的 <b>${r.deleted}</b> 条。`
+      } catch (e) { $('#imp_out').innerHTML = `<span class="err-text">${esc(e.message)}</span>` }
+      recGo.disabled = false
     }
 
     $('#gen').onclick = async () => {

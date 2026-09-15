@@ -204,4 +204,78 @@ object HistoryImporter {
         val s = seconds % 60
         return if (m > 0) "${m}分${s}秒" else "${s}秒"
     }
+
+    // ── 指纹 ────────────────────────────────────────────────
+
+    data class Fingerprint(val fp: String, val at: Long)
+
+    /**
+     * 报告手机本地**当前还有哪些**短信与通话。
+     *
+     * 服务端拿它和自己的记录比对：网关有、手机没有的，说明在手机上被删了。
+     * 只报指纹不报内容——比对不需要原文，少传一份明文就少一份泄漏面。
+     *
+     * 规则必须与服务端 core/fingerprint.ts 的 eventFingerprint 完全一致。
+     */
+    @SuppressLint("MissingPermission")
+    fun fingerprints(ctx: Context, since: Long?, limit: Int): List<Fingerprint> {
+        val out = ArrayList<Fingerprint>(minOf(limit * 2, 4096))
+
+        if (has(ctx, Manifest.permission.READ_SMS)) {
+            val where = StringBuilder()
+            val args = mutableListOf<String>()
+            if (since != null) { where.append("${Telephony.Sms.DATE} >= ?"); args.add(since.toString()) }
+            runCatching {
+                ctx.contentResolver.query(
+                    Telephony.Sms.CONTENT_URI,
+                    arrayOf(Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE, Telephony.Sms.TYPE),
+                    where.toString().ifEmpty { null }, args.toTypedArray().takeIf { it.isNotEmpty() },
+                    "${Telephony.Sms.DATE} DESC",
+                )?.use { c ->
+                    var n = 0
+                    while (c.moveToNext() && n < limit) {
+                        val type = c.getInt(3)
+                        if (type != Telephony.Sms.MESSAGE_TYPE_INBOX && type != Telephony.Sms.MESSAGE_TYPE_SENT) continue
+                        val from = c.getString(0) ?: continue
+                        val body = (c.getString(1) ?: "").take(Protocol.MAX_CONTENT_LEN)
+                        out.add(Fingerprint(fingerprint("sms", from, body), c.getLong(2)))
+                        n++
+                    }
+                }
+            }.onFailure { Log.e("读取短信指纹失败", it) }
+        }
+
+        if (has(ctx, Manifest.permission.READ_CALL_LOG)) {
+            val where = StringBuilder()
+            val args = mutableListOf<String>()
+            if (since != null) { where.append("${CallLog.Calls.DATE} >= ?"); args.add(since.toString()) }
+            runCatching {
+                ctx.contentResolver.query(
+                    CallLog.Calls.CONTENT_URI,
+                    arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.DATE),
+                    where.toString().ifEmpty { null }, args.toTypedArray().takeIf { it.isNotEmpty() },
+                    "${CallLog.Calls.DATE} DESC",
+                )?.use { c ->
+                    var n = 0
+                    while (c.moveToNext() && n < limit) {
+                        val number = c.getString(0) ?: continue
+                        out.add(Fingerprint(fingerprint("call", number, ""), c.getLong(1)))
+                        n++
+                    }
+                }
+            }.onFailure { Log.e("读取通话指纹失败", it) }
+        }
+
+        Log.i("已生成 ${out.size} 条指纹")
+        return out
+    }
+
+    /** 与服务端 core/fingerprint.ts 同一套规则。通话不把描述文字计入。 */
+    private fun fingerprint(kind: String, from: String, content: String): String {
+        val number = from.filter { it != ' ' && it != '-' && it != '(' && it != ')' }
+        val material = if (kind == "call") "call|$number" else "$kind|$number|$content"
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        return md.digest(material.toByteArray(Charsets.UTF_8))
+            .take(8).joinToString("") { "%02x".format(it) }
+    }
 }

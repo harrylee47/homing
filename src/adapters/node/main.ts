@@ -13,7 +13,7 @@ import { dispatch } from '../../core/notifier.js'
 import { runTask as runOneTask, tick as tasksTick, type ParsedTask } from '../../core/tasks.js'
 import { checkDevices } from '../../core/monitor.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
-import { AppListResult, ImportResult, LocationResult, type DownstreamFrame } from '../../core/protocol.js'
+import { AppListResult, FingerprintList, ImportResult, LocationResult, type DownstreamFrame } from '../../core/protocol.js'
 import { PROVIDERS } from '../../core/notifier.js'
 import { TelegramConfig } from '../../core/providers/telegram.js'
 import { barkAccess, getOrCreateBotToken, handleApi, isInitialized, loadNotifyCapture, loadSmsCommand, timezone } from './api.js'
@@ -179,7 +179,7 @@ function onQueryResult(cmdId: string, ok: boolean, detail: Record<string, unknow
 /** 通用的查询类指令：下发后等回执或超时。 */
 async function queryDevice(
   deviceId: string,
-  action: 'get_location' | 'list_apps' | 'import_history',
+  action: 'get_location' | 'list_apps' | 'import_history' | 'list_fingerprints',
   timeoutMs: number,
   args: Record<string, unknown> = {},
 ): Promise<{ ok: boolean; detail: Record<string, unknown> | null; error: string | null }> {
@@ -239,6 +239,19 @@ async function importHistory(
   return { ok: true, result: parsed.data }
 }
 
+/** 取手机当前还有哪些记录的指纹，用于镜像同步。 */
+async function listFingerprints(
+  deviceId: string, since: number | null, limit: number,
+): Promise<{ ok: boolean; items?: { fp: string; at: number }[]; truncated?: boolean; error?: string }> {
+  const args: Record<string, unknown> = { limit }
+  if (since !== null) args.since = since
+  const r = await queryDevice(deviceId, 'list_fingerprints', 120_000, args)
+  if (!r.ok) return { ok: false, error: r.error ?? '读取失败' }
+  const parsed = FingerprintList.safeParse(r.detail)
+  if (!parsed.success) return { ok: false, error: '设备返回的指纹格式不正确' }
+  return { ok: true, items: parsed.data.items, truncated: parsed.data.truncated }
+}
+
 /**
  * 断开全部设备，迫使它们重连并拉取新配置。
  *
@@ -261,6 +274,7 @@ const apiDeps = {
   locateDevice,
   listApps,
   importHistory,
+  listFingerprints,
   reconnectDevices,
   barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
   baseUrl: cfg.baseUrl,

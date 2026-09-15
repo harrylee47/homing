@@ -104,7 +104,7 @@ export type EventKind = z.infer<typeof EventKind>
 
 export const CmdAction = z.enum([
   'send_sms', 'query_status', 'reboot_service', 'sync_config', 'get_location', 'list_apps',
-  'import_history',
+  'import_history', 'list_fingerprints',
 ])
 export type CmdAction = z.infer<typeof CmdAction>
 
@@ -228,6 +228,13 @@ export const ImportResult = z.object({
   skipped: z.number().int().min(0).default(0),
 })
 export type ImportResult = z.infer<typeof ImportResult>
+
+/** 手机当前还有哪些记录（只有指纹，没有原文）。用于镜像同步的比对。 */
+export const FingerprintList = z.object({
+  items: z.array(z.object({ fp: z.string().max(32), at: Timestamp })).max(20000),
+  truncated: z.boolean().default(false),
+})
+export type FingerprintList = z.infer<typeof FingerprintList>
 
 /** 服务端 → Agent：握手成功。 */
 export const HelloAckPayload = z.object({

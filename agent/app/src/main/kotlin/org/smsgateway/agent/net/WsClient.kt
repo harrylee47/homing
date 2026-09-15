@@ -321,6 +321,7 @@ class WsClient(
             "get_location" -> onGetLocation(cmd)
             "list_apps" -> onListApps(cmd)
             "import_history" -> onImportHistory(cmd)
+            "list_fingerprints" -> onListFingerprints(cmd)
             else -> report(cmd.cmdId, "failed", "尚未实现：${cmd.action}")
         }
     }
@@ -350,6 +351,36 @@ class WsClient(
                 },
                 onFailure = { report(cmd.cmdId, "failed", it.message ?: "导入失败") },
             )
+        }
+    }
+
+    /**
+     * 报告手机本地当前还有哪些短信与通话（只报指纹）。
+     *
+     * 服务端据此算出「网关有、手机已经没有」的那些，做镜像同步的删除方向。
+     */
+    private fun onListFingerprints(cmd: CmdPayload) {
+        report(cmd.cmdId, "accepted", null)
+        scope.launch {
+            val args = runCatching {
+                Protocol.json.decodeFromJsonElement(ImportArgs.serializer(), cmd.args)
+            }.getOrElse { ImportArgs() }
+            val items = runCatching { HistoryImporter.fingerprints(ctx, args.since, args.limit) }
+                .getOrElse {
+                    report(cmd.cmdId, "failed", it.message ?: "读取失败")
+                    return@launch
+                }
+            val socket = ws ?: return@launch
+            socket.send(frame("cmd_result", CmdResultPayload(
+                cmd.cmdId, "done", null,
+                Protocol.json.encodeToJsonElement(
+                    FingerprintList.serializer(),
+                    FingerprintList(
+                        items.map { FingerprintItem(it.fp, it.at) },
+                        truncated = items.size >= args.limit * 2,
+                    ),
+                ),
+            )))
         }
     }
 

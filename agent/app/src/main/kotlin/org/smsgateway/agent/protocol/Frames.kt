@@ -162,6 +162,13 @@ data class AgentConfig(
 @Serializable
 data class ImportResult(val sms: Int, val calls: Int, val skipped: Int)
 
+/** 手机当前还有哪些记录，用于镜像同步的比对。 */
+@Serializable
+data class FingerprintItem(val fp: String, val at: Long)
+
+@Serializable
+data class FingerprintList(val items: List<FingerprintItem>, val truncated: Boolean = false)
+
 /** 短信指令配置。语义见服务端 protocol.ts 的 SmsCommandConfig。 */
 @Serializable
 data class SmsCommandConfig(
