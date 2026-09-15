@@ -91,3 +91,25 @@ describe('帧解析', () => {
     expect(parseUpstream(encodeFrame(f), NOW).ok).toBe(true)
   })
 })
+
+describe('事件 id 的两种形态', () => {
+  const frame = (id: string) => encodeFrame(makeFrame('event', {
+    id, device_id: 'dev_1', kind: 'sms', from: '95533',
+    content: 'x', occurred_at: 1_700_000_000_000, extra: {},
+  }, 1_700_000_000_000))
+
+  it('实时捕获用 uuid-v4', () => {
+    expect(parseUpstream(frame(`evt_${crypto.randomUUID()}`), 1_700_000_000_000).ok).toBe(true)
+  })
+
+  it('历史导入用确定 id —— 重复导入才能去重', () => {
+    expect(parseUpstream(frame('evt_imp_sms_42'), 1_700_000_000_000).ok).toBe(true)
+    expect(parseUpstream(frame('evt_imp_call_7'), 1_700_000_000_000).ok).toBe(true)
+  })
+
+  it('别的形态一律拒绝', () => {
+    for (const bad of ['evt_imp_mms_1', 'evt_imp_sms_', 'evt_imp_sms_abc', 'evt_123', 'imp_sms_1']) {
+      expect(parseUpstream(frame(bad), 1_700_000_000_000).ok).toBe(false)
+    }
+  })
+})

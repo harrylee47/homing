@@ -231,12 +231,19 @@ export class TelegramBot {
       stats: () => call('/api/stats') as ReturnType<BotApi['stats']>,
       rules: () => call('/api/rules') as ReturnType<BotApi['rules']>,
       tasks: () => call('/api/tasks') as ReturnType<BotApi['tasks']>,
+      outbound: (p) => {
+        const q = new URLSearchParams({ limit: String(p.limit ?? 10) })
+        if (p.to) q.set('to', p.to)
+        if (p.status) q.set('status', p.status)
+        return call(`/api/outbound?${q.toString()}`) as ReturnType<BotApi['outbound']>
+      },
       events: (p) => {
         const q = new URLSearchParams({ limit: String(p.limit ?? 10) })
         if (p.q) q.set('q', p.q)
         if (p.from) q.set('from', p.from)
         if (p.device) q.set('device', p.device)
         if (p.kind) q.set('kind', p.kind)
+        if (p.direction) q.set('direction', p.direction)
         return call(`/api/events?${q.toString()}`) as ReturnType<BotApi['events']>
       },
 

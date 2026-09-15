@@ -6,6 +6,11 @@ const EVENTS = [
   { id: 'evt_2', from: '10086', content: '您的话费余额为 32.50 元', kind: 'sms', occurred_at: 1_700_000_100_000 },
 ]
 
+const OUTBOUND = [
+  { id: 'cmd_1', to: '13800138000', text: '保号测试 902431', status: 'delivered', error: null, created_at: 1_700_000_200_000 },
+  { id: 'cmd_2', to: '13900139000', text: '你好', status: 'failed', error: '无信号', created_at: 1_700_000_300_000 },
+]
+
 const TWO_DEVICES = [
   { id: 'dev_jp', name: '日本卡', status: 'online', last_seen_at: Date.now(), battery: 80 },
   { id: 'dev_cn', name: '国内卡', status: 'online', last_seen_at: Date.now(), battery: 60 },
@@ -24,6 +29,7 @@ const makeApi = (over: Partial<BotApi> = {}): BotApi => ({
     if (kind) list = list.filter((e) => e.kind === kind)
     return { events: list, total: list.length }
   },
+  outbound: async ({ limit = 10 }) => ({ outbound: OUTBOUND.slice(0, limit), total: OUTBOUND.length }),
   tasks: async () => ({ tasks: [{ name: '保号', enabled: true, schedule_text: '每 30 天', to: '138', next_run_at: 1_700_000_000_000, fail_count: 0 }] }),
   rules: async () => ({ rules: [{ name: '验证码', priority: 10, enabled: true }] }),
   sendSms: async () => ({ id: 'cmd_1', status: 'pending' }),
@@ -308,5 +314,53 @@ describe('查询命令', () => {
     }
     // Telegram 要求命令名全小写、不带斜杠
     for (const c of COMMANDS) expect(c.command).toMatch(/^[a-z_]+$/)
+  })
+})
+
+describe('/sent 发送记录', () => {
+  it('列出收件人、状态与失败原因', async () => {
+    const r = await handleCommand(makeApi(), '/sent')
+    expect(r?.text).toContain('→ 13800138000')
+    expect(r?.text).toContain('✅ 已送达')
+    expect(r?.text).toContain('❌ 失败')
+    expect(r?.text).toContain('无信号')
+  })
+
+  it('正文进 spoiler —— 转发出去的内容一样可能有验证码', async () => {
+    const r = await handleCommand(makeApi(), '/sent')
+    expect(r?.text).toContain('<tg-spoiler>')
+    expect(r?.text).not.toMatch(/💬 保号测试/)
+  })
+
+  it('没有记录时明说', async () => {
+    const r = await handleCommand(makeApi({ outbound: async () => ({ outbound: [], total: 0 }) }), '/sent')
+    expect(r?.text).toBe('还没有发送记录')
+  })
+
+  it('条数可指定且有上限', async () => {
+    const spy = vi.fn(async () => ({ outbound: OUTBOUND, total: 2 }))
+    await handleCommand(makeApi({ outbound: spy }), '/sent 99')
+    expect(spy).toHaveBeenCalledWith({ limit: 30 })
+  })
+})
+
+describe('搜索没覆盖全部历史时要说出来', () => {
+  it('有结果时附一句提醒', async () => {
+    const api = makeApi({ events: async () => ({ events: EVENTS, total: 2, exhausted: false }) })
+    const r = await handleCommand(api, '/search 验证码')
+    expect(r?.text).toContain('只搜了最近一段')
+  })
+
+  it('没结果时不能说成「没有这条消息」', async () => {
+    const api = makeApi({ events: async () => ({ events: [], total: 0, exhausted: false }) })
+    const r = await handleCommand(api, '/search 不存在的词')
+    expect(r?.text).toContain('最近一段里没找到')
+    expect(r?.text).toContain('更早的还没搜')
+  })
+
+  it('搜完了就不啰嗦', async () => {
+    const api = makeApi({ events: async () => ({ events: EVENTS, total: 2, exhausted: true }) })
+    const r = await handleCommand(api, '/search 验证码')
+    expect(r?.text).not.toContain('只搜了最近一段')
   })
 })

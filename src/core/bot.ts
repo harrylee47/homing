@@ -21,12 +21,21 @@ export interface BotApi {
     rules: number
     channels: number
   }>
-  events(params: { limit?: number; q?: string; from?: string; device?: string; kind?: string }): Promise<{
+  outbound(params: { limit?: number; to?: string; status?: string }): Promise<{
+    outbound: {
+      id: string; to: string; text: string; status: string; error: string | null
+      created_at: number; device_name?: string
+    }[]
+    total: number
+  }>
+  events(params: { limit?: number; q?: string; from?: string; device?: string; kind?: string; direction?: string }): Promise<{
     events: {
       id: string; from: string; content: string; kind: string
       occurred_at: number; device_name?: string
     }[]
     total: number
+    /** false 表示只搜了最近一段，更早的没看。undefined 表示这次查询没走全文扫描 */
+    exhausted?: boolean
   }>
   rules(): Promise<{ rules: { name: string; priority: number; enabled: boolean }[] }>
   tasks(): Promise<{
@@ -95,6 +104,7 @@ export const COMMANDS: { command: string; description: string }[] = [
   { command: 'search', description: '全文检索，如 /search 验证码' },
   { command: 'from', description: '按号码查询，如 /from 95533' },
   { command: 'calls', description: '最近的来电' },
+  { command: 'sent', description: '网关发出的短信记录' },
   { command: 'send', description: '发送短信：/send 号码 内容' },
   { command: 'devices', description: '设备列表' },
   { command: 'tasks', description: '计划任务' },
@@ -109,6 +119,7 @@ export const HELP = [
   '/search &lt;关键词&gt; — 全文检索',
   '/from &lt;号码&gt; [n] — 按来源号码查询，支持部分匹配',
   '/calls [n] — 最近的来电',
+  '/sent [n] — 网关发出的短信及其送达状态',
   '/send &lt;号码&gt; &lt;内容&gt; — 发送短信',
   '/devices — 设备列表',
   '/tasks — 计划任务与下次执行时间',
@@ -148,6 +159,11 @@ export async function handleCommand(api: BotApi, text: string): Promise<BotMessa
     case '/calls': {
       const n = Math.min(Math.max(Number(arg) || 10, 1), 30)
       return list(api, { limit: n, kind: 'call' }, `最近 ${n} 条来电`)
+    }
+
+    case '/sent': {
+      const n = Math.min(Math.max(Number(arg) || 10, 1), 30)
+      return sentList(api, n)
     }
 
     case '/search':
@@ -212,13 +228,49 @@ async function list(
   title: string,
 ): Promise<BotMessage> {
   const [r, s] = await Promise.all([api.events(params), api.stats()])
-  if (r.events.length === 0) return { text: `没有匹配的消息（${title}）` }
+  if (r.events.length === 0) {
+    return {
+      text: r.exhausted === false
+        ? `最近一段里没找到（${title}）。更早的还没搜——用控制台可以继续往前翻。`
+        : `没有匹配的消息（${title}）`,
+    }
+  }
   const multi = s.devices.filter((d) => d.status !== 'revoked').length > 1
   const more = r.total > r.events.length
     ? `\n\n共 ${r.total} 条，这里只显示前 ${r.events.length} 条。完整筛选与分页请用控制台。`
     : ''
+  // 正文是密文，只能逐条解开比对，一次请求有时间预算。搜不完必须说，
+  // 否则「没搜到」会被当成「没有这条消息」
+  const partial = r.exhausted === false
+    ? '\n\n⚠️ 只搜了最近一段，更早的还没搜。要翻更久以前的请用控制台。'
+    : ''
   return {
-    text: [`<b>${title} · ${r.events.length} 条</b>`, '', ...r.events.map((e) => renderEvent(e, multi))].join('\n\n') + more,
+    text: [`<b>${title} · ${r.events.length} 条</b>`, '', ...r.events.map((e) => renderEvent(e, multi))].join('\n\n') + more + partial,
+  }
+}
+
+/**
+ * 网关自己发出去的短信。正文同样进 spoiler —— 发出去的内容里一样可能有
+ * 验证码（转发场景）。
+ */
+async function sentList(api: BotApi, limit: number): Promise<BotMessage> {
+  const [r, s] = await Promise.all([api.outbound({ limit }), api.stats()])
+  if (r.outbound.length === 0) return { text: '还没有发送记录' }
+  const multi = s.devices.filter((d) => d.status !== 'revoked').length > 1
+  const label: Record<string, string> = {
+    pending: '待下发', accepted: '已接收', sent: '已发出', delivered: '✅ 已送达', failed: '❌ 失败',
+  }
+  const more = r.total > r.outbound.length
+    ? `\n\n共 ${r.total} 条，这里只显示最近 ${r.outbound.length} 条。`
+    : ''
+  return {
+    text: [`<b>发送记录 · ${r.outbound.length} 条</b>`, '', ...r.outbound.map((o) => {
+      const head = multi && o.device_name
+        ? `→ ${esc(o.to)} · ${esc(o.device_name)} · ${fmtTime(o.created_at)}`
+        : `→ ${esc(o.to)} · ${fmtTime(o.created_at)}`
+      return `${head}\n💬 ${spoiler(o.text)}\n${label[o.status] ?? esc(o.status)}` +
+        (o.error ? ` · ${esc(o.error)}` : '')
+    })].join('\n\n') + more,
   }
 }
 

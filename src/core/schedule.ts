@@ -32,6 +32,17 @@ export const Schedule = z.discriminatedUnion('type', [
 ])
 export type Schedule = z.infer<typeof Schedule>
 
+/**
+ * 未设置时区时的默认值。
+ *
+ * **必须只有这一处**：计划任务按 api 的默认值算、规则时段按 pipeline 的默认值算，
+ * 两处各写各的默认值，就会出现「同一台网关里两个子系统差 9 小时」——
+ * 而且只在用户没主动设过时区时才发作，最难想到。
+ *
+ * 不用 UTC：机器跑在 UTC，人不在。默认给人所在的时区，错了也是一眼能看出来的错。
+ */
+export const DEFAULT_TIMEZONE = 'Asia/Tokyo'
+
 // ── 时区换算 ────────────────────────────────────────────────
 
 interface Parts { year: number; month: number; day: number; hour: number; minute: number; second: number }
@@ -51,7 +62,7 @@ function partsIn(epoch: number, tz: string): Parts {
 }
 
 /** 该时刻在指定时区的 UTC 偏移（毫秒）。 */
-function offsetMs(epoch: number, tz: string): number {
+export function offsetMs(epoch: number, tz: string): number {
   const p = partsIn(epoch, tz)
   return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - epoch
 }
@@ -169,4 +180,16 @@ export function describe(schedule: Schedule): string {
     case 'monthly': return `每月 ${schedule.days.slice().sort((a, b) => a - b).join('、')} 日 ${schedule.time}`
     case 'yearly': return `每年 ${schedule.month} 月 ${schedule.day} 日 ${schedule.time}`
   }
+}
+
+/**
+ * 按指定时区格式化成人看的时间，给通知模板的 {time} 用。
+ *
+ * 不用 ISO 串：推送到手机上的「2026-09-15T13:30:00.000Z」既难读又是 UTC，
+ * 收到验证码的人要在脑子里做一次时区换算。
+ */
+export function formatWallTime(epoch: number, tz: string): string {
+  const p = partsIn(epoch, tz)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${p.year}-${pad(p.month)}-${pad(p.day)} ${pad(p.hour)}:${pad(p.minute)}`
 }

@@ -137,3 +137,87 @@ describe('会话状态机', () => {
     expect(store.devices.get(DEVICE)!.status).toBe('offline')
   })
 })
+
+describe('历史导入的去重', () => {
+  const OCCURRED = NOW - 3_600_000
+
+  /** 建一个已认证的会话，并给它一个可控的 store 与 cipher */
+  const authed = async () => {
+    const store = new MemoryStore()
+    const cipher = await createCipher(generateDek())
+    store.devices.set(DEVICE, {
+      id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
+      status: 'offline', last_seen_at: null, battery: null, charging: null,
+      location_enc: null, location_at: null, app_version: null, created_at: NOW,
+    })
+    const session = new DeviceSession({
+      store, hub: new MemoryHub(), cipher, now: () => NOW,
+      // 不跑推送管线，这组用例只关心入库与去重
+      onStored: () => {},
+    })
+    await session.handle(helloFrame())
+    return { session, store, cipher }
+  }
+
+  const importFrame = (over: Record<string, unknown> = {}) => encodeFrame(makeFrame('event', {
+    id: 'evt_imp_sms_42', device_id: DEVICE, kind: 'sms',
+    from: '95533', content: '【建设银行】您的验证码是 902431',
+    occurred_at: OCCURRED, extra: { imported: true },
+    ...over,
+  }, NOW))
+
+  /** 往库里塞一条「实时捕获过」的记录 */
+  const seedLive = async (
+    store: MemoryStore, cipher: Awaited<ReturnType<typeof createCipher>>,
+    content: string, occurred: number,
+  ) => {
+    store.events.set('evt_live', {
+      id: 'evt_live', device_id: DEVICE, kind: 'sms', direction: 'in',
+      sender_enc: await cipher.encrypt('95533'),
+      content_enc: await cipher.encrypt(content),
+      enc_ver: 1, occurred_at: occurred, received_at: NOW,
+      matched_rules: null, created_at: NOW,
+    })
+  }
+
+  const ackStatus = (a: { send: DownstreamFrame[] }) =>
+    (a.send[0]!.payload as { acks: { status: string }[] }).acks[0]!.status
+
+  it('实时捕获过的同一条不会再进来一次', async () => {
+    const { session, store, cipher } = await authed()
+    // 实时那条 id 是随机 UUID、时间差一秒，按 id 去重完全挡不住
+    await seedLive(store, cipher, '【建设银行】您的验证码是 902431', OCCURRED + 1000)
+    const a = await session.handle(importFrame())
+    expect(ackStatus(a)).toBe('duplicate')
+    expect(store.events.size).toBe(1)
+  })
+
+  it('内容不同就正常入库', async () => {
+    const { session, store, cipher } = await authed()
+    await seedLive(store, cipher, '另一条完全不同的短信', OCCURRED + 1000)
+    await session.handle(importFrame())
+    expect(store.events.size).toBe(2)
+  })
+
+  it('时间隔得远的相同内容不算重复——真的可能收到两条一样的短信', async () => {
+    const { session, store, cipher } = await authed()
+    await seedLive(store, cipher, '【建设银行】您的验证码是 902431', OCCURRED - 60_000)
+    await session.handle(importFrame())
+    expect(store.events.size).toBe(2)
+  })
+
+  it('非导入的事件不走这条检查——实时链路不该为此多付解密开销', async () => {
+    const { session, store, cipher } = await authed()
+    await seedLive(store, cipher, '【建设银行】您的验证码是 902431', OCCURRED + 1000)
+    await session.handle(importFrame({ id: evtId(), extra: {} }))
+    expect(store.events.size).toBe(2)
+  })
+
+  it('重复导入同一条（id 相同）仍然是幂等的', async () => {
+    const { session, store } = await authed()
+    await session.handle(importFrame())
+    const a = await session.handle(importFrame())
+    expect(ackStatus(a)).toBe('duplicate')
+    expect(store.events.size).toBe(1)
+  })
+})

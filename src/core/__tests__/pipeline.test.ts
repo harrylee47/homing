@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { createCipher, generateDek } from '../crypto.js'
 import { registerProvider } from '../notifier.js'
 import { processEvent } from '../pipeline.js'
+import { DEFAULT_TIMEZONE } from '../schedule.js'
 import { ProviderError, type NotifyMessage, type Provider } from '../providers/types.js'
 import { RuleAction, RuleMatch, type MatchableEvent } from '../rules.js'
 import type { Cipher } from '../crypto.js'
@@ -21,7 +22,7 @@ const stub: Provider<{ tag: string }> = {
 }
 registerProvider(stub as unknown as Provider<never>)
 
-const evt = (o: Partial<MatchableEvent> = {}): MatchableEvent => ({
+const evt = (o: Partial<MatchableEvent> & { imported?: boolean } = {}): MatchableEvent & { imported?: boolean } => ({
   device_id: 'dev_1', kind: 'sms', from: '95533',
   content: '【建设银行】您的验证码是 123456，5分钟内有效', occurred_at: 1_700_000_000_000, ...o,
 })
@@ -52,7 +53,7 @@ describe('事件处理管线', () => {
     sent.length = 0
     failTimes = 0
     store.events.set('evt_1', {
-      id: 'evt_1', device_id: 'dev_1', kind: 'sms',
+      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in',
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
     })
@@ -206,7 +207,7 @@ describe('多设备时标出来源', () => {
     sent.length = 0
     failTimes = 0
     store.events.set('evt_1', {
-      id: 'evt_1', device_id: 'dev_1', kind: 'sms',
+      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in',
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
     })
@@ -249,5 +250,129 @@ describe('多设备时标出来源', () => {
     await processEvent({ store, cipher, retryBaseMs: 1 }, 'evt_1', evt())
     expect(sent[0]!.body).toContain('JP-Gateway-01')
     expect(sent[0]!.body).not.toContain('dev_1')
+  })
+})
+
+describe('时区：规则时段与 {time} 占位符', () => {
+  let store: MemoryStore
+  let cipher: Cipher
+
+  const addChannel = async (id: string) => {
+    store.channels.set(id, {
+      id, type: 'stub', name: id,
+      config_enc: await cipher.encrypt(JSON.stringify({ tag: id })),
+      enabled: true, created_at: 0,
+    })
+  }
+  const addRule = (id: string, match: Partial<RuleMatch>, action: Partial<RuleAction>) => {
+    store.rules.set(id, {
+      id, name: id, priority: 10, enabled: true,
+      match_json: JSON.stringify(RuleMatch.parse(match)),
+      action_json: JSON.stringify(RuleAction.parse(action)),
+      created_at: 0,
+    })
+  }
+
+  // 2026-09-15T22:30:00Z = 东京时间次日 07:30
+  const AT = Date.parse('2026-09-15T22:30:00Z')
+
+  beforeEach(async () => {
+    store = new MemoryStore()
+    cipher = await createCipher(generateDek())
+    sent.length = 0
+    store.events.set('evt_tz', {
+      id: 'evt_tz', device_id: 'dev_1', kind: 'sms', direction: 'in',
+      sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
+      enc_ver: 1, occurred_at: AT, received_at: AT, matched_rules: null, created_at: AT,
+    })
+    await addChannel('ch_1')
+  })
+
+  // 未命中时会走兜底并照样推送，所以判断依据是「用的哪条模板」而不是「有没有推」
+  const winRule = () => addRule(
+    'r_win',
+    { time_window: { from: '07:00', to: '09:00' } },
+    { channels: ['ch_1'], template: '命中时段规则', stop_processing: true },
+  )
+
+  it('时段按设置的时区算，不是 UTC', async () => {
+    await store.setSetting('timezone', 'Asia/Tokyo')
+    // 东京 07:00–09:00：UTC 时刻 22:30 落在窗口外，东京时间 07:30 落在窗口内
+    winRule()
+    await processEvent({ store, cipher }, 'evt_tz', evt({ occurred_at: AT }))
+    expect(sent[0]!.body).toBe('命中时段规则')
+  })
+
+  it('没设时区时用默认时区，与计划任务保持一致', async () => {
+    // 两边各写各的默认值就会差 9 小时，且只在没设过时区时发作
+    expect(DEFAULT_TIMEZONE).toBe('Asia/Tokyo')
+    winRule()
+    await processEvent({ store, cipher }, 'evt_tz', evt({ occurred_at: AT }))
+    expect(sent[0]!.body).toBe('命中时段规则')
+  })
+
+  it('显式传入的时区优先于设置', async () => {
+    await store.setSetting('timezone', 'Asia/Tokyo')
+    winRule()
+    await processEvent({ store, cipher, tz: 'UTC' }, 'evt_tz', evt({ occurred_at: AT }))
+    expect(sent[0]!.body).not.toBe('命中时段规则')
+  })
+
+  it('{time} 渲染成设置时区的墙上时间，而不是 ISO 串', async () => {
+    await store.setSetting('timezone', 'Asia/Tokyo')
+    addRule('r_t', {}, { channels: ['ch_1'], template: '{time} {content}', stop_processing: true })
+    await processEvent({ store, cipher }, 'evt_tz', evt({ occurred_at: AT }))
+    expect(sent[0]!.body).toContain('2026-09-16 07:30')
+    expect(sent[0]!.body).not.toContain('T22:30')
+  })
+
+  it('时区名写错时退回 UTC，而不是整条推送断掉', async () => {
+    await store.setSetting('timezone', '火星/奥林匹斯')
+    addRule('r_t', {}, { channels: ['ch_1'], template: '{time}', stop_processing: true })
+    await processEvent({ store, cipher }, 'evt_tz', evt({ occurred_at: AT }))
+    expect(sent[0]!.body).toBe('2026-09-15 22:30')
+  })
+})
+
+describe('历史导入只归档不推送', () => {
+  let store: MemoryStore
+  let cipher: Cipher
+
+  beforeEach(async () => {
+    store = new MemoryStore()
+    cipher = await createCipher(generateDek())
+    sent.length = 0
+    store.events.set('evt_1', {
+      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in',
+      sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
+      enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
+    })
+    store.channels.set('ch_1', {
+      id: 'ch_1', type: 'stub', name: 'ch_1',
+      config_enc: await cipher.encrypt(JSON.stringify({ tag: 'ch_1' })),
+      enabled: true, created_at: 0,
+    })
+  })
+
+  it('导入的记录不会触发推送——否则导入三千条就是三千条通知', async () => {
+    await processEvent({ store, cipher }, 'evt_1', evt({ imported: true }))
+    expect(sent).toHaveLength(0)
+  })
+
+  it('但规则命中照样记录下来，历史里还能按规则筛', async () => {
+    store.rules.set('r1', {
+      id: 'r1', name: '验证码', priority: 10, enabled: true,
+      match_json: JSON.stringify(RuleMatch.parse({ content_contains: ['验证码'] })),
+      action_json: JSON.stringify(RuleAction.parse({ channels: ['ch_1'] })),
+      created_at: 0,
+    })
+    await processEvent({ store, cipher }, 'evt_1', evt({ imported: true }))
+    expect(store.events.get('evt_1')?.matched_rules).toBe('["r1"]')
+    expect(sent).toHaveLength(0)
+  })
+
+  it('实时捕获的照常推送', async () => {
+    await processEvent({ store, cipher }, 'evt_1', evt())
+    expect(sent).toHaveLength(1)
   })
 })

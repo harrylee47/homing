@@ -13,13 +13,19 @@ import {
   defaultAction, evaluate, extractCode, render,
   RuleAction, RuleMatch, type MatchableEvent, type Rule,
 } from './rules.js'
+import { DEFAULT_TIMEZONE, formatWallTime, offsetMs } from './schedule.js'
 import type { Store } from './store.js'
 
 export interface PipelineDeps {
   store: Store
   cipher: Cipher
-  /** 本地时区偏移（分钟），用于规则的 time_window 判断 */
-  tzOffsetMin?: number
+  /**
+   * 时区名。规则的 time_window 与模板的 {time} 都按它算。
+   *
+   * 不传偏移量而传时区名：偏移量随夏令时变化，写死一个值到了换季那天就错，
+   * 而「错」的表现是夜间免打扰规则在错误的时段生效。
+   */
+  tz?: string
   /** 重试退避基数，测试用 */
   retryBaseMs?: number
   /** 控制台地址，用于生成通知里的深链。未配置则通知不带跳转。 */
@@ -32,7 +38,15 @@ export interface PipelineDeps {
 export async function processEvent(
   deps: PipelineDeps,
   eventId: string,
-  e: MatchableEvent,
+  e: MatchableEvent & {
+    /**
+     * 历史导入的记录：网关启用前手机里就有的。
+     *
+     * 照常走推送的话，导入三千条旧短信就是三千条通知一次性砸到手机上。
+     * 所以只归档、记规则命中，不推送。
+     */
+    imported?: boolean | undefined
+  },
 ): Promise<void> {
   try {
     // 用 allSettled 而非 all：all 在第一个 Promise 失败后，其余 Promise 的
@@ -59,7 +73,10 @@ export async function processEvent(
     const deviceName = active.find((d) => d.id === e.device_id)?.name ?? e.device_id
     const showDevice = active.length > 1
 
-    const result = evaluate(rules, e, deps.tzOffsetMin ?? 0)
+    // 时区取设置里的那一份，与计划任务共用同一个值，避免两处各按各的算
+    const tz = deps.tz ?? (await deps.store.getSetting('timezone').catch(() => null)) ?? DEFAULT_TIMEZONE
+    const tzOffsetMin = safeOffsetMin(e.occurred_at, tz)
+    const result = evaluate(rules, e, tzOffsetMin)
 
     // 无规则命中走兜底：推送到所有启用渠道并归档。
     // 静默丢弃就是漏报，而漏报是这套系统唯一不能接受的失败（计划 §14）。
@@ -69,6 +86,12 @@ export async function processEvent(
 
     const matchedIds = result.matched.map((r) => r.id)
     await deps.store.setMatchedRules(eventId, matchedIds)
+
+    // 规则照常跑（历史记录也要能按规则筛），但到此为止，不推送
+    if (e.imported) {
+      log.info('历史导入，仅归档不推送', { event_id: eventId, matched: matchedIds })
+      return
+    }
 
     const targetIds = result.matched.length > 0 ? result.channels : action.channels
     const targets = channels.filter((c) => targetIds.includes(c.id))
@@ -104,7 +127,7 @@ export async function processEvent(
         sender: e.from,
         content: e.content,
         code: code ?? '',
-        time: new Date(e.occurred_at).toISOString(),
+        time: safeFormatTime(e.occurred_at, tz),
         // 模板里的 {device} 给设备名而不是 id：id 是给机器看的
         device: deviceName,
       }),
@@ -225,4 +248,22 @@ async function loadChannels(deps: PipelineDeps): Promise<ChannelConfig[]> {
     }
   }
   return out
+}
+
+/** 时区名来自用户输入，写错了不该让推送整条断掉——退回 UTC。 */
+function safeOffsetMin(epoch: number, tz: string): number {
+  try {
+    return offsetMs(epoch, tz) / 60_000
+  } catch {
+    log.warn('时区无效，按 UTC 处理', { tz })
+    return 0
+  }
+}
+
+function safeFormatTime(epoch: number, tz: string): string {
+  try {
+    return formatWallTime(epoch, tz)
+  } catch {
+    return formatWallTime(epoch, 'UTC')
+  }
 }
