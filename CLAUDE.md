@@ -14,7 +14,7 @@ pnpm exec tsc --noEmit            # 类型检查
 pnpm exec vitest run              # 全部测试
 pnpm exec vitest run src/core/__tests__/rules.test.ts   # 单个文件
 node scripts/check-core-purity.mjs                      # core 层纯度（硬约束①）
-pnpm run deploy                   # 检查 → 同步 → 构建 → 启动 → 健康检查
+SMSGW_DEPLOY_HOST=<ssh别名> pnpm run deploy   # 检查 → 同步 → 构建 → 启动 → 健康检查
 
 cd agent
 ./gradlew :app:assembleDebug      # 构建 APK
@@ -148,6 +148,9 @@ OkHttp 在收到对端关闭帧时先调 `onClosing`，**客户端必须回应�
 用 `pnpm run deploy`（`scripts/deploy.sh`），不要手敲 rsync + docker compose。
 
 脚本会先本地跑类型检查、core 纯度检查与测试，再同步构建，**构建失败即中止并原样打印错误**。手敲时容易用 `tail -1` 截输出，结果 tsc 报错被吞掉、显示「部署成功」但跑的还是旧镜像——这比 bug 本身更糟，你以为修好了。
+
+服务器上的 `.env` 只存在于服务器，rsync 的 `--delete` 会把它删掉——
+排除列表里必须有它，否则部署完容器起不来，报「缺环境变量」。
 
 `pnpm` 有若干内置命令会吃掉同名 script：`audit`、`deploy` 都踩过。自定义脚本起名避开，或用 `pnpm run <name>`。
 
@@ -389,3 +392,18 @@ Bark 通知点进来的可能是几天前那条，而 Bark 深链恰恰是这个
    表现为「功能开着但一条都不报」。短信库不严格，所以 SentSmsObserver 用同样写法没事。
 2. 记录为空时起始 id 要取 **0 不是 -1**：-1 会让「> lastId」永远筛不出东西。
    而真的读不到库时要**不启动**，不能按 0 起步——那会把多年的通话历史一次性补报上去。
+
+## 开源仓库
+
+https://github.com/rikouu/smsgateway（公开，AGPL-3.0）。
+
+发布 APK 的签名密钥**不在仓库里**，在 `~/.smsgateway-release.properties`（600 权限）。
+丢了就无法覆盖安装已发布的版本，用户只能卸载重装。构建发布包：
+
+```bash
+cd agent && set -a && . ~/.smsgateway-release.properties && set +a
+./gradlew :app:assembleRelease
+```
+
+提交到公开仓库前先扫一遍：网关域名、服务器别名、token 都不能进去。
+个人部署参数一律走环境变量（`SMSGW_DEPLOY_HOST`、`GW_BASE_URL`）。
