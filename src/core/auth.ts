@@ -153,6 +153,15 @@ export const totpUri = (secret: string, account: string, issuer = 'SMS Gateway')
 /** 会话超时 30 分钟（计划 §6.3）。 */
 export const SESSION_TTL_MS = 30 * 60 * 1000
 
+/**
+ * 「保持登录」的有效期。
+ *
+ * 30 分钟对这个工具太短了：你多半是收到验证码才来看一眼，两次之间隔几小时，
+ * 于是每次都要重新输口令加 TOTP——摩擦大到让人想把凭证塞进通知链接里，
+ * 那才是真正危险的做法。给一个明确的、用户自己勾选的长会话，比那个安全得多。
+ */
+export const TRUSTED_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
 export function generateSessionToken(): string {
   const b = crypto.getRandomValues(new Uint8Array(32))
   return toHex(b)

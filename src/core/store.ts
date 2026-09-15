@@ -138,6 +138,15 @@ export interface SessionRecord {
   created_at: number
   expires_at: number
   revoked: boolean
+  /**
+   * 用户勾了「在这台设备上保持登录」。
+   *
+   * 两个后果，都是用户明确换来的：有效期从 30 分钟变成 30 天；
+   * **不再校验 IP 段**——手机在 WiFi 与流量之间切换、换个基站，IP 段就变了，
+   * 严格绑定的话一天要重登好几次，而这正是这个选项要解决的问题。
+   * UA 绑定仍然保留。
+   */
+  trusted: boolean
 }
 
 /**

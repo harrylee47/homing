@@ -10,7 +10,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   generateSessionToken, generateTotpSecret, hashPassword,
-  LOGIN_LOCKOUT_MS, LOGIN_MAX_ATTEMPTS, SESSION_TTL_MS,
+  LOGIN_LOCKOUT_MS, LOGIN_MAX_ATTEMPTS, SESSION_TTL_MS, TRUSTED_SESSION_TTL_MS,
   totpUri, validatePassword, verifyPassword, verifyTotp,
 } from '../../core/auth.js'
 import { hashToken, timingSafeEqual } from '../../core/crypto.js'
@@ -244,6 +244,11 @@ route('POST', '/api/auth/login', async ({ req, res, body, deps, ip }) => {
     await deps.store.setSetting(S_KNOWN_IPS, [...known, prefix].slice(-10).join(','))
   }
 
+  // 「保持登录」是用户自己做的取舍：会话从 30 分钟变 30 天，且不再绑定 IP 段。
+  // 不给这个选项的话，摩擦会大到让人想把凭证塞进通知链接里——那才是真正危险的。
+  const trusted = (body as { trust?: boolean })?.trust === true
+  const ttl = trusted ? TRUSTED_SESSION_TTL_MS : SESSION_TTL_MS
+
   const token = generateSessionToken()
   const t = now()
   await deps.store.createSession({
@@ -251,11 +256,15 @@ route('POST', '/api/auth/login', async ({ req, res, body, deps, ip }) => {
     ua_hash: await hashToken(req.headers['user-agent'] ?? ''),
     ip_prefix: ipPrefix(ip),
     created_at: t,
-    expires_at: t + SESSION_TTL_MS,
+    expires_at: t + ttl,
     revoked: false,
+    trusted,
   })
-  await deps.store.audit({ actor: 'admin', action: 'auth.login', detail: null, ip, created_at: t })
-  json(res, 200, { token, expires_in: Math.floor(SESSION_TTL_MS / 1000) })
+  await deps.store.audit({
+    actor: 'admin', action: 'auth.login',
+    detail: trusted ? '并信任这台设备 30 天' : null, ip, created_at: t,
+  })
+  json(res, 200, { token, expires_in: Math.floor(ttl / 1000) })
 }, false)
 
 route('POST', '/api/auth/logout', async ({ req, res, deps }) => {
@@ -1573,11 +1582,13 @@ async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string, scope:
       log.warn('会话 UA 不匹配，已拒绝', { ip })
       return false
     }
-    if (sess.ip_prefix !== ipPrefix(ip)) {
+    // 受信任的会话不校验 IP 段：手机在 WiFi 与流量之间切换、换个基站，
+    // IP 段就变了，严格绑定会让「保持登录」名存实亡。UA 绑定仍然保留。
+    if (!sess.trusted && sess.ip_prefix !== ipPrefix(ip)) {
       log.warn('会话 IP 段不匹配，已拒绝', { ip })
       return false
     }
-    await deps.store.touchSession(sess.token_hash, t + SESSION_TTL_MS)
+    await deps.store.touchSession(sess.token_hash, t + (sess.trusted ? TRUSTED_SESSION_TTL_MS : SESSION_TTL_MS))
     return true
   }
 

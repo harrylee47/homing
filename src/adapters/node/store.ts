@@ -57,6 +57,7 @@ const MIGRATIONS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_id, occurred_at DESC)`,
   `ALTER TABLE events ADD COLUMN direction TEXT`,
   `ALTER TABLE devices ADD COLUMN net_json TEXT`,
+  `ALTER TABLE sessions ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0`,
   `CREATE TABLE IF NOT EXISTS channels (
      id         TEXT PRIMARY KEY,
      type       TEXT NOT NULL,
@@ -507,15 +508,15 @@ export class SqliteStore implements Store {
 
   async createSession(s: SessionRecord): Promise<void> {
     this.db
-      .prepare('INSERT INTO sessions (token_hash, ua_hash, ip_prefix, created_at, expires_at, revoked) VALUES (?, ?, ?, ?, ?, 0)')
-      .run(s.token_hash, s.ua_hash, s.ip_prefix, s.created_at, s.expires_at)
+      .prepare('INSERT INTO sessions (token_hash, ua_hash, ip_prefix, created_at, expires_at, revoked, trusted) VALUES (?, ?, ?, ?, ?, 0, ?)')
+      .run(s.token_hash, s.ua_hash, s.ip_prefix, s.created_at, s.expires_at, s.trusted ? 1 : 0)
   }
 
   async getSession(tokenHash: string): Promise<SessionRecord | null> {
     const row = this.db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(tokenHash) as
-      | (Omit<SessionRecord, 'revoked'> & { revoked: number })
+      | (Omit<SessionRecord, 'revoked' | 'trusted'> & { revoked: number; trusted: number })
       | undefined
-    return row ? { ...row, revoked: row.revoked === 1 } : null
+    return row ? { ...row, revoked: row.revoked === 1, trusted: row.trusted === 1 } : null
   }
 
   async touchSession(tokenHash: string, expiresAt: number): Promise<void> {

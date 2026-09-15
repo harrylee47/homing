@@ -6,6 +6,8 @@ const nav = $('#nav')
 // ── 状态 ────────────────────────────────────────────────────
 
 const TOKEN_KEY = 'gw_token'
+/** 登录前想去的那一页，登录成功后跳回去 */
+const BACK_KEY = 'gw_back'
 let token = localStorage.getItem(TOKEN_KEY) || ''
 
 const setToken = (t) => {
@@ -30,8 +32,12 @@ async function api(path, opts = {}) {
   try { data = text ? JSON.parse(text) : null } catch { /* 非 JSON 响应 */ }
 
   if (res.status === 404 && token && !opts.allow404) {
-    // 未认证一律返回 404（不确认接口存在），所以这里等同于「会话失效」
+    // 未认证一律返回 404（不确认接口存在），所以这里等同于「会话失效」。
+    // 记下当前页：重新登录后回到这里，而不是把人丢回总览
     setToken('')
+    if (location.pathname !== '/login') {
+      sessionStorage.setItem(BACK_KEY, location.pathname + location.search)
+    }
     go('/login')
     throw new Error('会话已失效，请重新登录')
   }
@@ -330,7 +336,11 @@ async function route() {
     if (!st?.initialized) return setup()
   } catch { /* 网络异常时继续尝试渲染，由各视图报错 */ }
 
-  if (!token && path !== '/login') return login()
+  if (!token && path !== '/login') {
+    // 记下想去哪，登录完直接回去（Telegram 通知里的按钮就是这条路）
+    sessionStorage.setItem(BACK_KEY, path + location.search)
+    return login()
+  }
 
   for (const [re, view] of routes) {
     const m = path.match(re)
@@ -418,13 +428,25 @@ function setupTotp(r) {
 
 function login() {
   nav.hidden = true
+  // 从别处跳来的（比如 Telegram 通知里的按钮）：登录完要回到那一页，
+  // 而不是把人丢到总览让他自己再找一遍
+  const back = location.pathname !== '/login' ? location.pathname + location.search : null
+  if (back) sessionStorage.setItem(BACK_KEY, back)
+
   render(`
     ${brand('把消息带到你身边')}
+    ${back ? '<div class="card tight muted">登录后回到你要看的那条消息。</div>' : ''}
     <div class="card">
       <label>口令</label>
       <input id="pw" type="password" autocomplete="current-password">
       <label>两步验证码</label>
       <input id="code" inputmode="numeric" maxlength="6" class="mono" style="letter-spacing:4px">
+      <label style="display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-size:14px">
+        <input type="checkbox" id="trust" style="width:auto" checked>
+        <span>在这台设备上保持登录 30 天</span>
+      </label>
+      <div class="muted">勾选后这台设备 30 天内不用再输，换 WiFi / 流量也不掉线。
+      公用设备请取消勾选。任何时候都可以在「设置 → 会话 → 全端下线」一次性作废。</div>
       <div class="btnrow"><button id="go">登录</button></div>
       <div id="err" class="err-text"></div>
     </div>`)
@@ -434,10 +456,13 @@ function login() {
     try {
       const r = await api('/auth/login', {
         method: 'POST', allow404: true,
-        body: { password: $('#pw').value, code: $('#code').value },
+        body: { password: $('#pw').value, code: $('#code').value, trust: $('#trust').checked },
       })
       setToken(r.token)
-      go('/')
+      // 回到当初想去的那一页
+      const to = sessionStorage.getItem(BACK_KEY)
+      sessionStorage.removeItem(BACK_KEY)
+      go(to || '/')
     } catch (e) {
       $('#err').textContent = e.message
       $('#go').disabled = false

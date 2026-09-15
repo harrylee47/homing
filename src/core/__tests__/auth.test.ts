@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   base32Decode, base32Encode, currentTotp, generateSessionToken,
-  generateTotpSecret, hashPassword, totpUri, validatePassword, verifyPassword, verifyTotp,
+  generateTotpSecret, hashPassword, SESSION_TTL_MS, totpUri, TRUSTED_SESSION_TTL_MS,
+  validatePassword, verifyPassword, verifyTotp,
 } from '../auth.js'
 
 describe('口令强度', () => {
@@ -154,5 +155,16 @@ describe('会话令牌', () => {
     const a = generateSessionToken()
     expect(a).toMatch(/^[0-9a-f]{64}$/)
     expect(generateSessionToken()).not.toBe(a)
+  })
+})
+
+describe('受信任会话的有效期', () => {
+  it('普通会话 30 分钟，受信任的 30 天', () => {
+    expect(SESSION_TTL_MS).toBe(30 * 60 * 1000)
+    expect(TRUSTED_SESSION_TTL_MS).toBe(30 * 24 * 60 * 60 * 1000)
+  })
+
+  it('受信任会话明显更长——否则这个选项没有意义', () => {
+    expect(TRUSTED_SESSION_TTL_MS / SESSION_TTL_MS).toBeGreaterThan(100)
   })
 })
