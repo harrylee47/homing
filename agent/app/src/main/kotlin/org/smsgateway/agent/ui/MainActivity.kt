@@ -148,7 +148,12 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.SEND_SMS,
             Manifest.permission.READ_PHONE_STATE,
             Manifest.permission.READ_CALL_LOG,
+            // 设备找回用。不授予也不影响短信转发，只是定位功能不可用
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.ACCESS_FINE_LOCATION,
         )
+        // 后台定位必须单独申请，且系统要求先拿到前台定位权限。
+        // 放在同一批里申请会被系统直接拒绝。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             perms += Manifest.permission.POST_NOTIFICATIONS
         }

@@ -13,7 +13,7 @@ import { dispatch } from '../../core/notifier.js'
 import { runTask as runOneTask, tick as tasksTick, type ParsedTask } from '../../core/tasks.js'
 import { checkDevices } from '../../core/monitor.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
-import type { DownstreamFrame } from '../../core/protocol.js'
+import { LocationResult, type DownstreamFrame } from '../../core/protocol.js'
 import { PROVIDERS } from '../../core/notifier.js'
 import { TelegramConfig } from '../../core/providers/telegram.js'
 import { barkAccess, getOrCreateBotToken, handleApi, isInitialized, timezone } from './api.js'
@@ -44,6 +44,7 @@ const wss = createWsServer({
   store, cipher, hub,
   heartbeatSec: DEFAULT_AGENT_CONFIG.heartbeat_sec,
   baseUrl: cfg.baseUrl,
+  onQueryResult,
 })
 
 /**
@@ -72,12 +73,52 @@ async function alertLoginLockout(ip: string, attempts: number): Promise<void> {
   }
 }
 
+/**
+ * 等待中的查询指令。
+ *
+ * 进程内状态，但完全是瞬时的：超时 30 秒，丢失的后果只是这次请求超时，
+ * 用户重试即可，不涉及任何数据。
+ */
+const pendingQueries = new Map<string, (r: { ok: boolean; detail: Record<string, unknown> | null; error: string | null }) => void>()
+
+function onQueryResult(cmdId: string, ok: boolean, detail: Record<string, unknown> | null, error: string | null): void {
+  const resolve = pendingQueries.get(cmdId)
+  if (!resolve) return
+  pendingQueries.delete(cmdId)
+  resolve({ ok, detail, error })
+}
+
+/** 向设备请求一次定位，等待回执或超时。 */
+async function locateDevice(deviceId: string): Promise<{ ok: boolean; location?: unknown; error?: string }> {
+  const cmdId = `cmd_${crypto.randomUUID()}`
+  const frame = makeFrame('cmd', { cmd_id: cmdId, action: 'get_location', args: {} }) as DownstreamFrame
+  if (!hub.send(deviceId, frame)) return { ok: false, error: '设备离线' }
+
+  const result = await new Promise<{ ok: boolean; detail: Record<string, unknown> | null; error: string | null }>((resolve) => {
+    pendingQueries.set(cmdId, resolve)
+    // GPS 冷启动可能要十几秒，Agent 侧自己也有 20 秒上限，这里留足余量
+    setTimeout(() => {
+      if (pendingQueries.delete(cmdId)) resolve({ ok: false, detail: null, error: '设备未在 40 秒内返回位置' })
+    }, 40_000)
+  })
+
+  if (!result.ok) return { ok: false, error: result.error ?? '定位失败' }
+
+  const parsed = LocationResult.safeParse(result.detail)
+  if (!parsed.success) return { ok: false, error: '设备返回的位置格式不正确' }
+
+  // 位置与短信正文同等敏感，加密落库
+  await store.setDeviceLocation(deviceId, await cipher.encrypt(JSON.stringify(parsed.data)), Date.now())
+  return { ok: true, location: parsed.data }
+}
+
 const apiDeps = {
   store, cipher, hub, adminToken: cfg.adminToken,
   barkUpstream: cfg.barkUpstream,
   trustedProxy: cfg.trustedProxy,
   // apiDeps 在 taskDeps 之前定义，用函数包一层避免 TDZ
   runTask: (task: ParsedTask) => runTaskNow(task),
+  locateDevice,
   barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
   onUnknownIpLogin: (ip: string) => void (async () => {

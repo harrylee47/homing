@@ -196,7 +196,7 @@ describe('多设备时标出来源', () => {
   const addDevice = (id: string, name: string) => {
     store.devices.set(id, {
       id, name, token_hash: 'h', status: 'offline',
-      last_seen_at: null, battery: null, charging: null, app_version: null, created_at: 0,
+      last_seen_at: null, battery: null, charging: null, location_enc: null, location_at: null, app_version: null, created_at: 0,
     })
   }
 

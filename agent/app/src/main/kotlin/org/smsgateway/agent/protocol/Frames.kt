@@ -98,9 +98,21 @@ data class EventPayload(
 @Serializable
 data class CmdResultPayload(
     @SerialName("cmd_id") val cmdId: String,
+    /** accepted / sent / delivered（发短信）｜ done（查询类）｜ failed */
     val status: String,
     val error: String? = null,
     val detail: JsonElement? = null,
+)
+
+/** get_location 的回执内容。位置与短信正文同等敏感，服务端加密落库。 */
+@Serializable
+data class LocationResult(
+    val lat: Double,
+    val lng: Double,
+    val accuracy: Float? = null,
+    val provider: String,
+    val time: Long,
+    val cached: Boolean = false,
 )
 
 @Serializable

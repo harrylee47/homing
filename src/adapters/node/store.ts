@@ -37,6 +37,8 @@ const MIGRATIONS: string[] = [
   // 增量迁移：老库没有这一列。SQLite 没有 IF NOT EXISTS 形式的 ADD COLUMN，
   // 由 migrate() 捕获重复添加的错误
   `ALTER TABLE devices ADD COLUMN charging INTEGER`,
+  `ALTER TABLE devices ADD COLUMN location_enc BLOB`,
+  `ALTER TABLE devices ADD COLUMN location_at INTEGER`,
   `CREATE TABLE IF NOT EXISTS events (
      id            TEXT PRIMARY KEY,
      device_id     TEXT NOT NULL REFERENCES devices(id),
@@ -190,6 +192,7 @@ export class SqliteStore implements Store {
       )
       .run(d.id, d.name, d.token_hash, d.status, d.last_seen_at, d.battery,
         d.charging === null ? null : d.charging ? 1 : 0, d.app_version, d.created_at)
+    // location_* 由 setDeviceLocation 写入，创建时留空
   }
 
   async touchDevice(
@@ -388,6 +391,10 @@ export class SqliteStore implements Store {
 
   async deleteTask(id: string): Promise<void> {
     this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
+  }
+
+  async setDeviceLocation(id: string, enc: Uint8Array, at: number): Promise<void> {
+    this.db.prepare('UPDATE devices SET location_enc = ?, location_at = ? WHERE id = ?').run(enc, at, id)
   }
 
   async setTaskEnabled(id: string, enabled: boolean): Promise<void> {

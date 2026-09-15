@@ -94,14 +94,20 @@ export const DeviceId = z.string().min(3).max(64).regex(/^dev_[A-Za-z0-9_-]+$/)
 export const EventKind = z.enum(['sms', 'call', 'notification'])
 export type EventKind = z.infer<typeof EventKind>
 
-export const CmdAction = z.enum(['send_sms', 'query_status', 'reboot_service', 'sync_config'])
+export const CmdAction = z.enum(['send_sms', 'query_status', 'reboot_service', 'sync_config', 'get_location'])
 export type CmdAction = z.infer<typeof CmdAction>
 
 /**
- * 发送状态机（计划 §5.5）：accepted → sent → delivered，任一步可转 failed。
- * 每一步都回传，控制台上可见完整过程。
+ * 指令状态机。
+ *
+ * 发短信走 accepted → sent → delivered（计划 §5.5），每一步都回传，
+ * 控制台上可见完整过程。
+ *
+ * 查询类指令（如 get_location）没有「发出/送达」之分，走
+ * accepted → done，结果放在 cmd_result 的 detail 里。
+ * 任一步都可转 failed。
  */
-export const CmdStatus = z.enum(['accepted', 'sent', 'delivered', 'failed'])
+export const CmdStatus = z.enum(['accepted', 'sent', 'delivered', 'done', 'failed'])
 export type CmdStatus = z.infer<typeof CmdStatus>
 
 // ─────────────────────────────────────────────────────────────
@@ -240,6 +246,25 @@ export const CmdPayload = z.object({
   action: CmdAction,
   args: z.record(z.string(), z.unknown()).default({}),
 })
+
+/**
+ * action=get_location 的回执结构。
+ *
+ * 位置是敏感信息，与短信正文同等对待：落库加密、日志脱敏、每次查询写审计。
+ */
+export const LocationResult = z.object({
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  /** 水平精度，米 */
+  accuracy: z.number().nonnegative().nullable(),
+  /** gps / network / passive / fused */
+  provider: z.string().max(32),
+  /** 定位时刻。可能明显早于回执时刻——那说明返回的是缓存位置 */
+  time: z.number().int().nonnegative(),
+  /** 是否为系统缓存的最后已知位置，而非本次实时定位 */
+  cached: z.boolean().default(false),
+})
+export type LocationResult = z.infer<typeof LocationResult>
 
 /** action=send_sms 时 args 的结构。 */
 export const SendSmsArgs = z.object({

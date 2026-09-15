@@ -28,6 +28,8 @@ export interface SessionDeps {
   config?: AgentConfig
   /** 可注入，便于测试 */
   now?: () => number
+  /** 查询类指令的结果回调（如 get_location）。 */
+  onQueryResult?: ((cmdId: string, ok: boolean, detail: Record<string, unknown> | null, error: string | null) => void) | undefined
   /** 事件入库后的后续处理（规则匹配 + 推送）。测试可替换为空实现。 */
   onStored?: (eventId: string, e: { device_id: string; kind: EventKindT; from: string; content: string; occurred_at: number }) => void
 }
@@ -93,17 +95,32 @@ export class DeviceSession {
   }
 
   /**
-   * 指令回执：推进发送任务状态机。
+   * 指令回执。
    *
-   * cmd_id 即 outbound id —— 两者一一对应，不需要额外的映射表，
+   * 发短信类：cmd_id 即 outbound id —— 两者一一对应，不需要额外的映射表，
    * 也就不存在「服务端重启后映射丢失」的问题（硬约束④）。
+   *
+   * 查询类（get_location）：没有对应的 outbound 记录，结果通过回调交给
+   * 等待中的请求；status='done' 只出现在这类指令上。
    */
   private async onCmdResult(p: {
     cmd_id: string
-    status: 'accepted' | 'sent' | 'delivered' | 'failed'
+    status: 'accepted' | 'sent' | 'delivered' | 'done' | 'failed'
     error: string | null
+    detail?: Record<string, unknown> | null
   }): Promise<SessionAction> {
     log.info('收到指令回执', { device_id: this.deviceId, cmd_id: p.cmd_id, status: p.status, error: p.error })
+
+    // 查询类指令没有对应的 outbound 记录，结果直接交给等待方
+    if (p.status === 'done') {
+      this.deps.onQueryResult?.(p.cmd_id, true, p.detail ?? null, p.error)
+      return NONE
+    }
+    // 查询类失败同样要通知等待方，否则请求只能等超时
+    if (p.status === 'failed') {
+      this.deps.onQueryResult?.(p.cmd_id, false, p.detail ?? null, p.error)
+    }
+
     await this.deps.store.advanceOutbound(p.cmd_id, p.status, p.error, this.now())
     return NONE
   }

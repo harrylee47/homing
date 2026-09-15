@@ -19,6 +19,8 @@ export interface WsServerDeps {
   hub: Hub
   heartbeatSec: number
   baseUrl: string | null
+  /** 查询类指令的结果回调 */
+  onQueryResult?: ((cmdId: string, ok: boolean, detail: Record<string, unknown> | null, error: string | null) => void) | undefined
 }
 
 /**
@@ -38,6 +40,7 @@ export function createWsServer(deps: WsServerDeps): WebSocketServer {
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const session = new DeviceSession({
       store: deps.store, cipher: deps.cipher, hub: deps.hub, baseUrl: deps.baseUrl,
+      onQueryResult: deps.onQueryResult,
     })
     let alive = true
     let seq = 0

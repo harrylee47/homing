@@ -28,6 +28,10 @@ export class MemoryStore implements Store {
     if (d) this.devices.set(id, { ...d, ...patch })
   }
   async revokeDevice(id: string) { await this.touchDevice(id, { status: 'revoked' }) }
+  async setDeviceLocation(id: string, enc: Uint8Array, at: number) {
+    const d = this.devices.get(id)
+    if (d) this.devices.set(id, { ...d, location_enc: enc, location_at: at })
+  }
 
   async insertEvent(e: StoredEvent): Promise<InsertEventResult> {
     if (this.events.has(e.id)) return 'duplicate'

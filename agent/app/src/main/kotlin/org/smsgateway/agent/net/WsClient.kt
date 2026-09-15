@@ -20,6 +20,7 @@ import org.smsgateway.agent.BuildConfig
 import org.smsgateway.agent.db.AgentDatabase
 import org.smsgateway.agent.db.PendingEvent
 import org.smsgateway.agent.protocol.*
+import org.smsgateway.agent.location.Locator
 import org.smsgateway.agent.sms.SmsSender
 import org.smsgateway.agent.util.Log
 import org.smsgateway.agent.util.Prefs
@@ -273,12 +274,42 @@ class WsClient(
     }
 
     private val smsSender by lazy { SmsSender(ctx) }
+    private val locator by lazy { Locator(ctx) }
 
     private fun onCommand(webSocket: WebSocket, cmd: CmdPayload) {
         Log.i("收到指令 ${cmd.action} cmd_id=${cmd.cmdId}")
         when (cmd.action) {
             "send_sms" -> onSendSms(cmd)
+            "get_location" -> onGetLocation(cmd)
             else -> report(cmd.cmdId, "failed", "尚未实现：${cmd.action}")
+        }
+    }
+
+    /**
+     * 按需定位，用于设备找回。只在收到指令时执行一次，不做持续定位。
+     */
+    private fun onGetLocation(cmd: CmdPayload) {
+        report(cmd.cmdId, "accepted", null)
+        locator.locate { result, error ->
+            if (result == null) {
+                report(cmd.cmdId, "failed", error ?: "定位失败")
+                return@locate
+            }
+            // 日志里不记坐标：位置和短信正文同等敏感
+            Log.i("定位完成 cmd=${cmd.cmdId} provider=${result.provider} cached=${result.cached}")
+            val detail = Protocol.json.encodeToJsonElement(
+                LocationResult.serializer(),
+                LocationResult(
+                    lat = result.lat, lng = result.lng, accuracy = result.accuracy,
+                    provider = result.provider, time = result.time, cached = result.cached,
+                ),
+            )
+            val socket = ws
+            if (socket == null) {
+                Log.w("定位结果无法上报（连接已断）cmd=${cmd.cmdId}")
+                return@locate
+            }
+            socket.send(frame("cmd_result", CmdResultPayload(cmd.cmdId, "done", null, detail)))
         }
     }
 

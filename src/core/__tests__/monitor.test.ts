@@ -24,7 +24,7 @@ describe('掉线告警', () => {
     store.devices.set('dev_1', {
       id: 'dev_1', name: 'JP-Gateway-01', token_hash: 'h', status: 'offline',
       last_seen_at: NOW - (OFFLINE_ALERT_SEC + 60) * 1000,
-      battery: 50, charging: null, app_version: '0.1.0', created_at: 0, ...over,
+      battery: 50, charging: null, location_enc: null, location_at: null, app_version: '0.1.0', created_at: 0, ...over,
     } as never)
   }
 
@@ -121,7 +121,7 @@ describe('电量告警', () => {
   const dev = (over: Record<string, unknown> = {}) => {
     store.devices.set('dev_1', {
       id: 'dev_1', name: 'JP-Gateway-01', token_hash: 'h', status: 'online',
-      last_seen_at: Date.now(), battery: 50, charging: false,
+      last_seen_at: Date.now(), battery: 50, charging: false, location_enc: null, location_at: null,
       app_version: '0.1.0', created_at: 0, ...over,
     } as never)
   }

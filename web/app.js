@@ -970,7 +970,13 @@ async function devices() {
               <span class="muted mono" style="font-size:11px">${esc(d.id)}</span>
               <span class="muted">心跳 ${ago(d.last_seen_at)}${battery(d)}</span>
             </div>
-            ${d.status !== 'revoked' ? `<button class="danger sm" data-revoke="${esc(d.id)}">吊销</button>` : '<span class="badge err">已吊销</span>'}
+            <div style="display:flex;gap:6px;flex-direction:column;align-items:flex-end">
+              ${d.status === 'online' ? `<button class="ghost sm" data-locate="${esc(d.id)}">定位</button>` : ''}
+              ${d.status !== 'revoked' ? `<button class="danger sm" data-revoke="${esc(d.id)}">吊销</button>` : '<span class="badge err">已吊销</span>'}
+            </div>
+          </div>
+          <div class="muted" data-loc="${esc(d.id)}" style="margin-top:6px">
+            ${d.has_location ? `上次定位 ${ago(d.location_at)} · <a href="#" data-showloc="${esc(d.id)}">查看</a>` : ''}
           </div>
         </div>`).join('')}</div>` : '<div class="card muted">还没有设备。</div>'}
       <h2>添加设备</h2>
@@ -987,6 +993,46 @@ async function devices() {
           <div class="code mono">${esc(r.code)}</div>
           <div class="muted" style="text-align:center">在 Agent 里输入这个配对码，${Math.floor(r.ttl_sec / 60)} 分钟内有效，只能用一次。</div>`
       } catch (e) { $('#code').innerHTML = `<div class="err-text">${esc(e.message)}</div>` }
+    }
+
+    /**
+     * 定位用于设备找回。每次请求都会写审计——能定位这台设备的人也能看到
+     * 你全部的验证码，至少要留下谁在什么时候查过的痕迹。
+     */
+    const showLocation = (id, loc) => {
+      const out = app.querySelector(`[data-loc="${id}"]`)
+      const acc = loc.accuracy != null ? `±${Math.round(loc.accuracy)} 米` : '精度未知'
+      const when = new Date(loc.time).toLocaleString('zh-CN', { hour12: false })
+      const map = `https://www.google.com/maps?q=${loc.lat},${loc.lng}`
+      out.innerHTML = `
+        <div class="mono" style="font-size:12px">${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}</div>
+        <div>${esc(loc.provider)} · ${acc} · ${esc(when)}${loc.cached ? ' · <b>缓存位置</b>' : ''}</div>
+        <a href="${map}" target="_blank" rel="noreferrer noopener">在地图中打开</a>`
+    }
+
+    for (const b of app.querySelectorAll('[data-locate]')) {
+      b.onclick = async () => {
+        const id = b.dataset.locate
+        const out = app.querySelector(`[data-loc="${id}"]`)
+        out.textContent = '定位中…（GPS 冷启动可能要十几秒）'
+        b.disabled = true
+        try {
+          showLocation(id, await api(`/devices/${id}/locate`, { method: 'POST' }))
+        } catch (e) {
+          out.innerHTML = `<span class="badge err">${esc(e.message)}</span>`
+        }
+        b.disabled = false
+      }
+    }
+
+    for (const a of app.querySelectorAll('[data-showloc]')) {
+      a.onclick = async (ev) => {
+        ev.preventDefault()
+        const id = a.dataset.showloc
+        try {
+          showLocation(id, await api(`/devices/${id}/location`))
+        } catch (e) { toast(e.message) }
+      }
     }
 
     for (const b of app.querySelectorAll('[data-revoke]')) {

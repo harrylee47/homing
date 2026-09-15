@@ -47,6 +47,8 @@ export interface ApiDeps {
   onUnknownIpLogin?: ((ip: string) => void) | undefined
   /** 立即执行一个计划任务（忽略排期），用于控制台的「立即测试」。 */
   runTask?: ((task: ParsedTask) => Promise<{ sent: boolean; reason?: string }>) | undefined
+  /** 向设备请求一次定位 */
+  locateDevice?: ((deviceId: string) => Promise<{ ok: boolean; location?: unknown; error?: string }>) | undefined
   /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
   trustedProxy?: string | null
 }
@@ -292,6 +294,8 @@ route('GET', '/api/devices', async ({ res, deps }) => {
       // 以实际连接状态为准：库里的 status 在服务端异常退出后可能是陈旧的
       status: d.status === 'revoked' ? 'revoked' : online.has(d.id) ? 'online' : 'offline',
       last_seen_at: d.last_seen_at, battery: d.battery, charging: d.charging,
+      // 只给出「有没有、什么时候」，坐标要单独请求并留审计
+      has_location: d.location_enc !== null, location_at: d.location_at,
       app_version: d.app_version, created_at: d.created_at,
     })),
   })
@@ -302,6 +306,37 @@ route('POST', '/api/devices/pairing-code', async ({ res, body, deps }) => {
   if (!name) return json(res, 400, { error: '缺少 name' })
   const r = await createPairing(deps.store, name)
   json(res, 200, { code: r.code, expires_at: r.expires_at, ttl_sec: Math.round((r.expires_at - now()) / 1000) })
+})
+
+/**
+ * 按需定位，用于设备找回。
+ *
+ * 位置与短信正文同等敏感：加密落库、日志不记坐标、**每次查询都写审计**。
+ * 审计尤其重要——能定位这台设备的人，也能看到你全部的验证码，
+ * 所以至少要留下谁在什么时候查过的痕迹。
+ */
+route('POST', '/api/devices/:id/locate', async ({ res, params, deps, ip }) => {
+  if (!deps.locateDevice) return json(res, 500, { error: '未接入定位' })
+  const id = params.id!
+  const device = await deps.store.getDevice(id)
+  if (!device) return json(res, 404, { error: '设备不存在' })
+
+  await deps.store.audit({ actor: 'admin', action: 'device.locate', detail: id, ip, created_at: now() })
+
+  const r = await deps.locateDevice(id)
+  if (!r.ok) return json(res, 502, { error: r.error ?? '定位失败' })
+  json(res, 200, r.location)
+})
+
+/** 读取上次定位结果。同样写审计。 */
+route('GET', '/api/devices/:id/location', async ({ res, params, deps, ip }) => {
+  const d = await deps.store.getDevice(params.id!)
+  if (!d?.location_enc) return json(res, 404, { error: '还没有定位记录' })
+  await deps.store.audit({ actor: 'admin', action: 'device.location_read', detail: params.id!, ip, created_at: now() })
+  json(res, 200, {
+    ...JSON.parse(await deps.cipher.decrypt(d.location_enc)),
+    recorded_at: d.location_at,
+  })
 })
 
 route('DELETE', '/api/devices/:id/token', async ({ res, params, deps, ip }) => {

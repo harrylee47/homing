@@ -17,6 +17,9 @@ export interface DeviceRecord {
   battery: number | null
   /** 是否在充电。null 表示设备未上报（老版本 Agent） */
   charging: boolean | null
+  /** 最近一次定位结果，加密存储。位置与短信正文同等敏感。 */
+  location_enc: Uint8Array | null
+  location_at: number | null
   app_version: string | null
   created_at: number
 }
@@ -166,6 +169,8 @@ export interface Store {
   createDevice(d: DeviceRecord): Promise<void>
   /** 握手成功后更新在线状态与遥测 */
   touchDevice(id: string, patch: Partial<Pick<DeviceRecord, 'status' | 'last_seen_at' | 'battery' | 'charging' | 'app_version'>>): Promise<void>
+  /** 记录最近一次定位。单独一个方法，避免定位数据混进高频的心跳更新里 */
+  setDeviceLocation(id: string, enc: Uint8Array, at: number): Promise<void>
   revokeDevice(id: string): Promise<void>
 
   // 渠道

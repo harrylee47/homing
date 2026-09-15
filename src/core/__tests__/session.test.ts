@@ -32,7 +32,7 @@ describe('会话状态机', () => {
     store.devices.set(DEVICE, {
       id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
       status: 'offline', last_seen_at: null, battery: null, charging: null,
-      app_version: null, created_at: NOW,
+      location_enc: null, location_at: null, app_version: null, created_at: NOW,
     })
     session = new DeviceSession({
       store, hub: new MemoryHub(),
