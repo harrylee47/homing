@@ -13,6 +13,8 @@ export interface NodeConfig {
   dataDir: string
   dbPath: string
   dek: Uint8Array
+  /** 管理 API 的 Bearer token。M3 上线口令 + TOTP 后由会话取代。 */
+  adminToken: string
   /** 允许的 WS Origin。Agent 不发 Origin，浏览器必发——见 wsserver 的校验逻辑。 */
   baseUrl: string | null
   trustedProxy: string | null
@@ -29,9 +31,31 @@ export function loadConfig(): NodeConfig {
     dataDir,
     dbPath: process.env.GW_DB_PATH ?? join(dataDir, 'gateway.db'),
     dek: loadOrCreateDek(dataDir),
+    adminToken: loadOrCreateAdminToken(dataDir),
     baseUrl: process.env.GW_BASE_URL ?? null,
     trustedProxy: process.env.GW_TRUSTED_PROXY ?? null,
   }
+}
+
+/**
+ * 管理 token。留空则生成一个写入 /data，并在日志里打印一次——
+ * 这是唯一一次输出，之后任何日志都不会再包含它。
+ */
+function loadOrCreateAdminToken(dataDir: string): string {
+  const fromEnv = process.env.GW_ADMIN_TOKEN
+  if (fromEnv) return fromEnv
+
+  const path = join(dataDir, 'admin.token')
+  if (existsSync(path)) return readFileSync(path, 'utf8').trim()
+
+  const b = crypto.getRandomValues(new Uint8Array(24))
+  let bin = ''
+  for (const x of b) bin += String.fromCharCode(x)
+  const token = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  writeFileSync(path, token, { mode: 0o600 })
+  chmodSync(path, 0o600)
+  log.warn('已生成管理 token，仅此一次显示', { path, token })
+  return token
 }
 
 /**

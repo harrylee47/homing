@@ -14,8 +14,11 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.smsgateway.agent.net.PairingClient
 import org.smsgateway.agent.App
 import org.smsgateway.agent.databinding.ActivityMainBinding
 import org.smsgateway.agent.net.ConnState
@@ -47,10 +50,9 @@ class MainActivity : AppCompatActivity() {
 
         val app = App.get()
         vb.urlInput.setText(app.prefs.serverUrl ?: "")
-        vb.deviceInput.setText(app.prefs.deviceId ?: "")
-        vb.tokenInput.setText(app.prefs.token ?: "")
 
-        vb.saveButton.setOnClickListener { save() }
+        vb.pairButton.setOnClickListener { pair() }
+        vb.unpairButton.setOnClickListener { unpair() }
         vb.permButton.setOnClickListener { requestPerms() }
         vb.batteryButton.setOnClickListener { requestBatteryWhitelist() }
 
@@ -63,6 +65,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun render(s: ConnState, pending: Int) {
+        val paired = App.get().prefs.isPaired
+        vb.pairingBox.visibility = if (paired) android.view.View.GONE else android.view.View.VISIBLE
+        vb.unpairButton.visibility = if (paired) android.view.View.VISIBLE else android.view.View.GONE
+
         val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
         vb.statusText.text = when (s) {
             is ConnState.Idle -> if (App.get().prefs.isPaired) "● 未连接" else "○ 未配对"
@@ -72,6 +78,11 @@ class MainActivity : AppCompatActivity() {
             is ConnState.Fatal -> "✕ ${s.code}"
         }
         vb.detailText.text = buildString {
+            val p = App.get().prefs
+            if (paired) {
+                appendLine("设备：\${p.deviceName}")
+                appendLine("服务端：\${p.serverUrl}")
+            }
             when (s) {
                 is ConnState.Connected -> appendLine("连接于 ${fmt.format(Date(s.since))}")
                 is ConnState.Fatal -> appendLine(s.message)
@@ -82,27 +93,51 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun save() {
+    /** 用一次性配对码换长期凭证。凭证由服务端生成，本机不产生也不显示。 */
+    private fun pair() {
         val url = vb.urlInput.text.toString().trim()
-        val dev = vb.deviceInput.text.toString().trim()
-        val tok = vb.tokenInput.text.toString().trim()
-        if (url.isEmpty() || dev.isEmpty() || tok.isEmpty()) {
-            toast("三项都要填")
+        val code = vb.codeInput.text.toString().trim()
+        if (url.isEmpty() || code.isEmpty()) {
+            toast("地址与配对码都要填")
             return
         }
         if (!url.startsWith("wss://") && !url.startsWith("ws://")) {
             toast("地址必须以 wss:// 开头")
             return
         }
-        if (url.startsWith("ws://")) toast("警告：ws:// 明文传输，短信内容不加密")
+        if (url.startsWith("ws://")) toast("警告：ws:// 为明文传输")
 
+        vb.pairButton.isEnabled = false
+        vb.pairButton.text = "配对中…"
+
+        lifecycleScope.launch {
+            val r = withContext(Dispatchers.IO) { PairingClient().pair(url, code) }
+            vb.pairButton.isEnabled = true
+            vb.pairButton.text = "配对"
+
+            when (r) {
+                is PairingClient.Result.Fail -> toast(r.message)
+                is PairingClient.Result.Ok -> {
+                    val app = App.get()
+                    app.prefs.serverUrl = url
+                    app.prefs.deviceId = r.data.deviceId
+                    app.prefs.token = r.data.token
+                    app.prefs.deviceName = r.data.deviceName
+                    vb.codeInput.setText("")   // 配对码用过即弃，不留在界面上
+                    app.ws.stop()
+                    app.ws.start()
+                    toast("配对成功：\${r.data.deviceName}")
+                }
+            }
+        }
+    }
+
+    private fun unpair() {
         val app = App.get()
-        app.prefs.serverUrl = url
-        app.prefs.deviceId = dev
-        app.prefs.token = tok
         app.ws.stop()
-        app.ws.start()
-        toast("已保存，正在连接")
+        app.prefs.clear()
+        toast("已解除配对")
+        render(ConnState.Idle, 0)
     }
 
     private fun requestPerms() {

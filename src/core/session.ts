@@ -13,8 +13,10 @@ import {
   ErrorCode,
   type AgentConfig,
   type DownstreamFrame,
+  type EventKind as EventKindT,
   type EventPayload,
 } from './protocol.js'
+import { processEvent } from './pipeline.js'
 import type { InsertEventResult, Store } from './store.js'
 
 export interface SessionDeps {
@@ -24,6 +26,8 @@ export interface SessionDeps {
   config?: AgentConfig
   /** 可注入，便于测试 */
   now?: () => number
+  /** 事件入库后的后续处理（规则匹配 + 推送）。测试可替换为空实现。 */
+  onStored?: (eventId: string, e: { device_id: string; kind: EventKindT; from: string; content: string; occurred_at: number }) => void
 }
 
 /** 会话对适配层的指令：发若干帧，可选随后关闭连接。 */
@@ -196,7 +200,24 @@ export class DeviceSession {
       occurred_at: e.occurred_at,
     })
 
+    // 只对新事件触发推送：补传重复上报不应让用户收到两遍验证码。
+    // 不 await —— 落库已保证不丢，让 Agent 等推送结果只会拖慢队列。
+    if (result === 'stored') {
+      const handler = this.deps.onStored ?? this.defaultOnStored
+      handler(e.id, {
+        device_id: e.device_id, kind: e.kind, from: e.from,
+        content: e.content, occurred_at: e.occurred_at,
+      })
+    }
+
     return this.ackEvent(e.id, result)
+  }
+
+  private readonly defaultOnStored = (
+    eventId: string,
+    e: { device_id: string; kind: EventKindT; from: string; content: string; occurred_at: number },
+  ): void => {
+    void processEvent({ store: this.deps.store, cipher: this.deps.cipher }, eventId, e)
   }
 
   private ackEvent(id: string, status: 'stored' | 'duplicate' | 'rejected', error: string | null = null): SessionAction {

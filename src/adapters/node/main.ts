@@ -8,6 +8,7 @@ import { DEFAULT_AGENT_CONFIG } from '../../core/protocol.js'
 import { loadConfig } from './config.js'
 import { MemoryHub } from './hub.js'
 import { SqliteStore } from './store.js'
+import { handleApi } from './api.js'
 import { createWsServer, isAllowedAgentOrigin } from './wsserver.js'
 
 const cfg = loadConfig()
@@ -17,6 +18,8 @@ await store.migrate()
 const cipher = await createCipher(cfg.dek)
 const hub = new MemoryHub()
 const wss = createWsServer({ store, cipher, hub, heartbeatSec: DEFAULT_AGENT_CONFIG.heartbeat_sec })
+
+const apiDeps = { store, cipher, hub, adminToken: cfg.adminToken }
 
 const server = createServer((req, res) => {
   // 移除指纹特征：Node 默认会带 Date 头，能少一个是一个（计划 §6.3）
@@ -32,8 +35,10 @@ const server = createServer((req, res) => {
     res.end(body)
     return
   }
-  // 未认证请求一律 404，不返回 401——不确认服务存在（计划 §6.3）
-  res.writeHead(404).end()
+  void handleApi(req, res, apiDeps).then((handled) => {
+    // 未认证请求一律 404，不返回 401——不确认服务存在（计划 §6.3）
+    if (!handled && !res.headersSent) res.writeHead(404).end()
+  })
 })
 
 server.on('upgrade', (req, socket, head) => {

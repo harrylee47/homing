@@ -4,7 +4,8 @@
 
 基于 [SmsForwarder](https://github.com/pppscn/SmsForwarder) 裁剪改造，GPL-3.0。
 
-> **状态：开发中（M0）。** 服务端最小闭环已跑通，安卓 Agent 尚未开始。
+> **状态：开发中（M1）。** 短信 → 规则 → Telegram 全链路已打通，
+> 实测「短信到达 → Telegram 送达」约 1.1 秒。Web 控制台（M3）尚未开始。
 
 ## Scope 声明
 
@@ -60,6 +61,41 @@ adb shell svc wifi disable                          # 断网，测离线补传
 
 模拟器覆盖除**保活、真实运营商送达回执、双卡、长稳**以外的全部场景，
 这几项必须在目标真机上验收（计划 §13 M0 / M5）。
+
+## API
+
+鉴权用 `Authorization: Bearer <token>`，token 首次启动时生成并写入 `data/admin.token`
+（也可用 `GW_ADMIN_TOKEN` 注入）。未认证请求一律返回 404 而非 401。
+
+```
+POST   /api/devices/pairing-code   生成一次性配对码（TTL 5 分钟）
+POST   /api/pair                   Agent 用配对码换长期凭证（无需鉴权）
+GET    /api/devices                设备列表与在线状态
+DELETE /api/devices/:id/token      吊销凭证并踢下线
+
+GET    /api/channels               渠道列表（不返回配置明文）
+POST   /api/channels               新增渠道
+POST   /api/channels/:id/test      发送测试消息
+DELETE /api/channels/:id
+
+GET    /api/rules                  规则列表
+POST   /api/rules                  新增/更新规则
+DELETE /api/rules/:id
+
+GET    /api/events?kind=&limit=&offset=
+GET    /api/health
+```
+
+## 部署
+
+```bash
+docker compose up -d      # 端口只绑 127.0.0.1，公网入口由反代提供
+```
+
+首次启动会在 `data/` 下生成 `dek.key`（数据加密密钥）与 `admin.token`。
+**`dek.key` 与数据库不要备份到同一处**——两者同时泄露等于未加密。
+
+数据目录需属于容器运行用户：`chown -R 10001:10001 data`。
 
 ## 文档
 

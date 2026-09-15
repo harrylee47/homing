@@ -9,42 +9,47 @@
 
         <TextView android:id="@+id/statusText"
             android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="18sp" android:textStyle="bold"
-            android:paddingBottom="4dp" tools:ignore="MissingPrefix"
-            xmlns:tools="http://schemas.android.com/tools"
-            android:text="未配对" />
+            android:textSize="20sp" android:textStyle="bold"
+            android:paddingBottom="6dp" android:text="未配对" />
 
         <TextView android:id="@+id/detailText"
             android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="14sp" android:paddingBottom="16dp"
+            android:textSize="13sp" android:paddingBottom="18dp"
             android:fontFamily="monospace" android:text="" />
 
         <View android:layout_width="match_parent" android:layout_height="1dp"
-            android:background="#33888888" android:layout_marginBottom="16dp" />
+            android:background="#33888888" android:layout_marginBottom="18dp" />
 
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="服务端地址" android:textSize="12sp" />
-        <EditText android:id="@+id/urlInput"
+        <LinearLayout android:id="@+id/pairingBox"
             android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:hint="wss://example.com/ws" android:inputType="textUri"
-            android:autofillHints="" />
+            android:orientation="vertical">
 
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="设备 ID" android:textSize="12sp" android:paddingTop="8dp" />
-        <EditText android:id="@+id/deviceInput"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:hint="dev_xxxxxxxx" android:inputType="text" android:autofillHints="" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="服务端地址" android:textSize="12sp" />
+            <EditText android:id="@+id/urlInput"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:hint="wss://example.com/ws" android:inputType="textUri"
+                android:autofillHints="" />
 
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="凭证 Token" android:textSize="12sp" android:paddingTop="8dp" />
-        <EditText android:id="@+id/tokenInput"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:hint="配对时服务端生成" android:inputType="textPassword"
-            android:autofillHints="" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="配对码（控制台生成，5 分钟内有效）"
+                android:textSize="12sp" android:paddingTop="10dp" />
+            <EditText android:id="@+id/codeInput"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:hint="8 位字母数字" android:inputType="textCapCharacters"
+                android:maxLength="8" android:textSize="22sp"
+                android:fontFamily="monospace" android:letterSpacing="0.2"
+                android:autofillHints="" />
 
-        <Button android:id="@+id/saveButton"
+            <Button android:id="@+id/pairButton"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="16dp" android:text="配对" />
+        </LinearLayout>
+
+        <Button android:id="@+id/unpairButton"
             android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="16dp" android:text="保存并连接" />
+            android:layout_marginTop="8dp" android:text="解除配对"
+            android:visibility="gone" />
 
         <Button android:id="@+id/permButton"
             android:layout_width="match_parent" android:layout_height="wrap_content"

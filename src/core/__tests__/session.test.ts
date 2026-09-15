@@ -1,46 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createCipher, generateDek, hashToken } from '../crypto.js'
 import { encodeFrame, makeFrame } from '../frames.js'
-import type { Connection, Hub } from '../hub.js'
 import { ErrorCode, type DownstreamFrame } from '../protocol.js'
 import { DeviceSession } from '../session.js'
-import type { DeviceRecord, InsertEventResult, Store, StoredEvent } from '../store.js'
+import { MemoryHub, MemoryStore } from './fakes.js'
 
 const NOW = 1_757_894_400_000
 const DEVICE = 'dev_test01'
 const TOKEN = 'T'.repeat(32)
-
-/** 只实现测试用到的部分，其余抛错——避免测试悄悄走到未覆盖的路径。 */
-class FakeStore implements Store {
-  devices = new Map<string, DeviceRecord>()
-  events = new Map<string, StoredEvent>()
-  async migrate() {}
-  async getDevice(id: string) { return this.devices.get(id) ?? null }
-  async listDevices() { return [...this.devices.values()] }
-  async createDevice(d: DeviceRecord) { this.devices.set(d.id, d) }
-  async touchDevice(id: string, patch: Partial<DeviceRecord>) {
-    const d = this.devices.get(id)
-    if (d) this.devices.set(id, { ...d, ...patch })
-  }
-  async revokeDevice(id: string) { await this.touchDevice(id, { status: 'revoked' }) }
-  async insertEvent(e: StoredEvent): Promise<InsertEventResult> {
-    if (this.events.has(e.id)) return 'duplicate'
-    this.events.set(e.id, e)
-    return 'stored'
-  }
-  async getEvent(id: string) { return this.events.get(id) ?? null }
-  async listEvents() { return [...this.events.values()] }
-  async close() {}
-}
-
-class FakeHub implements Hub {
-  conns = new Map<string, Connection>()
-  register(c: Connection) { this.conns.set(c.device_id, c) }
-  unregister(id: string) { this.conns.delete(id) }
-  get(id: string) { return this.conns.get(id) }
-  onlineDevices() { return [...this.conns.keys()] }
-  send() { return false }
-}
 
 const helloFrame = (token = TOKEN, device = DEVICE) =>
   encodeFrame(makeFrame('hello', {
@@ -57,18 +24,18 @@ const eventFrame = (id: string, device = DEVICE, occurred = NOW - 10_000) =>
 const evtId = () => `evt_${crypto.randomUUID()}`
 
 describe('会话状态机', () => {
-  let store: FakeStore
+  let store: MemoryStore
   let session: DeviceSession
 
   beforeEach(async () => {
-    store = new FakeStore()
+    store = new MemoryStore()
     store.devices.set(DEVICE, {
       id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
       status: 'offline', last_seen_at: null, battery: null,
       app_version: null, created_at: NOW,
     })
     session = new DeviceSession({
-      store, hub: new FakeHub(),
+      store, hub: new MemoryHub(),
       cipher: await createCipher(generateDek()),
       now: () => NOW,
     })

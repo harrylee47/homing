@@ -7,9 +7,12 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import type {
+  ChannelRecord,
   DeviceRecord,
   EventQuery,
   InsertEventResult,
+  PairingCodeRecord,
+  RuleRecord,
   Store,
   StoredEvent,
 } from '../../core/store.js'
@@ -40,6 +43,40 @@ const MIGRATIONS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_events_time ON events(occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_id, occurred_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS channels (
+     id         TEXT PRIMARY KEY,
+     type       TEXT NOT NULL,
+     name       TEXT NOT NULL,
+     config_enc BLOB NOT NULL,
+     enabled    INTEGER NOT NULL DEFAULT 1,
+     created_at INTEGER NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS rules (
+     id          TEXT PRIMARY KEY,
+     name        TEXT NOT NULL,
+     priority    INTEGER NOT NULL DEFAULT 100,
+     enabled     INTEGER NOT NULL DEFAULT 1,
+     match_json  TEXT NOT NULL,
+     action_json TEXT NOT NULL,
+     created_at  INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_rules_priority ON rules(priority)`,
+  `CREATE TABLE IF NOT EXISTS pairing_codes (
+     code_hash   TEXT PRIMARY KEY,
+     device_name TEXT NOT NULL,
+     expires_at  INTEGER NOT NULL,
+     used_at     INTEGER,
+     created_at  INTEGER NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS audit_log (
+     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+     actor      TEXT,
+     action     TEXT NOT NULL,
+     detail     TEXT,
+     ip         TEXT,
+     created_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC)`,
 ]
 
 export class SqliteStore implements Store {
@@ -125,7 +162,96 @@ export class SqliteStore implements Store {
       .all(...args, q.limit, q.offset) as unknown as StoredEvent[]
   }
 
+  async setMatchedRules(eventId: string, ruleIds: string[]): Promise<void> {
+    this.db.prepare('UPDATE events SET matched_rules = ? WHERE id = ?').run(JSON.stringify(ruleIds), eventId)
+  }
+
+  // ── 渠道 ──────────────────────────────────────────────
+
+  async listChannels(): Promise<ChannelRecord[]> {
+    const rows = this.db.prepare('SELECT * FROM channels ORDER BY created_at').all() as unknown as RawChannel[]
+    return rows.map(toChannel)
+  }
+
+  async getChannel(id: string): Promise<ChannelRecord | null> {
+    const row = this.db.prepare('SELECT * FROM channels WHERE id = ?').get(id) as unknown as RawChannel | undefined
+    return row ? toChannel(row) : null
+  }
+
+  async upsertChannel(c: ChannelRecord): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO channels (id, type, name, config_enc, enabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET type=excluded.type, name=excluded.name,
+           config_enc=excluded.config_enc, enabled=excluded.enabled`,
+      )
+      .run(c.id, c.type, c.name, c.config_enc, c.enabled ? 1 : 0, c.created_at)
+  }
+
+  async deleteChannel(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM channels WHERE id = ?').run(id)
+  }
+
+  // ── 规则 ──────────────────────────────────────────────
+
+  async listRules(): Promise<RuleRecord[]> {
+    const rows = this.db.prepare('SELECT * FROM rules ORDER BY priority, id').all() as unknown as RawRule[]
+    return rows.map((r) => ({ ...r, enabled: r.enabled === 1 }))
+  }
+
+  async upsertRule(r: RuleRecord): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO rules (id, name, priority, enabled, match_json, action_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, priority=excluded.priority,
+           enabled=excluded.enabled, match_json=excluded.match_json, action_json=excluded.action_json`,
+      )
+      .run(r.id, r.name, r.priority, r.enabled ? 1 : 0, r.match_json, r.action_json, r.created_at)
+  }
+
+  async deleteRule(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM rules WHERE id = ?').run(id)
+  }
+
+  // ── 配对码 ────────────────────────────────────────────
+
+  async createPairingCode(p: PairingCodeRecord): Promise<void> {
+    this.db
+      .prepare('INSERT INTO pairing_codes (code_hash, device_name, expires_at, used_at, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(p.code_hash, p.device_name, p.expires_at, p.used_at, p.created_at)
+  }
+
+  /**
+   * 取用配对码：UPDATE...WHERE used_at IS NULL 的 changes 数决定是否取用成功，
+   * 这样并发请求下只有一个能成功，不需要额外加锁。
+   */
+  async takePairingCode(codeHash: string, now: number): Promise<PairingCodeRecord | null> {
+    const r = this.db
+      .prepare('UPDATE pairing_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?')
+      .run(now, codeHash, now)
+    if (Number(r.changes) === 0) return null
+    const row = this.db.prepare('SELECT * FROM pairing_codes WHERE code_hash = ?').get(codeHash)
+    return (row as unknown as PairingCodeRecord) ?? null
+  }
+
+  // ── 审计 ──────────────────────────────────────────────
+
+  async audit(e: { actor: string | null; action: string; detail: string | null; ip: string | null; created_at: number }): Promise<void> {
+    this.db
+      .prepare('INSERT INTO audit_log (actor, action, detail, ip, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(e.actor, e.action, e.detail, e.ip, e.created_at)
+  }
+
   async close(): Promise<void> {
     this.db.close()
   }
 }
+
+
+// SQLite 没有布尔类型，存的是 0/1，出库时统一转换
+interface RawChannel extends Omit<ChannelRecord, 'enabled'> { enabled: number }
+interface RawRule extends Omit<RuleRecord, 'enabled'> { enabled: number }
+
+const toChannel = (r: RawChannel): ChannelRecord => ({ ...r, enabled: r.enabled === 1 })
