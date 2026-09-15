@@ -8,14 +8,19 @@
  * M1 阶段是单一管理员 token；口令 + TOTP 登录在 M3 落地。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { timingSafeEqual } from '../../core/crypto.js'
+import {
+  generateSessionToken, generateTotpSecret, hashPassword,
+  LOGIN_LOCKOUT_MS, LOGIN_MAX_ATTEMPTS, SESSION_TTL_MS,
+  totpUri, verifyPassword, verifyTotp,
+} from '../../core/auth.js'
+import { hashToken, timingSafeEqual } from '../../core/crypto.js'
 import type { Cipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
 import { dispatch, PROVIDERS, type ChannelConfig } from '../../core/notifier.js'
 import { createPairing, redeemPairing } from '../../core/pairing.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import type { DownstreamFrame } from '../../core/protocol.js'
-import { RuleAction, RuleMatch } from '../../core/rules.js'
+import { evaluate, extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
 import type { Hub } from '../../core/hub.js'
 import type { Store } from '../../core/store.js'
 
@@ -23,8 +28,16 @@ export interface ApiDeps {
   store: Store
   cipher: Cipher
   hub: Hub
+  /** 自动化用的长期 token。人使用控制台时走会话，不用它。 */
   adminToken: string
+  /** 登录失败达到阈值时的告警回调。计划 §6.3 要求「失败立即告警到 Telegram」。 */
+  onLoginLockout?: ((ip: string, attempts: number) => void) | undefined
 }
+
+/** 设置表的键。initialized 未置位前，除向导外一切请求都拒绝。 */
+const S_PASSWORD = 'admin_password_hash'
+const S_TOTP = 'totp_secret'
+const S_INITIALIZED = 'initialized'
 
 type Handler = (ctx: Ctx) => Promise<void>
 interface Ctx {
@@ -39,15 +52,16 @@ interface Ctx {
 
 // ── 路由表 ──────────────────────────────────────────────────
 
-interface Route { method: string; pattern: RegExp; keys: string[]; handler: Handler; auth: boolean }
+/** setup=true 表示这是向导路由，在未初始化时**仅**这些可访问。 */
+interface Route { method: string; pattern: RegExp; keys: string[]; handler: Handler; auth: boolean; setup?: boolean }
 const routes: Route[] = []
 
-function route(method: string, path: string, handler: Handler, auth = true): void {
+function route(method: string, path: string, handler: Handler, auth = true, setup = false): void {
   const keys: string[] = []
   const pattern = new RegExp(
     '^' + path.replace(/:(\w+)/g, (_m, k: string) => { keys.push(k); return '([^/]+)' }) + '$',
   )
-  routes.push({ method, pattern, keys, handler, auth })
+  routes.push({ method, pattern, keys, handler, auth, setup })
 }
 
 // ── 工具 ────────────────────────────────────────────────────
@@ -79,6 +93,132 @@ function rateLimited(ip: string): boolean {
   }
   rec.count++
   return rec.count > PAIR_MAX
+}
+
+// ── 首次配置向导（计划 §12.1①）──────────────────────────────
+
+/**
+ * 未完成初始化前，除向导外**所有路由一律 403**，包括 API 与 WS。
+ * 不存在「启动即裸奔」的窗口期 —— OpenClaw 那 40 万个暴露实例，
+ * 根子就是默认无认证。
+ */
+export async function isInitialized(store: Store): Promise<boolean> {
+  return (await store.getSetting(S_INITIALIZED)) === '1'
+}
+
+route('GET', '/api/setup/status', async ({ res, deps }) => {
+  json(res, 200, { initialized: await isInitialized(deps.store) })
+}, false, true)
+
+/** 第一步：设管理员口令，返回 TOTP 密钥供扫码绑定。 */
+route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
+  if (await isInitialized(deps.store)) return json(res, 409, { error: '已初始化' })
+
+  const pw = (body as { password?: string })?.password ?? ''
+  if (pw.length < 12) return json(res, 400, { error: '口令至少 12 位' })
+
+  await deps.store.setSetting(S_PASSWORD, await hashPassword(pw))
+  const secret = generateTotpSecret()
+  await deps.store.setSetting(S_TOTP, secret)
+  await deps.store.audit({ actor: 'setup', action: 'setup.password', detail: null, ip, created_at: now() })
+
+  json(res, 200, { secret, uri: totpUri(secret, 'admin') })
+}, false, true)
+
+/** 第二步：验证一次 TOTP，确认认证器已正确绑定，然后才置初始化标记。 */
+route('POST', '/api/setup/verify', async ({ res, body, deps, ip }) => {
+  if (await isInitialized(deps.store)) return json(res, 409, { error: '已初始化' })
+
+  const secret = await deps.store.getSetting(S_TOTP)
+  if (!secret) return json(res, 400, { error: '请先设置口令' })
+
+  const code = (body as { code?: string })?.code ?? ''
+  if (!(await verifyTotp(secret, code))) return json(res, 401, { error: '验证码不正确' })
+
+  await deps.store.setSetting(S_INITIALIZED, '1')
+  await deps.store.audit({ actor: 'setup', action: 'setup.complete', detail: null, ip, created_at: now() })
+  json(res, 200, { ok: true })
+}, false, true)
+
+// ── 登录 ────────────────────────────────────────────────────
+
+/** 登录失败计数。锁定状态可从审计日志重建，这里只是快路径。 */
+const loginFails = new Map<string, { count: number; until: number }>()
+
+route('POST', '/api/auth/login', async ({ req, res, body, deps, ip }) => {
+  const rec = loginFails.get(ip)
+  if (rec && now() < rec.until) {
+    return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
+  }
+
+  const b = body as { password?: string; code?: string }
+  const stored = await deps.store.getSetting(S_PASSWORD)
+  const secret = await deps.store.getSetting(S_TOTP)
+  if (!stored || !secret) return json(res, 500, { error: '服务端未正确初始化' })
+
+  const okPw = verifyPassword(b.password ?? '', stored)
+  const okTotp = okPw && (await verifyTotp(secret, b.code ?? ''))
+
+  if (!okPw || !okTotp) {
+    const c = (rec?.count ?? 0) + 1
+    loginFails.set(ip, {
+      count: c,
+      until: c >= LOGIN_MAX_ATTEMPTS ? now() + LOGIN_LOCKOUT_MS : 0,
+    })
+    await deps.store.audit({
+      actor: null, action: 'auth.fail',
+      detail: `第 ${c} 次，${okPw ? 'TOTP' : '口令'}不正确`, ip, created_at: now(),
+    })
+    log.warn('登录失败', { ip, attempt: c })
+    if (c >= LOGIN_MAX_ATTEMPTS) void deps.onLoginLockout?.(ip, c)
+    // 不区分口令错还是 TOTP 错，避免为逐项爆破提供反馈
+    return json(res, 401, { error: '口令或验证码不正确' })
+  }
+
+  loginFails.delete(ip)
+  const token = generateSessionToken()
+  const t = now()
+  await deps.store.createSession({
+    token_hash: await hashToken(token),
+    ua_hash: await hashToken(req.headers['user-agent'] ?? ''),
+    ip_prefix: ipPrefix(ip),
+    created_at: t,
+    expires_at: t + SESSION_TTL_MS,
+    revoked: false,
+  })
+  await deps.store.audit({ actor: 'admin', action: 'auth.login', detail: null, ip, created_at: t })
+  json(res, 200, { token, expires_in: Math.floor(SESSION_TTL_MS / 1000) })
+}, false)
+
+route('POST', '/api/auth/logout', async ({ req, res, deps }) => {
+  const h = req.headers.authorization
+  if (h?.startsWith('Bearer ')) await deps.store.revokeSession(await hashToken(h.slice(7)))
+  json(res, 200, { ok: true })
+})
+
+route('GET', '/api/auth/me', async ({ res }) => {
+  json(res, 200, { ok: true })
+})
+
+/** 改口令：成功后使全部会话失效，包括当前这个（计划 §11.6「全端下线」）。 */
+route('POST', '/api/auth/password', async ({ res, body, deps, ip }) => {
+  const b = body as { old?: string; new?: string }
+  const stored = await deps.store.getSetting(S_PASSWORD)
+  if (!stored || !verifyPassword(b.old ?? '', stored)) return json(res, 401, { error: '原口令不正确' })
+  if ((b.new ?? '').length < 12) return json(res, 400, { error: '新口令至少 12 位' })
+
+  await deps.store.setSetting(S_PASSWORD, await hashPassword(b.new!))
+  await deps.store.revokeAllSessions()
+  await deps.store.audit({ actor: 'admin', action: 'auth.password_change', detail: null, ip, created_at: now() })
+  json(res, 200, { ok: true })
+})
+
+/** IP 前缀：IPv4 取前三段，IPv6 取前四组。会话绑定到网段而非具体地址，
+ *  因为移动网络的出口 IP 会在同网段内漂移，绑死会导致频繁掉线。 */
+export function ipPrefix(ip: string): string {
+  const v4 = ip.replace(/^::ffff:/, '')
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(v4)) return v4.split('.').slice(0, 3).join('.')
+  return v4.split(':').slice(0, 4).join(':')
 }
 
 // ── 设备与配对 ──────────────────────────────────────────────
@@ -220,6 +360,83 @@ route('DELETE', '/api/rules/:id', async ({ res, params, deps }) => {
   json(res, 200, { ok: true })
 })
 
+/**
+ * 用历史消息试跑规则（计划 §7.4）。
+ *
+ * 没有这个功能，规则写错的反馈周期是「等下一条真实短信」——
+ * 调试成本高到会让人放弃使用规则引擎。
+ */
+route('POST', '/api/rules/test', async ({ res, body, deps }) => {
+  const b = body as { match?: unknown; action?: unknown; limit?: number }
+  const m = RuleMatch.safeParse(b.match ?? {})
+  const a = RuleAction.safeParse(b.action ?? {})
+  if (!m.success || !a.success) return json(res, 400, { error: '规则格式不正确' })
+
+  const rule: Rule = {
+    id: '__test__', name: '试跑', priority: 0, enabled: true,
+    match: m.data, action: a.data,
+  }
+
+  const rows = await deps.store.listEvents({ limit: Math.min(b.limit ?? 50, 200), offset: 0 })
+  const results = await Promise.all(rows.map(async (e) => {
+    const ev = {
+      device_id: e.device_id, kind: e.kind,
+      from: await deps.cipher.decrypt(e.sender_enc),
+      content: await deps.cipher.decrypt(e.content_enc),
+      occurred_at: e.occurred_at,
+    }
+    const hit = matchRule(rule, ev, tzOffsetMin())
+    const code = hit && rule.action.extract_code ? extractCode(ev.content) : null
+    return {
+      id: e.id, from: ev.from, content: ev.content, kind: e.kind,
+      occurred_at: e.occurred_at, matched: hit,
+      code,
+      preview: hit
+        ? render(rule.action.template, {
+            sender: ev.from, content: ev.content, code: code ?? '',
+            time: new Date(e.occurred_at).toISOString(), device: e.device_id,
+          })
+        : null,
+    }
+  }))
+
+  json(res, 200, {
+    total: results.length,
+    matched: results.filter((r) => r.matched).length,
+    results,
+  })
+})
+
+/** 服务端本地时区偏移，供规则的 time_window 使用。 */
+const tzOffsetMin = (): number => -new Date().getTimezoneOffset()
+
+// ── 总览统计 ────────────────────────────────────────────────
+
+route('GET', '/api/stats', async ({ res, deps }) => {
+  const devices = await deps.store.listDevices()
+  const online = new Set(deps.hub.onlineDevices())
+  const dayAgo = now() - 86_400_000
+
+  const todayEvents = (await deps.store.listEvents({ limit: 500, offset: 0, since: dayAgo })).length
+  const outbound = await deps.store.listOutbound(200, 0)
+  const todayOutbound = outbound.filter((o) => o.created_at >= dayAgo)
+
+  json(res, 200, {
+    devices: devices.map((d) => ({
+      id: d.id, name: d.name,
+      status: d.status === 'revoked' ? 'revoked' : online.has(d.id) ? 'online' : 'offline',
+      last_seen_at: d.last_seen_at, battery: d.battery, app_version: d.app_version,
+    })),
+    today: {
+      events: todayEvents,
+      outbound: todayOutbound.length,
+      outbound_failed: todayOutbound.filter((o) => o.status === 'failed').length,
+    },
+    channels: (await deps.store.listChannels()).filter((c) => c.enabled).length,
+    rules: (await deps.store.listRules()).filter((r) => r.enabled).length,
+  })
+})
+
 // ── 下行发送 ────────────────────────────────────────────────
 
 /**
@@ -313,17 +530,26 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
   const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 200)
   const offset = Math.max(Number(url.searchParams.get('offset') ?? 0), 0)
   const kindParam = url.searchParams.get('kind')
+  const q = url.searchParams.get('q')?.trim().toLowerCase()
   const rows = await deps.store.listEvents({
-    limit, offset,
+    // 有搜索词时多取一些再在内存里过滤：正文是密文，数据库无法直接检索
+    limit: q ? Math.min(limit * 10, 500) : limit, offset,
     ...(kindParam === 'sms' || kindParam === 'call' || kindParam === 'notification' ? { kind: kindParam } : {}),
   })
-  const items = await Promise.all(rows.map(async (e) => ({
+  let items = await Promise.all(rows.map(async (e) => ({
     id: e.id, device_id: e.device_id, kind: e.kind,
     from: await deps.cipher.decrypt(e.sender_enc),
     content: await deps.cipher.decrypt(e.content_enc),
     occurred_at: e.occurred_at, received_at: e.received_at,
     matched_rules: e.matched_rules ? JSON.parse(e.matched_rules) : [],
   })))
+  // 全文检索在内存里做：落库是密文，SQL 的 LIKE 搜不了。
+  // 数据量到不了瓶颈之前这样最简单，也不会堵死 D1 路径（硬约束②）。
+  if (q) {
+    items = items
+      .filter((e) => e.from.toLowerCase().includes(q) || e.content.toLowerCase().includes(q))
+      .slice(0, limit)
+  }
   json(res, 200, { events: items, limit, offset })
 })
 
@@ -339,7 +565,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
 
   const ip = clientIp(req)
 
-  if (match.auth && !checkAuth(req, deps.adminToken)) {
+  // 未完成初始化时，除向导外一切拒绝（计划 §12.1①）
+  if (!match.setup && !(await isInitialized(deps.store))) {
+    json(res, 403, { error: '服务端尚未完成初始化，请先访问控制台完成配置向导' })
+    return true
+  }
+
+  if (match.auth && !(await checkAuth(req, deps, ip))) {
     // 未认证一律 404，不返回 401——不确认接口存在（计划 §6.3）
     json(res, 404, { error: 'not found' })
     return true
@@ -368,10 +600,34 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
   return true
 }
 
-function checkAuth(req: IncomingMessage, adminToken: string): boolean {
+/**
+ * 鉴权：先试会话，再试长期管理 token。
+ *
+ * 会话额外校验 UA 与 IP 段——凭证被盗后换台设备或换个网段就用不了。
+ * 每次通过都顺延有效期：30 分钟是「无操作超时」，不是「登录后强制下线」。
+ */
+async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string): Promise<boolean> {
   const h = req.headers.authorization
   if (!h?.startsWith('Bearer ')) return false
-  return timingSafeEqual(h.slice(7), adminToken)
+  const presented = h.slice(7)
+
+  const sess = await deps.store.getSession(await hashToken(presented))
+  if (sess) {
+    const t = now()
+    if (sess.revoked || sess.expires_at < t) return false
+    if (!timingSafeEqual(sess.ua_hash, await hashToken(req.headers['user-agent'] ?? ''))) {
+      log.warn('会话 UA 不匹配，已拒绝', { ip })
+      return false
+    }
+    if (sess.ip_prefix !== ipPrefix(ip)) {
+      log.warn('会话 IP 段不匹配，已拒绝', { ip })
+      return false
+    }
+    await deps.store.touchSession(sess.token_hash, t + SESSION_TTL_MS)
+    return true
+  }
+
+  return timingSafeEqual(presented, deps.adminToken)
 }
 
 /**

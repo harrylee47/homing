@@ -1,0 +1,85 @@
+/* 移动端优先：Bark 通知点击后落地的是手机浏览器，小屏不可用等于整条链路是断的（计划 §11.2） */
+:root {
+  --bg: #f6f7f9; --card: #fff; --fg: #1a1d21; --muted: #6b7280;
+  --line: #e3e6ea; --accent: #1f6feb; --ok: #16a34a; --warn: #d97706; --err: #dc2626;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a; --card: #1c1f24; --fg: #e6e8eb; --muted: #9099a6;
+    --line: #2b2f36; --accent: #58a6ff;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+#app { max-width: 780px; margin: 0 auto; padding: 16px 16px 84px; }
+.loading { text-align: center; color: var(--muted); padding: 60px 0; }
+
+h1 { font-size: 20px; margin: 4px 0 16px; }
+h2 { font-size: 15px; margin: 22px 0 10px; color: var(--muted); font-weight: 600; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+.card.tight { padding: 10px 14px; }
+.row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.col { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.grow { flex: 1; min-width: 0; }
+.muted { color: var(--muted); font-size: 13px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wrap { overflow-wrap: anywhere; }
+
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.dot.online { background: var(--ok); } .dot.offline { background: var(--muted); }
+.dot.revoked { background: var(--err); }
+
+.badge { font-size: 12px; padding: 2px 7px; border-radius: 20px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.badge.ok { color: var(--ok); border-color: var(--ok); }
+.badge.err { color: var(--err); border-color: var(--err); }
+.badge.warn { color: var(--warn); border-color: var(--warn); }
+
+input, textarea, select, button {
+  font: inherit; color: inherit; background: var(--card);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; width: 100%;
+}
+textarea { min-height: 90px; resize: vertical; }
+label { display: block; margin: 12px 0 5px; font-size: 13px; color: var(--muted); }
+button { background: var(--accent); color: #fff; border: none; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+button.danger { background: var(--err); }
+button.sm { padding: 7px 12px; font-size: 13px; width: auto; }
+.btnrow { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+
+/* id 选择器的 display 会盖掉浏览器默认的 [hidden]{display:none}，必须显式声明 */
+#nav[hidden] { display: none; }
+#nav {
+  position: fixed; bottom: 0; left: 0; right: 0; display: flex;
+  background: var(--card); border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+#nav a {
+  flex: 1; text-align: center; padding: 11px 2px; font-size: 12px;
+  color: var(--muted); text-decoration: none;
+}
+#nav a.active { color: var(--accent); font-weight: 600; }
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 72px;
+  background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 20px;
+  font-size: 14px; z-index: 99; max-width: 90vw; text-align: center;
+}
+.err-text { color: var(--err); font-size: 13px; margin-top: 8px; }
+.list { display: flex; flex-direction: column; }
+.item { border-bottom: 1px solid var(--line); padding: 11px 0; cursor: pointer; }
+.item:last-child { border-bottom: none; }
+.stat { display: flex; gap: 18px; margin-top: 10px; }
+.stat b { font-size: 22px; font-weight: 700; display: block; }
+.code { font-size: 26px; letter-spacing: 3px; font-weight: 700; text-align: center; padding: 14px 0; }
+.steps { display: flex; gap: 6px; margin-bottom: 16px; }
+.steps div { flex: 1; height: 3px; background: var(--line); border-radius: 2px; }
+.steps div.on { background: var(--accent); }
+.banner { background: var(--warn); color: #fff; padding: 9px 14px; font-size: 13px; text-align: center; }

@@ -23,6 +23,8 @@ RUN addgroup -g 10001 -S gw && adduser -u 10001 -S gw -G gw
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+# 控制台是纯静态文件，无构建步骤
+COPY web ./web
 
 # 数据目录由 volume 挂载，权限归运行用户
 RUN mkdir -p /data && chown -R gw:gw /data

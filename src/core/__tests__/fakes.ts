@@ -2,7 +2,7 @@
 import type { Connection, Hub } from '../hub.js'
 import type {
   ChannelRecord, DeviceRecord, EventQuery, InsertEventResult, OutboundRecord,
-  PairingCodeRecord, RuleRecord, Store, StoredEvent,
+  PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent,
 } from '../store.js'
 
 /** 与 SQLite 实现保持一致的状态机顺序 */
@@ -57,6 +57,29 @@ export class MemoryStore implements Store {
     if (!p || p.used_at !== null || p.expires_at <= now) return null
     this.pairings.set(hash, { ...p, used_at: now })
     return { ...p, used_at: now }
+  }
+
+  settings = new Map<string, string>()
+  sessions = new Map<string, SessionRecord>()
+
+  async getSetting(k: string) { return this.settings.get(k) ?? null }
+  async setSetting(k: string, v: string) { this.settings.set(k, v) }
+
+  async createSession(s: SessionRecord) { this.sessions.set(s.token_hash, s) }
+  async getSession(h: string) { return this.sessions.get(h) ?? null }
+  async touchSession(h: string, e: number) {
+    const s = this.sessions.get(h)
+    if (s) this.sessions.set(h, { ...s, expires_at: e })
+  }
+  async revokeSession(h: string) {
+    const s = this.sessions.get(h)
+    if (s) this.sessions.set(h, { ...s, revoked: true })
+  }
+  async revokeAllSessions() {
+    for (const [k, v] of this.sessions) this.sessions.set(k, { ...v, revoked: true })
+  }
+  async cleanupSessions(now: number) {
+    for (const [k, v] of this.sessions) if (v.expires_at < now || v.revoked) this.sessions.delete(k)
   }
 
   outbound = new Map<string, OutboundRecord>()

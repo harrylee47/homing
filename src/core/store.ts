@@ -101,6 +101,16 @@ export interface OutboundRecord {
   updated_at: number
 }
 
+/** 会话。token 只存哈希；绑定 UA 与 IP 段，减少凭证被盗后异地复用（计划 §6.3）。 */
+export interface SessionRecord {
+  token_hash: string
+  ua_hash: string
+  ip_prefix: string
+  created_at: number
+  expires_at: number
+  revoked: boolean
+}
+
 export interface Store {
   /** 启动时执行迁移。必须幂等。 */
   migrate(): Promise<void>
@@ -128,6 +138,20 @@ export interface Store {
   createPairingCode(p: PairingCodeRecord): Promise<void>
   /** 按哈希取出未使用且未过期的配对码 */
   takePairingCode(codeHash: string, now: number): Promise<PairingCodeRecord | null>
+
+  // 设置（管理员口令哈希、TOTP 密钥、初始化标记）
+  getSetting(key: string): Promise<string | null>
+  setSetting(key: string, value: string): Promise<void>
+
+  // 会话
+  createSession(s: SessionRecord): Promise<void>
+  getSession(tokenHash: string): Promise<SessionRecord | null>
+  touchSession(tokenHash: string, expiresAt: number): Promise<void>
+  revokeSession(tokenHash: string): Promise<void>
+  /** 全端下线：改口令或发现异常时使用 */
+  revokeAllSessions(): Promise<void>
+  /** 清理过期会话，启动时与定期调用 */
+  cleanupSessions(now: number): Promise<void>
 
   // 发送任务
   createOutbound(o: OutboundRecord): Promise<void>

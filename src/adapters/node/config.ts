@@ -15,6 +15,8 @@ export interface NodeConfig {
   dek: Uint8Array
   /** 管理 API 的 Bearer token。M3 上线口令 + TOTP 后由会话取代。 */
   adminToken: string
+  /** 控制台静态文件目录 */
+  webRoot: string
   /** 允许的 WS Origin。Agent 不发 Origin，浏览器必发——见 wsserver 的校验逻辑。 */
   baseUrl: string | null
   trustedProxy: string | null
@@ -32,6 +34,7 @@ export function loadConfig(): NodeConfig {
     dbPath: process.env.GW_DB_PATH ?? join(dataDir, 'gateway.db'),
     dek: loadOrCreateDek(dataDir),
     adminToken: loadOrCreateAdminToken(dataDir),
+    webRoot: process.env.GW_WEB_ROOT ?? './web',
     baseUrl: process.env.GW_BASE_URL ?? null,
     trustedProxy: process.env.GW_TRUSTED_PROXY ?? null,
   }

@@ -4,9 +4,9 @@
 
 基于 [SmsForwarder](https://github.com/pppscn/SmsForwarder) 裁剪改造，GPL-3.0。
 
-> **状态：开发中（M2）。** 收发双向均已打通：
-> 短信到达 → Telegram 推送约 1.1 秒；通过 API 发送可看到
-> accepted → sent → delivered 完整状态。Web 控制台（M3）尚未开始。
+> **状态：开发中（M3）。** 收发双向 + Web 控制台已可用：
+> 短信到达 → Telegram 推送约 1.1 秒；发送可见 accepted → sent → delivered；
+> 控制台含口令 + 强制 TOTP、消息检索、规则编辑与「用历史消息试跑」。
 
 ## Scope 声明
 
@@ -65,8 +65,13 @@ adb shell svc wifi disable                          # 断网，测离线补传
 
 ## API
 
-鉴权用 `Authorization: Bearer <token>`，token 首次启动时生成并写入 `data/admin.token`
-（也可用 `GW_ADMIN_TOKEN` 注入）。未认证请求一律返回 404 而非 401。
+**首次启动必须先完成配置向导**：未初始化前，除向导外所有路由（含 API 与 WS）一律返回 403。
+打开控制台按提示设置管理员口令并绑定 TOTP 即可。
+
+人使用控制台走会话（口令 + TOTP 登录，30 分钟无操作超时，绑定 UA 与 IP 段）。
+自动化脚本可用 `data/admin.token` 里的长期 token（或 `GW_ADMIN_TOKEN` 注入）。
+两者都走 `Authorization: Bearer`，不用 Cookie——天然免疫 CSRF。
+未认证请求一律返回 404 而非 401。
 
 ```
 POST   /api/devices/pairing-code   生成一次性配对码（TTL 5 分钟）
@@ -88,8 +93,22 @@ GET    /api/outbound/:id            查询发送状态
 GET    /api/outbound                发送历史
 
 GET    /api/events?kind=&limit=&offset=
+GET    /api/stats                  总览统计
+POST   /api/rules/test             用历史消息试跑规则
 GET    /api/health
+
+GET    /api/setup/status           是否已初始化（无需鉴权）
+POST   /api/setup/password         向导第一步：设管理员口令
+POST   /api/setup/verify           向导第二步：验证 TOTP 并完成初始化
+POST   /api/auth/login             口令 + TOTP 换会话
+POST   /api/auth/logout
+POST   /api/auth/password          改口令（会使全部会话失效）
 ```
+
+## 控制台
+
+零构建的原生 SPA（`web/`），移动端优先——Bark 通知点击后落地的是手机浏览器。
+深链路由 `/events/:id`、`/compose?to=`、`/devices` 由服务端回落到 index.html 后交前端处理。
 
 ## 部署
 

@@ -13,6 +13,7 @@ import type {
   InsertEventResult,
   OutboundRecord,
   PairingCodeRecord,
+  SessionRecord,
   RuleRecord,
   Store,
   StoredEvent,
@@ -90,6 +91,19 @@ const MIGRATIONS: string[] = [
      updated_at  INTEGER NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS idx_outbound_time ON outbound(created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS settings (
+     key   TEXT PRIMARY KEY,
+     value TEXT NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS sessions (
+     token_hash TEXT PRIMARY KEY,
+     ua_hash    TEXT NOT NULL,
+     ip_prefix  TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     expires_at INTEGER NOT NULL,
+     revoked    INTEGER NOT NULL DEFAULT 0
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at)`,
 ]
 
 /** 状态机的前进顺序。数字大者为更后的状态，用于拒绝倒退的回执。 */
@@ -290,6 +304,48 @@ export class SqliteStore implements Store {
     this.db
       .prepare('UPDATE outbound SET status = ?, error = ?, updated_at = ? WHERE id = ?')
       .run(status, error, at, id)
+  }
+
+  // ── 设置与会话 ────────────────────────────────────────
+
+  async getSetting(key: string): Promise<string | null> {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value?: string } | undefined
+    return row?.value ?? null
+  }
+
+  async setSetting(key: string, value: string): Promise<void> {
+    this.db
+      .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run(key, value)
+  }
+
+  async createSession(s: SessionRecord): Promise<void> {
+    this.db
+      .prepare('INSERT INTO sessions (token_hash, ua_hash, ip_prefix, created_at, expires_at, revoked) VALUES (?, ?, ?, ?, ?, 0)')
+      .run(s.token_hash, s.ua_hash, s.ip_prefix, s.created_at, s.expires_at)
+  }
+
+  async getSession(tokenHash: string): Promise<SessionRecord | null> {
+    const row = this.db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(tokenHash) as
+      | (Omit<SessionRecord, 'revoked'> & { revoked: number })
+      | undefined
+    return row ? { ...row, revoked: row.revoked === 1 } : null
+  }
+
+  async touchSession(tokenHash: string, expiresAt: number): Promise<void> {
+    this.db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(expiresAt, tokenHash)
+  }
+
+  async revokeSession(tokenHash: string): Promise<void> {
+    this.db.prepare('UPDATE sessions SET revoked = 1 WHERE token_hash = ?').run(tokenHash)
+  }
+
+  async revokeAllSessions(): Promise<void> {
+    this.db.prepare('UPDATE sessions SET revoked = 1').run()
+  }
+
+  async cleanupSessions(now: number): Promise<void> {
+    this.db.prepare('DELETE FROM sessions WHERE expires_at < ? OR revoked = 1').run(now)
   }
 
   // ── 审计 ──────────────────────────────────────────────
