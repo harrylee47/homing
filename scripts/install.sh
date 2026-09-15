@@ -16,15 +16,15 @@ set -euo pipefail
 
 # ── 可调项（都可以用环境变量覆盖）────────────────────────────
 
-REPO="${SMSGW_REPO:-https://github.com/rikouu/smsgateway.git}"
-DIR="${SMSGW_DIR:-/opt/smsgateway}"
-BRANCH="${SMSGW_BRANCH:-main}"
+REPO="${HOMING_REPO:-https://github.com/rikouu/homing.git}"
+DIR="${HOMING_DIR:-/opt/homing}"
+BRANCH="${HOMING_BRANCH:-main}"
 # 留空表示自动探测公网 IP
-PUBLIC_IP="${SMSGW_IP:-}"
+PUBLIC_IP="${HOMING_IP:-}"
 # 不想用 sslip.io、自己有域名时填这里
-DOMAIN="${SMSGW_DOMAIN:-}"
+DOMAIN="${HOMING_DOMAIN:-}"
 # Let's Encrypt 的过期提醒邮箱。留空则不注册邮箱（仍能签发）
-EMAIL="${SMSGW_EMAIL:-}"
+EMAIL="${HOMING_EMAIL:-}"
 
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
@@ -92,7 +92,7 @@ detect_ip() {
 }
 
 if [[ -z "$PUBLIC_IP" ]]; then
-  PUBLIC_IP=$(detect_ip) || die "探测不到公网 IP，请用 SMSGW_IP=1.2.3.4 bash install.sh 指定"
+  PUBLIC_IP=$(detect_ip) || die "探测不到公网 IP，请用 HOMING_IP=1.2.3.4 bash install.sh 指定"
 fi
 c_ok "公网 IP $PUBLIC_IP"
 

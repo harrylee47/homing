@@ -1,14 +1,28 @@
-# 短信网关 SMS Gateway
-
-**把一台闲置安卓手机变成你的远程收码机。**
-
-手机插着卡放在家里（或任何有信号的地方），收到的短信、来电、App 通知，
-立刻转发到你的 Telegram / Bark / 自建接口。人在国外也能收国内验证码。
+<h1 align="center">Homing</h1>
 
 <p align="center">
-  <img src="docs/images/overview.png" width="260" alt="总览">
-  <img src="docs/images/calls.png" width="260" alt="通话记录">
-  <img src="docs/images/sent.png" width="260" alt="发送记录">
+  <b>把一台闲置安卓手机变成你的远程收码机。</b><br>
+  手机留在家里守着那张卡，验证码飞到你身边。
+</p>
+
+<p align="center">
+  <a href="https://github.com/rikouu/homing/releases/latest"><img src="https://img.shields.io/github/v/release/rikouu/homing?label=%E4%B8%8B%E8%BD%BD%20APK" alt="release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license"></a>
+  <a href="https://github.com/rikouu/homing/actions"><img src="https://github.com/rikouu/homing/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
+
+---
+
+名字取自 **homing pigeon（信鸽）**：一只待在老家的鸽子，把消息带到你身边。
+
+人在国外，国内的号码还得用——银行、支付、政务、外卖，验证码一条都躲不掉。
+把插着那张卡的旧手机往家里一放，收到的短信、来电、App 通知立刻转发到你的
+Telegram / Bark / 自建接口。
+
+<p align="center">
+  <img src="docs/images/overview.png" width="240" alt="总览">
+  <img src="docs/images/messages.png" width="240" alt="消息">
+  <img src="docs/images/calls.png" width="240" alt="通话记录">
 </p>
 
 ---
@@ -21,6 +35,7 @@
 - [第一步：装服务端（一键）](#第一步装服务端一键)
 - [第二步：装手机 App](#第二步装手机-app)
 - [第三步：配一个推送渠道](#第三步配一个推送渠道)
+- [长什么样](#长什么样)
 - [日常怎么用](#日常怎么用)
 - [常见问题](#常见问题)
 - [安全须知](#安全须知)
@@ -61,6 +76,10 @@ Telegram 的反欺诈系统会封禁转发验证码的机器人——这是踩�
 数据库里存的是密文（AES-256-GCM），日志里从不打印正文和验证码。
 控制台强制两步验证，没有关闭选项。
 
+**一键部署，不用买域名。**
+一台刚买的干净 VPS，三行命令装完，自动配好正式 HTTPS 证书（不是自签名，
+浏览器不会报红）。有宝塔 / 1Panel 也能装，文档里有专门的章节。
+
 **不做的事**：多卡批量管理、改主叫号码、语音中继、代收验证码 / 接码平台。
 这是个人自用工具，请自持 SIM 卡、自持设备，并遵守当地法律。
 
@@ -83,7 +102,7 @@ Telegram 的反欺诈系统会封禁转发验证码的机器人——这是踩�
 SSH 连上你那台**全新的** VPS，粘贴这三行：
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/rikouu/smsgateway/main/scripts/install.sh
+curl -fsSLO https://raw.githubusercontent.com/rikouu/homing/main/scripts/install.sh
 less install.sh          # 花一分钟看看它要干什么，养成好习惯
 sudo bash install.sh
 ```
@@ -124,7 +143,7 @@ sudo bash install.sh
 
 ## 第二步：装手机 App
 
-1. 到 [Releases](https://github.com/rikouu/smsgateway/releases) 下载最新的 `smsgateway-agent.apk`
+1. 到 [Releases](https://github.com/rikouu/homing/releases) 下载最新的 `homing-agent.apk`
 2. 传到那台安卓手机上安装（会提示「未知来源」，允许即可）
 3. 打开 App，点 **申请权限**，把短信、通话、电话状态几项都允许
 4. 回到电脑上的控制台 → **设备** 页 → 填个名字（比如「家里的手机」）→ **生成配对码**
@@ -188,6 +207,28 @@ sudo bash install.sh
 | 普通短信 | 以上都不是，正常推送 |
 | 来电 | 单独分组 |
 | 去电 | 只留记录 |
+
+---
+
+## 长什么样
+
+<table>
+<tr>
+  <td width="33%"><img src="docs/images/messages.png" alt="消息列表"><br><sub><b>消息</b><br>短信 / 通话 / 通知分开看，左侧色带一眼区分类型</sub></td>
+  <td width="33%"><img src="docs/images/message-detail.png" alt="消息详情"><br><sub><b>消息详情</b><br>完整正文、上报延迟、命中了哪条规则</sub></td>
+  <td width="33%"><img src="docs/images/calls.png" alt="通话记录"><br><sub><b>通话记录</b><br>来电 / 去电 / 未接，带通话时长</sub></td>
+</tr>
+<tr>
+  <td><img src="docs/images/sent.png" alt="发送记录"><br><sub><b>发送记录</b><br>网关替你发出去的每一条，按状态筛</sub></td>
+  <td><img src="docs/images/sent-detail.png" alt="发送详情"><br><sub><b>发送详情</b><br>投递过程一步步可见，失败原因直给</sub></td>
+  <td><img src="docs/images/rule-edit.png" alt="规则编辑"><br><sub><b>规则编辑</b><br>不用写正则，关键词点一下就是一个标签</sub></td>
+</tr>
+<tr>
+  <td><img src="docs/images/pairing.png" alt="扫码配对"><br><sub><b>扫码配对</b><br>手机扫一下，地址和配对码都不用手打</sub></td>
+  <td><img src="docs/images/task.png" alt="计划任务"><br><sub><b>计划任务</b><br>每天 / 每周 / 每月 / 每年 / 每隔 N 天</sub></td>
+  <td><img src="docs/images/sms-command.png" alt="短信指令"><br><sub><b>短信指令</b><br>人不在手机旁，发条短信查它的状态</sub></td>
+</tr>
+</table>
 
 ---
 

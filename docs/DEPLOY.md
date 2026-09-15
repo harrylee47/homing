@@ -30,7 +30,7 @@ docker version                                   # 能打印版本就成了
 
 ```bash
 mkdir -p /opt && cd /opt
-git clone --depth 1 https://github.com/rikouu/smsgateway.git
+git clone --depth 1 https://github.com/rikouu/homing.git
 cd smsgateway
 ```
 
@@ -70,8 +70,8 @@ cat > Caddyfile <<'EOF'
 EOF
 
 docker run -d --name caddy --restart unless-stopped --network host \
-  -v /opt/smsgateway/Caddyfile:/etc/caddy/Caddyfile:ro \
-  -v /opt/smsgateway/caddy-data:/data \
+  -v /opt/homing/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -v /opt/homing/caddy-data:/data \
   caddy:2-alpine
 ```
 
@@ -209,7 +209,7 @@ echo 'GW_BASE_URL=http://192.168.1.100:8070' >> .env
 ### 升级
 
 ```bash
-cd /opt/smsgateway
+cd /opt/homing
 git pull
 docker compose up -d --build
 ```
@@ -240,7 +240,7 @@ cat .env | grep GW_DEK
 ## 出问题了怎么查
 
 ```bash
-cd /opt/smsgateway
+cd /opt/homing
 
 # 网关日志（最有用）
 docker compose logs -f --tail 100 gateway

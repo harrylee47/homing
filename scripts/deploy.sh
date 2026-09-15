@@ -1,7 +1,7 @@
 #!/bin/bash
 # 部署到你自己的服务器。
 #
-#   SMSGW_DEPLOY_HOST=my-vps SMSGW_HEALTH_URL=https://gw.example.com/api/setup/status \
+#   HOMING_DEPLOY_HOST=my-vps HOMING_HEALTH_URL=https://gw.example.com/api/setup/status \
 #     bash scripts/deploy.sh
 #
 # HOST 是 ~/.ssh/config 里的主机别名。
@@ -11,8 +11,8 @@
 # 这比 bug 本身更糟：你以为修好了。
 set -euo pipefail
 
-HOST="${1:-${SMSGW_DEPLOY_HOST:-}}"
-[ -n "$HOST" ] || { echo "用法：bash scripts/deploy.sh <ssh 主机别名>（或设 SMSGW_DEPLOY_HOST）" >&2; exit 1; }
+HOST="${1:-${HOMING_DEPLOY_HOST:-}}"
+[ -n "$HOST" ] || { echo "用法：bash scripts/deploy.sh <ssh 主机别名>（或设 HOMING_DEPLOY_HOST）" >&2; exit 1; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "── 本地检查 ──"
@@ -51,8 +51,8 @@ echo "$STATUS"
 case "$STATUS" in
   Up*)
     # 没配健康检查地址就只看容器状态，不假装检查过
-    if [ -n "${SMSGW_HEALTH_URL:-${GW_HEALTH_URL:-}}" ]; then
-      curl -fsS -o /dev/null --max-time 10 "${SMSGW_HEALTH_URL:-${GW_HEALTH_URL}}" \
+    if [ -n "${HOMING_HEALTH_URL:-${GW_HEALTH_URL:-}}" ]; then
+      curl -fsS -o /dev/null --max-time 10 "${HOMING_HEALTH_URL:-${GW_HEALTH_URL}}" \
         || { echo "✗ 容器在跑但接口不通"; exit 1; }
     fi
     echo "✓ 部署完成"

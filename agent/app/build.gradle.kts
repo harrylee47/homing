@@ -29,16 +29,16 @@ android {
      */
     signingConfigs {
         create("release") {
-            val storePath = (project.findProperty("SMSGW_KEYSTORE") as String?)
-                ?: System.getenv("SMSGW_KEYSTORE")
+            val storePath = (project.findProperty("HOMING_KEYSTORE") as String?)
+                ?: System.getenv("HOMING_KEYSTORE")
             if (storePath != null && file(storePath).exists()) {
                 storeFile = file(storePath)
-                storePassword = (project.findProperty("SMSGW_KEYSTORE_PASSWORD") as String?)
-                    ?: System.getenv("SMSGW_KEYSTORE_PASSWORD")
-                keyAlias = (project.findProperty("SMSGW_KEY_ALIAS") as String?)
-                    ?: System.getenv("SMSGW_KEY_ALIAS") ?: "smsgateway"
-                keyPassword = (project.findProperty("SMSGW_KEY_PASSWORD") as String?)
-                    ?: System.getenv("SMSGW_KEY_PASSWORD")
+                storePassword = (project.findProperty("HOMING_KEYSTORE_PASSWORD") as String?)
+                    ?: System.getenv("HOMING_KEYSTORE_PASSWORD")
+                keyAlias = (project.findProperty("HOMING_KEY_ALIAS") as String?)
+                    ?: System.getenv("HOMING_KEY_ALIAS") ?: "smsgateway"
+                keyPassword = (project.findProperty("HOMING_KEY_PASSWORD") as String?)
+                    ?: System.getenv("HOMING_KEY_PASSWORD")
             }
         }
     }

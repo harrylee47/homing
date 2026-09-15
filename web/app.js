@@ -2352,12 +2352,24 @@ function taskEditor(task, devs) {
     <div id="t_err" class="err-text"></div>
     <div id="t_result" class="muted" style="margin-top:6px"></div>`)
 
+  /**
+   * 只在排期类型没变时才沿用原值。
+   *
+   * `interval.days` 是数字、`monthly.days` 是数组——两个类型共用同一个字段名。
+   * 不判类型直接读的话，从「每隔 N 天」切到「每月」会对数字调 .join() 抛异常，
+   * 表单停在原来那个上不动，看起来就像「每月没有日期设置」。
+   */
+  const from = (type, key, fallback) => (sc.type === type && sc[key] != null ? sc[key] : fallback)
+
   const paintSched = () => {
     const type = $('#t_type').value
     const time = sc.time || '09:00'
     const box = $('#t_sched')
+    const timeRow = `<label>几点</label><input id="s_time" type="time" value="${time}">`
+
     if (type === 'interval') {
-      box.innerHTML = `<label>每隔多少天</label><input id="s_days" type="number" min="1" max="3650" value="${sc.days || 30}">
+      box.innerHTML = `<label>每隔多少天</label>
+        <input id="s_days" type="number" min="1" max="3650" value="${from('interval', 'days', 30)}">
         <div class="muted">从上次执行时间往后推。新建的任务会立即执行第一次。</div>`
     } else if (type === 'once') {
       box.innerHTML = `<label>执行时刻</label><input id="s_at" type="datetime-local" value="${toLocalInput(sc.at)}">
@@ -2365,19 +2377,36 @@ function taskEditor(task, devs) {
     } else if (type === 'daily') {
       box.innerHTML = `<label>每天几点</label><input id="s_time" type="time" value="${time}">`
     } else if (type === 'weekly') {
+      const on = from('weekly', 'weekdays', [1])
       box.innerHTML = `<label>星期几（可多选）</label>
-        ${WD.map((n, i) => `<label style="display:flex;gap:8px;align-items:center;margin:4px 0">
-          <input type="checkbox" data-wd="${i}" style="width:auto"${(sc.weekdays || []).includes(i) ? ' checked' : ''}><span>${n}</span></label>`).join('')}
-        <label>几点</label><input id="s_time" type="time" value="${time}">`
+        <div class="chips">${WD.map((n, i) => `
+          <label class="tag" style="cursor:pointer">
+            <input type="checkbox" data-wd="${i}" style="width:auto;margin-right:4px"${on.includes(i) ? ' checked' : ''}>
+            <span>${n}</span>
+          </label>`).join('')}</div>
+        ${timeRow}`
     } else if (type === 'monthly') {
-      box.innerHTML = `<label>每月几号（逗号分隔，可多个）</label>
-        <input id="s_days_of_month" value="${(sc.days || [1]).join(',')}">
-        <div class="muted">超出当月天数的日期会落到当月最后一天，例如 31 号在 2 月执行于 28/29 号。</div>
-        <label>几点</label><input id="s_time" type="time" value="${time}">`
+      const on = from('monthly', 'days', [1])
+      box.innerHTML = `<label>每月几号（可多选）</label>
+        <div class="chips">${Array.from({ length: 31 }, (_, i) => i + 1).map((d) => `
+          <label class="tag" style="cursor:pointer;min-width:38px;justify-content:center">
+            <input type="checkbox" data-dom="${d}" style="width:auto;margin-right:3px"${on.includes(d) ? ' checked' : ''}>
+            <span>${d}</span>
+          </label>`).join('')}</div>
+        <div class="muted">超出当月天数的会落到当月最后一天——31 号在 2 月执行于 28 / 29 号。</div>
+        ${timeRow}`
     } else {
-      box.innerHTML = `<label>几月</label><input id="s_month" type="number" min="1" max="12" value="${sc.month || 1}">
-        <label>几号</label><input id="s_day" type="number" min="1" max="31" value="${sc.day || 1}">
-        <label>几点</label><input id="s_time" type="time" value="${time}">`
+      box.innerHTML = `<div style="display:flex;gap:8px">
+          <div class="grow"><label>几月</label>
+            <select id="s_month">${Array.from({ length: 12 }, (_, i) => i + 1).map((m) =>
+              `<option value="${m}"${from('yearly', 'month', 1) === m ? ' selected' : ''}>${m} 月</option>`).join('')}</select>
+          </div>
+          <div class="grow"><label>几号</label>
+            <select id="s_day">${Array.from({ length: 31 }, (_, i) => i + 1).map((d) =>
+              `<option value="${d}"${from('yearly', 'day', 1) === d ? ' selected' : ''}>${d} 号</option>`).join('')}</select>
+          </div>
+        </div>
+        ${timeRow}`
     }
   }
   $('#t_type').onchange = paintSched
@@ -2393,7 +2422,7 @@ function taskEditor(task, devs) {
       return { type, time, weekdays: [...app.querySelectorAll('[data-wd]')].filter((c) => c.checked).map((c) => Number(c.dataset.wd)) }
     }
     if (type === 'monthly') {
-      return { type, time, days: $('#s_days_of_month').value.split(',').map((x) => Number(x.trim())).filter((x) => x >= 1 && x <= 31) }
+      return { type, time, days: [...app.querySelectorAll('[data-dom]')].filter((c) => c.checked).map((c) => Number(c.dataset.dom)) }
     }
     return { type, time, month: Number($('#s_month').value), day: Number($('#s_day').value) }
   }

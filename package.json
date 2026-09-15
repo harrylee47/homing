@@ -1,5 +1,5 @@
 {
-  "name": "sms-gateway",
+  "name": "homing",
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.32.1",
@@ -38,5 +38,6 @@
     "onlyBuiltDependencies": [
       "esbuild"
     ]
-  }
+  },
+  "description": "把闲置安卓手机变成远程收码机：短信 / 来电 / App 通知转发到 Telegram / Bark"
 }

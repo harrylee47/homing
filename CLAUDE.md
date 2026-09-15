@@ -14,7 +14,7 @@ pnpm exec tsc --noEmit            # 类型检查
 pnpm exec vitest run              # 全部测试
 pnpm exec vitest run src/core/__tests__/rules.test.ts   # 单个文件
 node scripts/check-core-purity.mjs                      # core 层纯度（硬约束①）
-SMSGW_DEPLOY_HOST=<ssh别名> pnpm run deploy   # 检查 → 同步 → 构建 → 启动 → 健康检查
+HOMING_DEPLOY_HOST=<ssh别名> pnpm run deploy   # 检查 → 同步 → 构建 → 启动 → 健康检查
 
 cd agent
 ./gradlew :app:assembleDebug      # 构建 APK
@@ -395,7 +395,7 @@ Bark 通知点进来的可能是几天前那条，而 Bark 深链恰恰是这个
 
 ## 开源仓库
 
-https://github.com/rikouu/smsgateway（公开，AGPL-3.0）。
+https://github.com/rikouu/homing（公开，AGPL-3.0）。
 
 发布 APK 的签名密钥**不在仓库里**，在 `~/.smsgateway-release.properties`（600 权限）。
 丢了就无法覆盖安装已发布的版本，用户只能卸载重装。构建发布包：
@@ -406,4 +406,4 @@ cd agent && set -a && . ~/.smsgateway-release.properties && set +a
 ```
 
 提交到公开仓库前先扫一遍：网关域名、服务器别名、token 都不能进去。
-个人部署参数一律走环境变量（`SMSGW_DEPLOY_HOST`、`GW_BASE_URL`）。
+个人部署参数一律走环境变量（`HOMING_DEPLOY_HOST`、`GW_BASE_URL`）。

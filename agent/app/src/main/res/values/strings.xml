@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">短信网关</string>
-    <string name="notification_channel">网关服务</string>
-    <string name="notification_title">短信网关运行中</string>
+    <string name="app_name">Homing</string>
+    <string name="notification_channel">Homing 服务</string>
+    <string name="notification_title">Homing 运行中</string>
 </resources>
