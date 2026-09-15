@@ -62,6 +62,14 @@ const ago = (ts) => {
   return `${Math.floor(s / 86400)} 天前`
 }
 
+/** 与服务端 core/auth.ts 的 validatePassword 保持一致。前端只为即时反馈，服务端才是准的。 */
+function checkPassword(pw) {
+  if (pw.length < 8) return '口令至少 8 位'
+  const classes = [/[a-zA-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((re) => re.test(pw)).length
+  if (classes < 2) return '口令需包含英文、数字、符号中的至少两类'
+  return null
+}
+
 function toast(msg) {
   const el = document.createElement('div')
   el.className = 'toast'
@@ -137,7 +145,7 @@ async function setup() {
     <div class="steps"><div class="on"></div><div id="s2"></div></div>
     <div class="card">
       <p class="muted">这台服务器将存放你的全部短信内容，包括银行验证码。先设置管理员口令。</p>
-      <label>管理员口令（至少 12 位）</label>
+      <label>管理员口令（至少 8 位，含英文 / 数字 / 符号中的两类）</label>
       <input id="pw" type="password" autocomplete="new-password">
       <label>再输一次</label>
       <input id="pw2" type="password" autocomplete="new-password">
@@ -148,7 +156,8 @@ async function setup() {
   $('#next').onclick = async () => {
     const pw = $('#pw').value, pw2 = $('#pw2').value
     if (pw !== pw2) return ($('#err').textContent = '两次输入不一致')
-    if (pw.length < 12) return ($('#err').textContent = '口令至少 12 位')
+    const bad = checkPassword(pw)
+    if (bad) return ($('#err').textContent = bad)
     $('#next').disabled = true
     try {
       const r = await api('/setup/password', { method: 'POST', body: { password: pw }, allow404: true })
@@ -773,7 +782,7 @@ async function settings() {
     <h2>修改口令</h2>
     <div class="card">
       <label>当前口令</label><input id="old" type="password" autocomplete="current-password">
-      <label>新口令（至少 12 位）</label><input id="new" type="password" autocomplete="new-password">
+      <label>新口令（至少 8 位，含英文 / 数字 / 符号中的两类）</label><input id="new" type="password" autocomplete="new-password">
       <div class="muted">修改后所有已登录的会话都会失效，包括当前这个。</div>
       <div class="btnrow"><button id="chpw">修改</button></div>
       <div id="err" class="err-text"></div>
@@ -785,6 +794,8 @@ async function settings() {
     </div>`)
 
   $('#chpw').onclick = async () => {
+    const bad = checkPassword($('#new').value)
+    if (bad) return ($('#err').textContent = bad)
     try {
       await api('/auth/password', { method: 'POST', body: { old: $('#old').value, new: $('#new').value } })
       setToken('')

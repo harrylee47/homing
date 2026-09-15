@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   generateSessionToken, generateTotpSecret, hashPassword,
   LOGIN_LOCKOUT_MS, LOGIN_MAX_ATTEMPTS, SESSION_TTL_MS,
-  totpUri, verifyPassword, verifyTotp,
+  totpUri, validatePassword, verifyPassword, verifyTotp,
 } from '../../core/auth.js'
 import { hashToken, timingSafeEqual } from '../../core/crypto.js'
 import type { Cipher } from '../../core/crypto.js'
@@ -136,7 +136,8 @@ route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
   if (await isInitialized(deps.store)) return json(res, 409, { error: '已初始化' })
 
   const pw = (body as { password?: string })?.password ?? ''
-  if (pw.length < 12) return json(res, 400, { error: '口令至少 12 位' })
+  const check = validatePassword(pw)
+  if (!check.ok) return json(res, 400, { error: check.error })
 
   await deps.store.setSetting(S_PASSWORD, await hashPassword(pw))
   const secret = generateTotpSecret()
@@ -226,7 +227,8 @@ route('POST', '/api/auth/password', async ({ res, body, deps, ip }) => {
   const b = body as { old?: string; new?: string }
   const stored = await deps.store.getSetting(S_PASSWORD)
   if (!stored || !verifyPassword(b.old ?? '', stored)) return json(res, 401, { error: '原口令不正确' })
-  if ((b.new ?? '').length < 12) return json(res, 400, { error: '新口令至少 12 位' })
+  const check = validatePassword(b.new ?? '')
+  if (!check.ok) return json(res, 400, { error: check.error })
 
   await deps.store.setSetting(S_PASSWORD, await hashPassword(b.new!))
   await deps.store.revokeAllSessions()

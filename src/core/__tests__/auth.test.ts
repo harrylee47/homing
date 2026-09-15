@@ -1,8 +1,44 @@
 import { describe, expect, it } from 'vitest'
 import {
   base32Decode, base32Encode, currentTotp, generateSessionToken,
-  generateTotpSecret, hashPassword, totpUri, verifyPassword, verifyTotp,
+  generateTotpSecret, hashPassword, totpUri, validatePassword, verifyPassword, verifyTotp,
 } from '../auth.js'
+
+describe('口令强度', () => {
+  it.each([
+    ['abc12345', '英文 + 数字'],
+    ['abcd!@#$', '英文 + 符号'],
+    ['1234!@#$', '数字 + 符号'],
+    ['Passw0rd!', '三类都有'],
+    ['密码abc123', '非 ASCII 计入符号类'],
+  ])('接受 %s（%s）', (pw) => {
+    expect(validatePassword(pw).ok).toBe(true)
+  })
+
+  it.each([
+    ['abc123', '太短'],
+    ['a1', '太短'],
+    ['', '空'],
+  ])('拒绝 %s（%s）', (pw) => {
+    const r = validatePassword(pw)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toContain('8 位')
+  })
+
+  it.each([
+    ['abcdefgh', '纯英文'],
+    ['12345678', '纯数字'],
+    ['!@#$%^&*', '纯符号'],
+  ])('拒绝 %s（%s，只有一类）', (pw) => {
+    const r = validatePassword(pw)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toContain('两类')
+  })
+
+  it('恰好 8 位且两类即通过', () => {
+    expect(validatePassword('abcdefg1').ok).toBe(true)
+  })
+})
 
 describe('口令', () => {
   it('哈希可验证', async () => {

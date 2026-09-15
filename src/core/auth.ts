@@ -7,6 +7,30 @@
 import { argon2id } from '@noble/hashes/argon2.js'
 import { timingSafeEqual, toHex, fromHex } from './crypto.js'
 
+// ── 口令强度 ────────────────────────────────────────────────
+
+export const PASSWORD_MIN_LEN = 8
+
+/**
+ * 口令规则：至少 8 位，且包含英文 / 数字 / 符号中的至少两类。
+ *
+ * 比纯长度限制更实用：8 位混合字符的搜索空间已经足够大，而这道门前面还有
+ * 强制 TOTP、5 次失败锁定 15 分钟、以及失败即告警——在线爆破打不动。
+ * 真正的风险是口令泄露，而那和长度无关。
+ *
+ * 非 ASCII（如中文）计入「符号」一类。
+ */
+export function validatePassword(pw: string): { ok: true } | { ok: false; error: string } {
+  if (pw.length < PASSWORD_MIN_LEN) {
+    return { ok: false, error: `口令至少 ${PASSWORD_MIN_LEN} 位` }
+  }
+  const classes = [/[a-zA-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((re) => re.test(pw)).length
+  if (classes < 2) {
+    return { ok: false, error: '口令需包含英文、数字、符号中的至少两类' }
+  }
+  return { ok: true }
+}
+
 // ── 口令 ────────────────────────────────────────────────────
 
 /**
