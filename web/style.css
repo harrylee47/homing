@@ -83,3 +83,9 @@ button.sm { padding: 7px 12px; font-size: 13px; width: auto; }
 .steps div { flex: 1; height: 3px; background: var(--line); border-radius: 2px; }
 .steps div.on { background: var(--accent); }
 .banner { background: var(--warn); color: #fff; padding: 9px 14px; font-size: 13px; text-align: center; }
+
+/* TOTP 二维码：限制最大宽度，小屏上也不会顶满 */
+.qr { display: flex; justify-content: center; margin: 14px 0; }
+.qr svg { width: 100%; max-width: 240px; height: auto; border-radius: 8px; }
+details { margin-top: 10px; }
+summary { cursor: pointer; font-size: 13px; padding: 6px 0; }

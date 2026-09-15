@@ -21,6 +21,7 @@ import { createPairing, redeemPairing } from '../../core/pairing.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import type { DownstreamFrame } from '../../core/protocol.js'
 import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
+import { toSvg } from '../../core/qr.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
 import type { BarkAccess } from './barkproxy.js'
@@ -144,7 +145,8 @@ route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
   await deps.store.setSetting(S_TOTP, secret)
   await deps.store.audit({ actor: 'setup', action: 'setup.password', detail: null, ip, created_at: now() })
 
-  json(res, 200, { secret, uri: totpUri(secret, 'admin') })
+  const uri = totpUri(secret, 'admin')
+  json(res, 200, { secret, uri, qr: toSvg(uri) })
 }, false, true)
 
 /** 第二步：验证一次 TOTP，确认认证器已正确绑定，然后才置初始化标记。 */

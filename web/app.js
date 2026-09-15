@@ -174,11 +174,14 @@ function setupTotp(r) {
     <h1>绑定两步验证</h1>
     <div class="steps"><div class="on"></div><div class="on"></div></div>
     <div class="card">
-      <p class="muted">用 Google Authenticator、1Password 等扫码或手动添加。两步验证是强制的，不可关闭。</p>
-      <label>密钥（手动添加时使用）</label>
-      <div class="mono wrap card tight">${esc(r.secret)}</div>
-      <label>或复制这条 URI 到认证器</label>
-      <div class="mono wrap card tight" style="font-size:11px">${esc(r.uri)}</div>
+      <p class="muted">用 Google Authenticator、1Password、iOS 自带密码 App 等扫码。两步验证是强制的，不可关闭。</p>
+      ${r.qr ? `<div class="qr">${r.qr}</div>` : ''}
+      <details>
+        <summary class="muted">扫不了？手动添加</summary>
+        <label>密钥</label>
+        <div class="mono wrap card tight" style="user-select:all">${esc(r.secret)}</div>
+        <div class="muted">类型选「基于时间」，算法 SHA1，位数 6，周期 30 秒。</div>
+      </details>
       <label>输入认证器显示的 6 位验证码</label>
       <input id="code" inputmode="numeric" maxlength="6" class="mono" style="font-size:20px;letter-spacing:4px">
       <div class="btnrow"><button id="done">完成</button></div>
