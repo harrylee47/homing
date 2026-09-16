@@ -149,7 +149,7 @@ describe('/send', () => {
     const prompt = await handleCommand(api, '/send 95533 收到')
     const cnBtn = prompt!.buttons!.flat().find((b) => b.text.includes('国内卡'))!
     const r = await handleCallback(api, cnBtn.data)
-    expect(sendSms).toHaveBeenCalledWith('dev_cn', '95533', '收到')
+    expect(sendSms).toHaveBeenCalledWith('dev_cn', '95533', '收到', null)
     expect(r!.text).toContain('国内卡')
   })
 
@@ -176,7 +176,7 @@ describe('确认按钮回调', () => {
     const prompt = await handleCommand(api, '/send 13900139000 你好世界')
     const data = prompt!.buttons![0]![0]!.data
     const r = await handleCallback(api, data)
-    expect(sendSms).toHaveBeenCalledWith('dev_1', '13900139000', '你好世界')
+    expect(sendSms).toHaveBeenCalledWith('dev_1', '13900139000', '你好世界', null)
     expect(r!.text).toContain('已提交发送')
   })
 
@@ -235,7 +235,7 @@ describe('Reply 即回复', () => {
   it('引用短信推送后，内容作为短信发回原发件人', async () => {
     const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
     const r = await handleReply(makeApi({ sendSms }), '555', '收到，谢谢')
-    expect(sendSms).toHaveBeenCalledWith('dev_1', '95533', '收到，谢谢')
+    expect(sendSms).toHaveBeenCalledWith('dev_1', '95533', '收到，谢谢', null)
     expect(r!.text).toContain('已回复 95533')
   })
 
@@ -314,6 +314,60 @@ describe('查询命令', () => {
     }
     // Telegram 要求命令名全小写、不带斜杠
     for (const c of COMMANDS) expect(c.command).toMatch(/^[a-z_]+$/)
+  })
+})
+
+describe('双卡：发送要选卡', () => {
+  const dual = {
+    id: 'dev_1', name: 'A25', status: 'online', last_seen_at: Date.now(), battery: 80,
+    net: {
+      type: 'cellular',
+      sims: [
+        { slot: 0, carrier: '中国移动', tail: '1234', signal: 3, default_sms: true },
+        { slot: 1, carrier: '中国联通', tail: '8888', signal: 1 },
+      ],
+    },
+  }
+  const dualApi = (over: Partial<BotApi> = {}) => makeApi({
+    stats: async () => ({
+      devices: [dual] as never, today: { events: 0, outbound: 0, outbound_failed: 0 }, rules: 0, channels: 0,
+    }),
+    ...over,
+  })
+
+  it('哪怕只有一台设备、号码也熟，双卡时仍然要先问用哪张卡', async () => {
+    const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
+    const r = await handleCommand(dualApi({ sendSms }), '/send 95533 收到')
+    expect(sendSms).not.toHaveBeenCalled()
+    const texts = r!.buttons!.flat().map((b) => b.text)
+    expect(texts).toEqual(expect.arrayContaining(['SIM1 尾号1234', 'SIM2 尾号8888', '取消']))
+  })
+
+  it('选了哪张卡就用哪张发', async () => {
+    const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
+    const api = dualApi({ sendSms })
+    const prompt = await handleCommand(api, '/send 95533 收到')
+    const btn = prompt!.buttons!.flat().find((b) => b.text.includes('SIM2'))!
+    const r = await handleCallback(api, btn.data)
+    expect(sendSms).toHaveBeenCalledWith('dev_1', '95533', '收到', 1)
+    expect(r!.text).toContain('SIM2')
+  })
+
+  it('引用回复用原消息那张卡 —— 换张卡对方看到的就是陌生号码', async () => {
+    const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
+    const api = dualApi({
+      sendSms,
+      lookupRef: async () => ({ sender: '95533', device_id: 'dev_1', event_id: 'evt_1', sim_slot: 1 }),
+    })
+    await handleReply(api, '555', '收到')
+    expect(sendSms).toHaveBeenCalledWith('dev_1', '95533', '收到', 1)
+  })
+
+  it('/status 逐卡各报一份信号', async () => {
+    const r = await handleCommand(dualApi(), '/status')
+    expect(r!.text).toContain('SIM1 尾号1234')
+    expect(r!.text).toContain('SIM2 尾号8888')
+    expect(r!.text).toContain('很弱')
   })
 })
 

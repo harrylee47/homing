@@ -238,6 +238,7 @@ export class DeviceSession {
         device_id: e.device_id,
         kind: e.kind,
         direction: e.extra.direction ?? 'in',
+        sim_slot: e.sim_slot,
         sender_enc: await this.deps.cipher.encrypt(e.from),
         content_enc: await this.deps.cipher.encrypt(e.content),
         enc_ver: 1,

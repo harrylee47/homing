@@ -8,6 +8,7 @@ import kotlinx.coroutines.launch
 import org.smsgateway.agent.App
 import org.smsgateway.agent.db.PendingEvent
 import org.smsgateway.agent.util.Log
+import org.smsgateway.agent.util.SimInfo
 import java.util.UUID
 
 /**
@@ -32,6 +33,9 @@ class PhoneStateReceiver : BroadcastReceiver() {
                 // 两边对齐才能在「历史导入」时认出这是同一通电话。
                 // 用挂断时刻的话，一通聊了三分钟的电话会差出三分钟，导入就会重复一条。
                 ringingAt = System.currentTimeMillis()
+                // 来电广播没有标准的卡槽字段，各家 ROM 自己加。取不到就算了，
+                // 报个错的卡槽比不报更糟——双卡下会让人以为另一张卡在响
+                ringingSlot = simSlot(context, intent)
             }
 
             TelephonyManager.EXTRA_STATE_OFFHOOK -> answered = true
@@ -39,14 +43,30 @@ class PhoneStateReceiver : BroadcastReceiver() {
             TelephonyManager.EXTRA_STATE_IDLE -> {
                 val num = ringingNumber ?: return
                 val at = ringingAt.takeIf { it > 0 } ?: System.currentTimeMillis()
+                val slot = ringingSlot
                 ringingNumber = null
                 ringingAt = 0
-                report(num, if (answered) "incoming" else "missed", at)
+                ringingSlot = null
+                report(num, if (answered) "incoming" else "missed", at, slot)
             }
         }
     }
 
-    private fun report(number: String, callType: String, at: Long) {
+    /** 来电是哪张卡接的。没有标准字段，只能试各家 ROM 常用的 extra。 */
+    private fun simSlot(ctx: Context, intent: Intent): Int? {
+        val extras = intent.extras ?: return null
+        for (key in SUB_KEYS) {
+            val sub = runCatching { extras.getInt(key, -1) }.getOrDefault(-1)
+            if (sub >= 0) SimInfo.slotOfSub(ctx, sub)?.let { return it }
+        }
+        for (key in SLOT_KEYS) {
+            val slot = runCatching { extras.getInt(key, -1) }.getOrDefault(-1)
+            if (slot in 0..3) return slot
+        }
+        return null
+    }
+
+    private fun report(number: String, callType: String, at: Long, simSlot: Int?) {
         val app = App.get()
         val event = PendingEvent(
             id = "evt_${UUID.randomUUID()}",
@@ -54,7 +74,7 @@ class PhoneStateReceiver : BroadcastReceiver() {
             from = number,
             content = if (callType == "missed") "未接来电" else "已接来电",
             occurredAt = at,
-            simSlot = null,
+            simSlot = simSlot,
             callType = callType,
             pkg = null,
             truncated = false,
@@ -67,7 +87,11 @@ class PhoneStateReceiver : BroadcastReceiver() {
     private companion object {
         // 广播接收器每次是新实例，状态必须放在伴生对象里
         @Volatile var ringingNumber: String? = null
+        @Volatile var ringingSlot: Int? = null
         @Volatile var answered: Boolean = false
+
+        val SUB_KEYS = listOf("subscription", "android.telephony.extra.SUBSCRIPTION_INDEX", "subscription_id")
+        val SLOT_KEYS = listOf("slot", "simId", "phone", "slot_id")
         /** 响铃开始时刻，作为这通电话的发生时间 */
         @Volatile var ringingAt: Long = 0
     }

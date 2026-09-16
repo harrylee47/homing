@@ -27,6 +27,7 @@ import { parseTask, taskNextRun, type ParsedTask } from '../../core/tasks.js'
 import { toSvg } from '../../core/qr.js'
 import { eventFingerprint, planReconcile } from '../../core/fingerprint.js'
 import { scanMatches } from '../../core/search.js'
+import { simLabel, simsOf } from '../../core/sim.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
 import type { BarkAccess } from './barkproxy.js'
@@ -124,6 +125,15 @@ const json = (res: ServerResponse, status: number, body: unknown): void => {
 
 const now = (): number => Date.now()
 const newId = (prefix: string): string => `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`
+
+/**
+ * 卡槽序号。非法值一律当「不指定」，不要 400——
+ * 单卡设备上界面根本不显示这个选项，传上来什么都不该让保存失败。
+ */
+function simSlotOf(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v !== '' ? Number(v) : NaN
+  return Number.isInteger(n) && n >= 0 && n <= 3 ? n : null
+}
 
 /**
  * 配对接口是未认证可达的，必须限速——8 位配对码在无限尝试下是可枚举的。
@@ -713,6 +723,8 @@ route('POST', '/api/rules/test', async ({ res, body, deps }) => {
       // 试跑必须带上方向，否则限定「本机发出」的规则在这里永远是未命中，
       // 而实际运行时却会命中——试跑跟真实行为不一致比没有试跑更糟
       direction: e.direction ?? ('in' as const),
+      // 同理，卡槽条件也要按真实数据判
+      sim_slot: e.sim_slot,
     }
     const hit = matchRule(rule, ev, safeOffsetMin(e.occurred_at, tz))
     const code = hit && rule.action.extract_code ? extractCode(ev.content) : null
@@ -727,6 +739,7 @@ route('POST', '/api/rules/test', async ({ res, body, deps }) => {
             // 与 pipeline 保持一致：{time} 是设置时区里的墙上时间，{device} 是设备名
             time: safeWallTime(e.occurred_at, tz),
             device: devNames.get(e.device_id) ?? e.device_id,
+            sim: e.sim_slot == null ? '' : `SIM${e.sim_slot + 1}`,
           })
         : null,
     }
@@ -840,7 +853,7 @@ route('GET', '/api/tasks', async ({ res, deps }) => {
     const t = parseTask(r, text)
     return {
       id: r.id, name: r.name, enabled: r.enabled, device_id: r.device_id,
-      to: r.to_number, text,
+      to: r.to_number, text, sim_slot: r.sim_slot,
       schedule: t ? t.schedule : null,
       schedule_text: t ? describeSchedule(t.schedule) : '配置损坏',
       last_run_at: r.last_run_at, last_status: r.last_status, fail_count: r.fail_count,
@@ -874,6 +887,7 @@ route('POST', '/api/tasks', async ({ res, body, deps, ip }) => {
     name: String(b.name ?? '').trim() || '未命名任务',
     enabled, device_id: deviceId, to_number: to,
     content_enc: await deps.cipher.encrypt(String(b.text ?? '')),
+    sim_slot: simSlotOf(b.sim_slot),
     schedule_json: JSON.stringify(sched.data),
     last_run_at: existing?.last_run_at ?? null,
     last_status: existing?.last_status ?? null,
@@ -1258,13 +1272,13 @@ route('POST', '/api/outbound', async ({ res, body, deps, ip }) => {
   await deps.store.createOutbound({
     id, device_id: b.device_id, to_number: b.to,
     content_enc: await deps.cipher.encrypt(b.text),
-    sim_slot: b.sim_slot ?? null,
+    sim_slot: simSlotOf(b.sim_slot),
     status: 'pending', error: null, created_at: t, updated_at: t,
   })
 
   const frame = makeFrame('cmd', {
     cmd_id: id, action: 'send_sms',
-    args: { to: b.to, text: b.text, sim_slot: b.sim_slot ?? null },
+    args: { to: b.to, text: b.text, sim_slot: simSlotOf(b.sim_slot) },
   }, t) as DownstreamFrame
 
   // 设备离线就直接失败：短信有时效性，排队几小时后再发出去
@@ -1286,7 +1300,8 @@ route('GET', '/api/outbound/:id', async ({ res, params, deps }) => {
     id: o.id, device_id: o.device_id, device_name: dev?.name ?? o.device_id,
     to: o.to_number,
     text: await deps.cipher.decrypt(o.content_enc),
-    sim_slot: o.sim_slot, status: o.status, error: o.error,
+    sim_slot: o.sim_slot, sim: simLabel(simsOf(dev?.net_json), o.sim_slot),
+    status: o.status, error: o.error,
     created_at: o.created_at, updated_at: o.updated_at,
   })
 }, true, false, 'bot')
@@ -1323,13 +1338,16 @@ route('GET', '/api/outbound', async ({ res, url, deps }) => {
     deps.store.listOutbound(limit, offset, filter),
     deps.store.countOutbound(filter),
   ])
-  const names = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
+  const devs = await deps.store.listDevices()
+  const names = new Map(devs.map((d) => [d.id, d.name]))
+  const sims = new Map(devs.map((d) => [d.id, simsOf(d.net_json)]))
   json(res, 200, {
     total,
     outbound: await Promise.all(rows.map(async (o) => ({
       id: o.id, device_id: o.device_id, device_name: names.get(o.device_id) ?? o.device_id,
       to: o.to_number,
       text: await deps.cipher.decrypt(o.content_enc),
+      sim_slot: o.sim_slot, sim: simLabel(sims.get(o.device_id) ?? [], o.sim_slot),
       status: o.status, error: o.error, created_at: o.created_at, updated_at: o.updated_at,
     }))),
   })
@@ -1385,6 +1403,9 @@ route('GET', '/api/events/:id', async ({ res, params, deps }) => {
     device_name: dev?.name ?? e.device_id,
     kind: e.kind,
     direction: e.direction,
+    sim_slot: e.sim_slot,
+    // 标签在服务端算：「只有一张卡就什么都不显示」这条规则只该有一处实现
+    sim: simLabel(simsOf(dev?.net_json), e.sim_slot),
     from: await deps.cipher.decrypt(e.sender_enc),
     content: await deps.cipher.decrypt(e.content_enc),
     occurred_at: e.occurred_at,
@@ -1456,7 +1477,9 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
   const from = p.get('from')?.trim().toLowerCase() ?? ''
   const needsDecryptFilter = q !== '' || from !== ''
 
-  const deviceNames = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
+  const allDevices = await deps.store.listDevices()
+  const deviceNames = new Map(allDevices.map((d) => [d.id, d.name]))
+  const deviceSims = new Map(allDevices.map((d) => [d.id, simsOf(d.net_json)]))
   // 命中规则存的是 id，直接显示等于让人对着一串 rule_3f2a... 猜是哪条
   const ruleNames = new Map((await deps.store.listRules()).map((r) => [r.id, r.name]))
   const decrypt = async (e: Awaited<ReturnType<typeof deps.store.getEvent>> & object) => ({
@@ -1469,6 +1492,8 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
     occurred_at: e.occurred_at,
     received_at: e.received_at,
     direction: e.direction,
+    sim_slot: e.sim_slot,
+    sim: simLabel(deviceSims.get(e.device_id) ?? [], e.sim_slot),
     matched_rules: e.matched_rules
       ? (JSON.parse(e.matched_rules) as string[]).map((id) => ruleNames.get(id) ?? id)
       : [],

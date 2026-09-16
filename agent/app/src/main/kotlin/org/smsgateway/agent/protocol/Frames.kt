@@ -72,6 +72,21 @@ data class NetPayload(
     val carrier: String? = null,
     val signal: Int? = null,
     val online: Boolean? = null,
+    /** 插着的 SIM 卡，逐卡各报一份。空列表表示「不知道」 */
+    val sims: List<SimPayload>? = null,
+)
+
+/** slot 是卡槽序号（0 = SIM1），不是 subscriptionId。 */
+@Serializable
+data class SimPayload(
+    val slot: Int,
+    val carrier: String? = null,
+    val label: String? = null,
+    /** 本机号码后 4 位，取不到为 null */
+    val tail: String? = null,
+    val signal: Int? = null,
+    @SerialName("default_sms") val defaultSms: Boolean? = null,
+    @SerialName("default_data") val defaultData: Boolean? = null,
 )
 
 @Serializable

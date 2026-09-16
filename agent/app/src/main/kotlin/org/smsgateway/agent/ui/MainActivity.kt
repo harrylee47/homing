@@ -236,6 +236,10 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             perms += Manifest.permission.POST_NOTIFICATIONS
         }
+        // 双卡的本机号码尾号。API 30 起才是独立权限，之前包含在 READ_PHONE_STATE 里
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            perms += Manifest.permission.READ_PHONE_NUMBERS
+        }
         permLauncher.launch(perms.toTypedArray())
     }
 

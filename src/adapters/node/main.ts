@@ -460,16 +460,16 @@ const taskDeps = async () => ({
   timezone: await timezone(store),
   onlineDevices: () => hub.onlineDevices(),
   deviceName: (id: string) => deviceNameCache.get(id) ?? id,
-  send: async (deviceId: string, to: string, text: string) => {
+  send: async (deviceId: string, to: string, text: string, simSlot: number | null = null) => {
     const id = `cmd_${crypto.randomUUID()}`
     const t = Date.now()
     await store.createOutbound({
       id, device_id: deviceId, to_number: to,
-      content_enc: await cipher.encrypt(text), sim_slot: null,
+      content_enc: await cipher.encrypt(text), sim_slot: simSlot,
       status: 'pending', error: null, created_at: t, updated_at: t,
     })
     const frame = makeFrame('cmd', {
-      cmd_id: id, action: 'send_sms', args: { to, text, sim_slot: null },
+      cmd_id: id, action: 'send_sms', args: { to, text, sim_slot: simSlot },
     }, t) as DownstreamFrame
     if (hub.send(deviceId, frame)) return true
     await store.advanceOutbound(id, 'failed', '设备离线', Date.now())

@@ -9,7 +9,7 @@ const at = (y: number, mo: number, d: number, h: number, mi = 0) => wallTimeToEp
 
 describe('计划任务', () => {
   let store: MemoryStore
-  let send: ReturnType<typeof vi.fn<(d: string, to: string, t: string) => Promise<boolean>>>
+  let send: ReturnType<typeof vi.fn<(d: string, to: string, t: string, s: number | null) => Promise<boolean>>>
   let alert: ReturnType<typeof vi.fn<(t: string, b: string) => Promise<void>>>
 
   const deps = (now: number, online: string[] = ['dev_jp']) => ({
@@ -20,7 +20,7 @@ describe('计划任务', () => {
 
   const task = (over: Partial<ParsedTask> = {}): ParsedTask => ({
     id: 'task_1', name: '保号', enabled: true, device_id: 'dev_jp',
-    to: '13800138000', text: '保号',
+    to: '13800138000', text: '保号', sim_slot: null,
     schedule: Schedule.parse({ type: 'daily', time: '09:00' }),
     last_run_at: null, last_status: null, fail_count: 0,
     created_at: at(2026, 9, 16, 8, 0),
@@ -30,15 +30,22 @@ describe('计划任务', () => {
   const record = (t: ParsedTask): TaskRecord => ({
     id: t.id, name: t.name, enabled: t.enabled, device_id: t.device_id,
     to_number: t.to, content_enc: new TextEncoder().encode(t.text),
-    schedule_json: JSON.stringify(t.schedule),
+    sim_slot: t.sim_slot, schedule_json: JSON.stringify(t.schedule),
     last_run_at: t.last_run_at, last_status: t.last_status,
     fail_count: t.fail_count, created_at: t.created_at,
   })
 
   beforeEach(() => {
     store = new MemoryStore()
-    send = vi.fn<(d: string, to: string, t: string) => Promise<boolean>>(async () => true)
+    send = vi.fn<(d: string, to: string, t: string, s: number | null) => Promise<boolean>>(async () => true)
     alert = vi.fn<(t: string, b: string) => Promise<void>>(async () => {})
+  })
+
+  describe('保号是按卡的事', () => {
+    it('任务指定了卡槽就从那张卡发 —— 双卡机上两张卡各自都要保', async () => {
+      await runTask(deps(at(2026, 9, 16, 9, 1)), task({ sim_slot: 1 }))
+      expect(send).toHaveBeenCalledWith('dev_jp', '13800138000', '保号', 1)
+    })
   })
 
   describe('排期锚点', () => {
@@ -62,7 +69,7 @@ describe('计划任务', () => {
   describe('执行条件', () => {
     it('到点执行', async () => {
       await runTask(deps(at(2026, 9, 16, 9, 1)), task())
-      expect(send).toHaveBeenCalledWith('dev_jp', '13800138000', '保号')
+      expect(send).toHaveBeenCalledWith('dev_jp', '13800138000', '保号', null)
     })
 
     it('未到点不执行', async () => {
@@ -107,7 +114,7 @@ describe('计划任务', () => {
 
     it('未指定设备时回落到任意在线设备', async () => {
       await runTask(deps(at(2026, 9, 16, 9, 1), ['dev_any']), task({ device_id: '' }))
-      expect(send).toHaveBeenCalledWith('dev_any', '13800138000', '保号')
+      expect(send).toHaveBeenCalledWith('dev_any', '13800138000', '保号', null)
     })
   })
 

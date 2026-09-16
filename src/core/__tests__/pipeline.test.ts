@@ -53,7 +53,7 @@ describe('事件处理管线', () => {
     sent.length = 0
     failTimes = 0
     store.events.set('evt_1', {
-      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in',
+      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
     })
@@ -207,7 +207,7 @@ describe('多设备时标出来源', () => {
     sent.length = 0
     failTimes = 0
     store.events.set('evt_1', {
-      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in',
+      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
     })
@@ -281,7 +281,7 @@ describe('时区：规则时段与 {time} 占位符', () => {
     cipher = await createCipher(generateDek())
     sent.length = 0
     store.events.set('evt_tz', {
-      id: 'evt_tz', device_id: 'dev_1', kind: 'sms', direction: 'in',
+      id: 'evt_tz', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: AT, received_at: AT, matched_rules: null, created_at: AT,
     })
@@ -343,7 +343,7 @@ describe('历史导入只归档不推送', () => {
     cipher = await createCipher(generateDek())
     sent.length = 0
     store.events.set('evt_1', {
-      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in',
+      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
     })
@@ -382,7 +382,7 @@ describe('删除消息', () => {
 
   const add = (id: string, over: Partial<Parameters<MemoryStore['insertEvent']>[0]> = {}) =>
     store.events.set(id, {
-      id, device_id: 'dev_1', kind: 'sms', direction: 'in',
+      id, device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 1_700_000_000_000, received_at: 0,
       matched_rules: null, created_at: 0, ...over,

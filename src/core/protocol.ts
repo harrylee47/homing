@@ -133,6 +133,31 @@ export type CmdStatus = z.infer<typeof CmdStatus>
  * 掉线排查时这是最有用的一组信息——「手机在不在线」只有一个比特，
  * 「WiFi 关了」「信号 0 格」才说明是为什么。
  */
+/**
+ * 一张 SIM 卡。
+ *
+ * `slot` 是卡槽序号（0 = SIM1），不是 subscriptionId——后者是系统发的自增号，
+ * 双卡机上常见 1、2，也可能是 4、5，当卡槽用会把 SIM1 显示成 SIM2。
+ *
+ * 号码只带后 4 位：足以认出是哪张卡，而完整号码是 PII，
+ * 且这组字段落在不加密的 `devices.net_json` 里。
+ */
+export const SimCard = z.object({
+  slot: z.number().int().min(0).max(3),
+  carrier: z.string().max(64).nullish(),
+  /** 用户在系统设置里给这张卡起的名字 */
+  label: z.string().max(64).nullish(),
+  /** 本机号码后 4 位。运营商多数不写号码，取不到是常态 */
+  tail: z.string().max(8).nullish(),
+  /** 这张卡各自的信号格数 0–4 */
+  signal: z.number().int().min(0).max(4).nullish(),
+  /** 系统的默认短信卡 */
+  default_sms: z.boolean().nullish(),
+  /** 当前上网用的数据卡 */
+  default_data: z.boolean().nullish(),
+})
+export type SimCard = z.infer<typeof SimCard>
+
 export const NetStatus = z.object({
   /** WiFi 开关是否打开 */
   wifi: z.boolean().nullish(),
@@ -146,6 +171,14 @@ export const NetStatus = z.object({
   signal: z.number().int().min(0).max(4).nullish(),
   /** 网络是否真的通（连上 WiFi 但没网的情况很常见） */
   online: z.boolean().nullish(),
+  /**
+   * 插着的 SIM 卡。空数组或缺失都表示「不知道」（没权限 / 老版本 Agent），
+   * 界面据此退回到不显示卡槽——而不是显示成「0 张卡」。
+   *
+   * 上面的 carrier / signal 是「当前这条路」的，双卡时只代表其中一张；
+   * 而「另一张卡没信号」恰恰是收不到验证码的原因，所以要逐卡各报一份。
+   */
+  sims: z.array(SimCard).max(4).nullish(),
 })
 export type NetStatus = z.infer<typeof NetStatus>
 

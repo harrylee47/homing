@@ -172,7 +172,7 @@ describe('历史导入的去重', () => {
     content: string, occurred: number,
   ) => {
     store.events.set('evt_live', {
-      id: 'evt_live', device_id: DEVICE, kind: 'sms', direction: 'in',
+      id: 'evt_live', device_id: DEVICE, kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: await cipher.encrypt('95533'),
       content_enc: await cipher.encrypt(content),
       enc_ver: 1, occurred_at: occurred, received_at: NOW,

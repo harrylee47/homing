@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import org.smsgateway.agent.App
 import org.smsgateway.agent.db.PendingEvent
 import org.smsgateway.agent.util.Log
+import org.smsgateway.agent.util.SimInfo
 import java.util.UUID
 
 /**
@@ -80,7 +81,12 @@ class CallLogObserver(private val ctx: Context) {
         runCatching {
             ctx.contentResolver.query(
                 CallLog.Calls.CONTENT_URI,
-                arrayOf(CallLog.Calls._ID, CallLog.Calls.NUMBER, CallLog.Calls.TYPE, CallLog.Calls.DURATION, CallLog.Calls.DATE),
+                arrayOf(
+                    CallLog.Calls._ID, CallLog.Calls.NUMBER, CallLog.Calls.TYPE,
+                    CallLog.Calls.DURATION, CallLog.Calls.DATE,
+                    // 多数 ROM 把 subscriptionId 写在这一列（字符串），要反查卡槽
+                    CallLog.Calls.PHONE_ACCOUNT_ID,
+                ),
                 "${CallLog.Calls._ID} > ?", arrayOf(lastId.toString()),
                 "${CallLog.Calls._ID} ASC",
             )?.use { c ->
@@ -93,13 +99,14 @@ class CallLogObserver(private val ctx: Context) {
                         number = c.getString(1) ?: continue,
                         seconds = c.getLong(3),
                         at = c.getLong(4).takeIf { it > 0 } ?: System.currentTimeMillis(),
+                        simSlot = SimInfo.slotOfAccount(ctx, c.getString(5)),
                     )
                 }
             }
         }.onFailure { Log.e("读取通话记录失败", it) }
     }
 
-    private fun report(number: String, seconds: Long, at: Long) {
+    private fun report(number: String, seconds: Long, at: Long, simSlot: Int?) {
         val app = App.get()
         val event = PendingEvent(
             id = "evt_${UUID.randomUUID()}",
@@ -108,7 +115,7 @@ class CallLogObserver(private val ctx: Context) {
             // 0 秒说明对方没接起来，这跟「通了 3 分钟」是两回事，必须分得出来
             content = if (seconds <= 0) "已拨出 · 未接通" else "已拨出 · 通话 ${duration(seconds)}",
             occurredAt = at,
-            simSlot = null,
+            simSlot = simSlot,
             callType = "outgoing",
             pkg = null,
             truncated = false,

@@ -16,6 +16,7 @@ import org.smsgateway.agent.protocol.Protocol
 import org.smsgateway.agent.sms.SmsSender
 import org.smsgateway.agent.util.Log
 import org.smsgateway.agent.util.NetStatus
+import org.smsgateway.agent.util.SimInfo
 import java.util.UUID
 
 /**
@@ -125,7 +126,13 @@ class SmsCommandHandler(private val ctx: Context) {
      *
      * 与心跳上报共用同一份采集逻辑（util/NetStatus），两个出口一套实现。
      */
-    private fun networkText(): String = NetStatus.read(ctx).describe()
+    private fun networkText(): String = buildString {
+        append(NetStatus.read(ctx).describe())
+        // 双卡时逐卡各报一行：一张卡没信号照样收不到验证码，
+        // 而上面那个总的信号格数只代表其中一张
+        val sims = SimInfo.read(ctx)
+        if (sims.size > 1) sims.forEach { append('\n').append(it.describe()) }
+    }
 
     private fun batteryText(): String {
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager

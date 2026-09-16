@@ -152,6 +152,39 @@ const stripeOf = (kind, direction) =>
  *
  * 设备只在多设备时显示——单设备下每条都缀一遍是噪音（pipeline.ts 里同样的判断）。
  */
+/**
+ * 设备上插着的 SIM 卡。服务端把它放在 net.sims 里随心跳上报。
+ *
+ * 只有一张卡时返回空数组：调用方据此**什么都不显示**。单卡下每处都缀一个
+ * 「SIM1」是纯噪音，而双卡下不显示就分不清验证码是哪张卡收的、该用哪张卡回。
+ */
+function simsOf(device) {
+  const sims = device && device.net && device.net.sims
+  return Array.isArray(sims) && sims.length > 1 ? sims : []
+}
+
+/** 「SIM2 · 尾号1234」。尾号优先于运营商：双卡常常是同一家运营商的两张卡。 */
+function simText(sim) {
+  const extra = sim.tail ? `尾号${sim.tail}` : (sim.carrier || sim.label || '')
+  return extra ? `SIM${sim.slot + 1} · ${extra}` : `SIM${sim.slot + 1}`
+}
+
+/**
+ * 卡槽下拉。单卡（或读不到卡）时整块隐藏——多一个只有一个选项的下拉，
+ * 是在让人怀疑自己是不是漏选了什么。
+ *
+ * @param selected 预选卡槽，null 表示「系统默认卡」
+ */
+function simSelect(id, sims, selected) {
+  if (sims.length === 0) return ''
+  return `<label>用哪张卡发</label>
+    <select id="${id}">
+      <option value="">系统默认卡</option>
+      ${sims.map((x) => `<option value="${x.slot}"${x.slot === selected ? ' selected' : ''}>${
+        esc(simText(x))}${x.default_sms ? '（默认）' : ''}</option>`).join('')}
+    </select>`
+}
+
 function metaLine(parts, deviceId, deviceName, showDevice) {
   const bits = []
   if (showDevice && deviceName) {
@@ -259,10 +292,22 @@ function statusBadges(d) {
 
   // 信号排第一：它和「有没有网」是两件事。手机连着 WiFi、SIM 卡却没信号时，
   // 短信照样收不到——只看「已连 WiFi」会以为一切正常，而这正是最该被看见的故障。
-  if (n.signal != null) {
+  const bars = (lv) => `${'▮'.repeat(lv)}${'▯'.repeat(4 - lv)}`
+  const sims = simsOf(d)
+  if (sims.length > 0) {
+    // 双卡：逐卡各报一格条。上面那个总的 signal 只代表其中一张，
+    // 而「另一张卡没信号」恰恰是收不到验证码的原因
+    for (const sim of sims) {
+      const lv = sim.signal == null ? null : Math.max(0, Math.min(4, sim.signal))
+      const tone = lv === 0 ? 'err' : lv != null && lv <= 1 ? 'warn' : 'ok'
+      const name = sim.tail ? `尾号${sim.tail}` : (sim.carrier || sim.label || '')
+      out.push(`<span class="badge ${lv == null ? 'plain' : tone}">📶 SIM${sim.slot + 1}${
+        name ? ` ${esc(name)}` : ''}${lv == null ? '' : ` ${bars(lv)}`}${lv != null && lv <= 1 ? ' 信号弱' : ''}</span>`)
+    }
+  } else if (n.signal != null) {
     const lv = Math.max(0, Math.min(4, n.signal))
     const tone = lv === 0 ? 'err' : lv <= 1 ? 'warn' : 'ok'
-    out.push(`<span class="badge ${tone}">📶 ${'▮'.repeat(lv)}${'▯'.repeat(4 - lv)}${lv <= 1 ? ' 信号弱' : ''}</span>`)
+    out.push(`<span class="badge ${tone}">📶 ${bars(lv)}${lv <= 1 ? ' 信号弱' : ''}</span>`)
   }
 
   // 上网路径
@@ -276,7 +321,14 @@ function statusBadges(d) {
     out.push('<span class="badge plain">其他网络</span>')
   }
 
-  if (n.carrier) out.push(`<span class="badge plain">${esc(n.carrier)}</span>`)
+  // 双卡时运营商已经跟在每张卡后面了，再来一个总的只会让人以为是第三张卡
+  if (n.carrier && sims.length === 0) {
+    // 单卡也把号码尾号带上：这是「这台手机拿的是哪个号」，一台设备只出现一次，
+    // 不是每条消息都缀一遍的那种噪音——多设备时最想确认的恰恰是这个
+    const all = (n.sims || [])
+    const tail = all.length === 1 && all[0].tail ? ` · 尾号${all[0].tail}` : ''
+    out.push(`<span class="badge plain">${esc(n.carrier)}${esc(tail)}</span>`)
+  }
 
   // 电量总是显示，包括「没在充电」——这台机器要常年插着电，
   // 「未充电」不是常态而是异常，藏起来等于把最该报的那条藏了。
@@ -712,7 +764,8 @@ async function events() {
                  ${callDetail(e.content) ? `<span class="muted" style="margin-left:6px">${esc(callDetail(e.content))}</span>` : ''}</div>`
             : `<div class="muted truncate" style="margin-top:3px">${esc(e.content)}</div>`}
           ${metaLine(
-            [e.direction === 'out' && e.kind === 'sms' ? '本机发出' : '', ...e.matched_rules],
+            // e.sim 由服务端算：只有一张卡时是空串，不显示
+            [e.sim, e.direction === 'out' && e.kind === 'sms' ? '本机发出' : '', ...e.matched_rules],
             e.device_id, e.device_name, multi,
           )}
         </div>`).join('')}</div>` : ''}
@@ -762,6 +815,7 @@ async function eventDetail(id) {
       <div class="row" style="justify-content:flex-start;gap:6px;margin-bottom:12px">
         ${kindBadge(e.kind, e.direction)}
         <span class="badge ${deviceClass(e.device_id)}">${esc(e.device_name || e.device_id)}</span>
+        ${e.sim ? `<span class="badge plain">${esc(e.sim)}</span>` : ''}
       </div>
       <div class="card">
         <div class="wrap" style="font-size:16px">${esc(e.content)}</div>
@@ -774,7 +828,7 @@ async function eventDetail(id) {
       </div>
       <div class="btnrow">
         ${e.kind === 'call' ? `<a href="tel:${encodeURIComponent(e.from)}"><button class="sm">拨回</button></a>` : ''}
-        <a href="/compose?to=${encodeURIComponent(e.from)}&ref=${encodeURIComponent(e.id)}&dev=${encodeURIComponent(e.device_id)}"><button class="${e.kind === 'call' ? 'ghost sm' : 'sm'}">${e.kind === 'call' ? '发短信' : '回复'}</button></a>
+        <a href="/compose?to=${encodeURIComponent(e.from)}&ref=${encodeURIComponent(e.id)}&dev=${encodeURIComponent(e.device_id)}${e.sim_slot == null ? '' : `&sim=${e.sim_slot}`}"><button class="${e.kind === 'call' ? 'ghost sm' : 'sm'}">${e.kind === 'call' ? '发短信' : '回复'}</button></a>
         ${e.kind === 'call' ? '' : '<button class="ghost sm" id="copy">复制正文</button>'}
         <button class="danger sm" id="del">删除</button>
       </div>`)
@@ -822,6 +876,8 @@ async function compose() {
         ${preferred && !online.some((d) => d.id === preferred)
           ? '<div class="muted" style="color:var(--warn)">收到这条消息的设备当前不在线，换用其他设备发送时对方看到的会是另一个号码。</div>'
           : ''}
+        <!-- 卡槽跟着设备走，换设备要重画 -->
+        <div id="simbox"></div>
         <label>收件人</label>
         <input id="to" inputmode="tel" value="${esc(p.get('to') || '')}">
         <label>内容</label>
@@ -831,15 +887,25 @@ async function compose() {
       </div>
       <div id="status"></div>`)
 
+    // 回复时预选原来那张卡：多卡场景下从别的卡发回去，对方看到的是陌生号码
+    const prefSim = p.get('sim') === null ? null : Number(p.get('sim'))
+    const drawSims = () => {
+      const dev = online.find((d) => d.id === $('#dev').value)
+      $('#simbox').innerHTML = simSelect('sim', simsOf(dev), prefSim)
+    }
+    drawSims()
+    $('#dev').onchange = drawSims
+
     $('#send').onclick = async () => {
       const to = $('#to').value.trim(), text = $('#text').value
       if (!to || !text) return ($('#err').textContent = '收件人与内容都要填')
       $('#send').disabled = true
       $('#err').textContent = ''
       try {
+        const sim = $('#sim')
         const r = await api('/outbound', {
           method: 'POST',
-          body: { device_id: $('#dev').value, to, text },
+          body: { device_id: $('#dev').value, to, text, ...(sim && sim.value !== '' ? { sim_slot: Number(sim.value) } : {}) },
         })
         trackOutbound(r.id)
       } catch (e) {
@@ -942,7 +1008,7 @@ async function sent() {
             ${statusBadge(o.status)}
             ${o.error ? `<span class="badge err">${esc(o.error)}</span>` : ''}
           </div>
-          ${metaLine([], o.device_id, o.device_name, multi)}
+          ${metaLine([o.sim], o.device_id, o.device_name, multi)}
         </div>`).join('')}</div>` : ''}
       ${r.total > limit ? `
         <div class="card tight row">
@@ -985,6 +1051,7 @@ async function sentDetail(id) {
       <div class="row" style="justify-content:flex-start;gap:6px;margin-bottom:12px">
         ${statusBadge(o.status)}
         <span class="badge ${deviceClass(o.device_id)}">${esc(o.device_name)}</span>
+        ${o.sim ? `<span class="badge plain">${esc(o.sim)}</span>` : ''}
       </div>
 
       <div class="card">
@@ -1178,6 +1245,11 @@ function ruleEditor(rule, chs, devs = []) {
       : { mode: 'contains', values: [] }
 
   const win = m.time_window || null
+  // 所有设备上的卡槽合起来去重：规则是全局的，不绑定某一台设备。
+  // 单卡设备的 simsOf 返回空，所以只有真的有双卡机时这一节才出现
+  const allSims = [...new Map(
+    devs.flatMap((d) => simsOf(d)).map((x) => [x.slot, x]),
+  ).values()].sort((a, b) => a.slot - b.slot)
   const bark = {
     level: 'active', group: '', auto_copy_code: true, deep_link: 'event',
     ...(r.action.bark || {}),
@@ -1244,6 +1316,15 @@ function ruleEditor(rule, chs, devs = []) {
           <input type="checkbox" data-dev="${esc(d.id)}" style="width:auto"${(m.device_ids || []).includes(d.id) ? ' checked' : ''}>
           <span>${esc(d.name)} <span class="muted">${d.status === 'online' ? '在线' : '离线'}</span></span></label>`).join('')}
       ` : `<div class="muted">当前只有 ${devs.length} 台设备，无需限定。多设备时这里可以让不同的卡走不同的渠道。</div>`}
+      ${allSims.length ? `
+        <label>限定卡槽</label>
+        <div class="muted">不勾选表示不限制。双卡机上两张卡的用途往往完全不同——
+        一张收银行验证码，一张是垃圾短信重灾区，靠号码是分不完的。
+        <b>卡槽未知的消息不会命中</b>（老版本 Agent 或系统不给这个信息）。</div>
+        ${allSims.map((x) => `<label style="display:flex;gap:8px;align-items:center;margin:6px 0">
+          <input type="checkbox" data-sim="${x.slot}" style="width:auto"${(m.sim_slot || []).includes(x.slot) ? ' checked' : ''}>
+          <span>${esc(simText(x))}</span></label>`).join('')}
+      ` : ''}
     </div>
 
     <h2>动作</h2>
@@ -1365,6 +1446,7 @@ function ruleEditor(rule, chs, devs = []) {
         content_excludes: excludeTags.values(),
         content_regex: m.content_regex ?? null,
         device_ids: [...app.querySelectorAll('[data-dev]')].filter((c) => c.checked).map((c) => c.dataset.dev),
+        sim_slot: [...app.querySelectorAll('[data-sim]')].filter((c) => c.checked).map((c) => Number(c.dataset.sim)),
         direction: $('#direction').value ? [$('#direction').value] : [],
         // 只填了一半的时段是无意义的，当没填处理
         time_window: from && to ? { from, to } : null,
@@ -1444,14 +1526,14 @@ const BARK_LEVELS = [
 /** 占位符清单与服务端 core/rules.ts 的 TemplateVars 一一对应，改动要同步。 */
 const TEMPLATE_VARS = [
   ['sender', '发件人'], ['content', '正文'], ['code', '验证码'],
-  ['time', '时间'], ['device', '设备名'],
+  ['time', '时间'], ['device', '设备名'], ['sim', '卡槽'],
 ]
 
 /** 模板预览用的样例消息。挑的是验证码短信——模板最常调的就是这一类。 */
 function renderTemplate(template) {
   const sample = {
     sender: '95533', content: '【建设银行】您的验证码是 902431，请勿泄露',
-    code: '902431', time: fmt(Date.now()), device: '日本卡',
+    code: '902431', time: fmt(Date.now()), device: '日本卡', sim: 'SIM1',
   }
   return String(template).replace(/\{(\w+)\}/g, (whole, k) => (k in sample ? sample[k] : whole))
 }
@@ -2498,6 +2580,12 @@ async function tasks() {
     const activeDevs = devs.filter((d) => d.status !== 'revoked')
     const fmtTs = (t) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—')
     const devName = (id) => (id ? (activeDevs.find((d) => d.id === id)?.name || id) : '任意在线设备')
+    // 列表里也要标出用哪张卡：两条「保号」任务只差一张卡，不标就分不清
+    const simName = (t) => {
+      const sims = simsOf(activeDevs.find((d) => d.id === t.device_id))
+      const one = sims.find((x) => x.slot === t.sim_slot)
+      return one ? ` · ${simText(one)}` : ''
+    }
 
     render(`
       <h1>计划任务</h1>
@@ -2508,7 +2596,7 @@ async function tasks() {
           <div class="row">
             <div class="col grow">
               <b>${esc(t.name)}</b>
-              <span class="muted">${esc(t.schedule_text)} · ${esc(devName(t.device_id))} → ${esc(t.to || '未设置')}</span>
+              <span class="muted">${esc(t.schedule_text)} · ${esc(devName(t.device_id))}${esc(simName(t))} → ${esc(t.to || '未设置')}</span>
               <span class="muted">下次 ${t.enabled ? fmtTs(t.next_run_at) : '未启用'}</span>
             </div>
             <div class="col" style="align-items:flex-end;gap:4px">
@@ -2531,6 +2619,7 @@ function taskEditor(task, devs) {
   const t = task || {
     id: null, name: '保号', enabled: false,
     device_id: devs.length === 1 ? devs[0].id : '',
+    sim_slot: null,
     to: '', text: '保号',
     schedule: { type: 'interval', days: 30 },
     last_run_at: null, next_run_at: null, fail_count: 0, last_status: null,
@@ -2559,6 +2648,8 @@ function taskEditor(task, devs) {
         <option value=""${!t.device_id ? ' selected' : ''}>任意在线设备${devs.length > 1 ? '（多设备下不建议）' : ''}</option>
         ${devs.map((d) => `<option value="${esc(d.id)}"${t.device_id === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
       </select>
+      <!-- 保号是按卡的事：双卡机上两张卡各建一个任务，各自绑一张卡 -->
+      <div id="t_simbox"></div>
       <label>收件人</label><input id="t_to" inputmode="tel" value="${esc(t.to || '')}">
       <label>内容</label><input id="t_text" value="${esc(t.text || '')}">
     </div>
@@ -2599,6 +2690,15 @@ function taskEditor(task, devs) {
    * 表单停在原来那个上不动，看起来就像「每月没有日期设置」。
    */
   const from = (type, key, fallback) => (sc.type === type && sc[key] != null ? sc[key] : fallback)
+
+  // 卡槽跟着设备走。选「任意在线设备」时不给卡槽选项——
+  // 换一台设备时同一个卡槽序号是另一张卡，指定它没有意义
+  const paintSims = () => {
+    const dev = devs.find((d) => d.id === $('#t_dev').value)
+    $('#t_simbox').innerHTML = simSelect('t_sim', simsOf(dev), t.sim_slot)
+  }
+  paintSims()
+  $('#t_dev').onchange = paintSims
 
   const paintSched = () => {
     const type = $('#t_type').value
@@ -2677,6 +2777,7 @@ function taskEditor(task, devs) {
           name: $('#t_name').value.trim(),
           enabled: $('#t_on').value === '1',
           device_id: $('#t_dev').value,
+          sim_slot: $('#t_sim') && $('#t_sim').value !== '' ? Number($('#t_sim').value) : null,
           to: $('#t_to').value.trim(),
           text: $('#t_text').value,
           schedule: collectSchedule(),

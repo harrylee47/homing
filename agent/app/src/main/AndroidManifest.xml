@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- 双卡时用来取本机号码尾号（只取后 4 位）。和 READ_PHONE_STATE 同属
+         PHONE 权限组，后者已授权时系统会直接放行，不多弹一次框 -->
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
 
     <!-- 设备找回：按需定位，不做持续跟踪 -->

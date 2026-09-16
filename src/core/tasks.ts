@@ -16,7 +16,7 @@ export interface TaskDeps {
   /** 用户时区，IANA 名称如 Asia/Tokyo */
   timezone: string
   onlineDevices(): string[]
-  send(deviceId: string, to: string, text: string): Promise<boolean>
+  send(deviceId: string, to: string, text: string, simSlot: number | null): Promise<boolean>
   deviceName?(id: string): string
   alert(title: string, body: string): Promise<void>
   now?: () => number
@@ -91,7 +91,7 @@ export async function runTask(deps: TaskDeps, task: ParsedTask, force = false): 
     return { sent: false, reason: `设备不在线（${which}）` }
   }
 
-  const ok = await deps.send(device, task.to, task.text).catch(() => false)
+  const ok = await deps.send(device, task.to, task.text, task.sim_slot).catch(() => false)
 
   if (force) {
     log.info('计划任务手动测试', { task_id: task.id, ok })

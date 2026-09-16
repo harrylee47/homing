@@ -12,6 +12,7 @@ import org.smsgateway.agent.App
 import org.smsgateway.agent.db.PendingEvent
 import org.smsgateway.agent.protocol.Protocol
 import org.smsgateway.agent.util.Log
+import org.smsgateway.agent.util.SimInfo
 
 /**
  * 把网关启用**之前**手机里就存着的短信与通话导进来。
@@ -81,7 +82,10 @@ object HistoryImporter {
         runCatching {
             ctx.contentResolver.query(
                 Telephony.Sms.CONTENT_URI,
-                arrayOf(Telephony.Sms._ID, Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE, Telephony.Sms.TYPE),
+                arrayOf(
+                    Telephony.Sms._ID, Telephony.Sms.ADDRESS, Telephony.Sms.BODY,
+                    Telephony.Sms.DATE, Telephony.Sms.TYPE, Telephony.Sms.SUBSCRIPTION_ID,
+                ),
                 where.toString(), args.toTypedArray(),
                 // 从新到旧：条数受限时，留下的应该是最近的那些
                 "${Telephony.Sms.DATE} DESC",
@@ -106,6 +110,7 @@ object HistoryImporter {
                         at = date,
                         direction = direction,
                         callType = null,
+                        simSlot = SimInfo.slotOfSub(ctx, runCatching { c.getInt(5) }.getOrDefault(-1)),
                     )
                     n++
                 }
@@ -129,7 +134,10 @@ object HistoryImporter {
         runCatching {
             ctx.contentResolver.query(
                 CallLog.Calls.CONTENT_URI,
-                arrayOf(CallLog.Calls._ID, CallLog.Calls.NUMBER, CallLog.Calls.TYPE, CallLog.Calls.DURATION, CallLog.Calls.DATE),
+                arrayOf(
+                    CallLog.Calls._ID, CallLog.Calls.NUMBER, CallLog.Calls.TYPE,
+                    CallLog.Calls.DURATION, CallLog.Calls.DATE, CallLog.Calls.PHONE_ACCOUNT_ID,
+                ),
                 where.toString(), args.toTypedArray(),
                 "${CallLog.Calls.DATE} DESC",
             )?.use { c ->
@@ -156,6 +164,7 @@ object HistoryImporter {
                         at = date,
                         direction = direction,
                         callType = callType,
+                        simSlot = SimInfo.slotOfAccount(ctx, c.getString(5)),
                     )
                     n++
                 }
@@ -174,7 +183,7 @@ object HistoryImporter {
      */
     private fun enqueue(
         id: String, kind: String, from: String, content: String,
-        at: Long, direction: String, callType: String?,
+        at: Long, direction: String, callType: String?, simSlot: Int?,
     ) {
         val app = App.get()
         app.scope.launch {
@@ -186,7 +195,7 @@ object HistoryImporter {
                         from = from,
                         content = content,
                         occurredAt = at,
-                        simSlot = null,
+                        simSlot = simSlot,
                         callType = callType,
                         pkg = null,
                         truncated = false,

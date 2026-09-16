@@ -25,6 +25,14 @@ export interface BotStatsDevice {
     carrier?: string | null
     signal?: number | null
     online?: boolean | null
+    sims?: {
+      slot: number
+      carrier?: string | null
+      label?: string | null
+      tail?: string | null
+      signal?: number | null
+      default_sms?: boolean | null
+    }[] | null
   } | null
 }
 
@@ -56,9 +64,9 @@ export interface BotApi {
   tasks(): Promise<{
     tasks: { name: string; enabled: boolean; schedule_text: string; to: string; next_run_at: number | null; fail_count: number }[]
   }>
-  sendSms(deviceId: string, to: string, text: string): Promise<{ id: string; status: string; error?: string }>
+  sendSms(deviceId: string, to: string, text: string, simSlot?: number | null): Promise<{ id: string; status: string; error?: string }>
   /** 查回复映射：把用户引用的那条推送还原成「发给谁」 */
-  lookupRef(ref: string): Promise<{ sender: string; device_id: string; event_id: string } | null>
+  lookupRef(ref: string): Promise<{ sender: string; device_id: string; event_id: string; sim_slot?: number | null } | null>
   /** 该号码是否在历史记录里出现过 */
   isKnownNumber(n: string): Promise<boolean>
 }
@@ -226,7 +234,16 @@ function deviceDetail(d: BotStatsDevice): string[] {
   const n = d.net
   if (n) {
     // 信号先说：它决定短信收不收得到
-    if (n.signal != null) {
+    const sims = n.sims && n.sims.length > 1 ? n.sims : []
+    if (sims.length > 0) {
+      // 双卡逐卡各报一份：总的那个 signal 只代表其中一张
+      for (const sim of sims) {
+        const name = sim.tail ? `尾号${sim.tail}` : (sim.carrier ?? sim.label ?? '')
+        const lv = sim.signal
+        out.push(`📶 SIM${sim.slot + 1}${name ? ` ${esc(name)}` : ''}` +
+          (lv == null ? '' : ` ${'▮'.repeat(lv)}${'▯'.repeat(4 - lv)}${lv <= 1 ? ' ⚠️ 很弱' : ''}`))
+      }
+    } else if (n.signal != null) {
       out.push(`📶 信号 ${'▮'.repeat(n.signal)}${'▯'.repeat(4 - n.signal)}${n.signal <= 1 ? ' ⚠️ 很弱' : ''}`)
     }
     if (n.type === 'wifi') out.push(`🛜 ${n.ssid ? esc(n.ssid) : 'WiFi'}`)
@@ -234,7 +251,8 @@ function deviceDetail(d: BotStatsDevice): string[] {
     else if (n.type === 'none') out.push('❌ 无网络')
     if (n.type && n.type !== 'none' && n.online === false) out.push('⚠️ 连着但没网')
     if (n.wifi === false && n.type !== 'wifi') out.push('WiFi 已关')
-    if (n.carrier) out.push(esc(n.carrier))
+    // 双卡时运营商已经跟在每张卡后面，再来一个总的会被当成第三张卡
+    if (n.carrier && sims.length === 0) out.push(esc(n.carrier))
   }
   return out
 }
@@ -377,26 +395,45 @@ async function send(api: BotApi, to: string, text: string): Promise<BotMessage> 
 
   const known = await api.isKnownNumber(to)
 
-  if (online.length === 1 && known) {
+  // 「一台设备一张卡 + 熟号码」是唯一不需要确认的情形。
+  // 双卡时必须问：收件人看到的号码取决于用哪张卡，挑错等于用错身份
+  if (online.length === 1 && known && simsOfDevice(online[0]!).length === 0) {
     const r = await api.sendSms(online[0]!.id, to, text)
     return { text: r.status === 'failed' ? `发送失败：${esc(r.error ?? '未知原因')}` : `已提交发送 → ${esc(to)}` }
   }
 
   const token = stashSend(to, text)
+  const multi = online.length > 1
   const head = known
-    ? `发给 <b>${esc(to)}</b>，用哪台设备？`
+    ? `发给 <b>${esc(to)}</b>，用哪${multi || online.some((d) => simsOfDevice(d).length > 0) ? '张卡' : '台设备'}？`
     : `⚠️ <b>${esc(to)}</b> 不在历史记录中，确认要发送吗？`
+
+  const rows: { text: string; data: string }[][] = []
+  for (const d of online) {
+    const sims = simsOfDevice(d)
+    if (sims.length === 0) {
+      rows.push([{ text: multi ? `用 ${d.name} 发送` : '确认发送', data: `send:${token}:${d.id}` }])
+      continue
+    }
+    for (const sim of sims) {
+      const name = sim.tail ? `尾号${sim.tail}` : (sim.carrier ?? sim.label ?? '')
+      rows.push([{
+        text: `${multi ? `${d.name} ` : ''}SIM${sim.slot + 1}${name ? ` ${name}` : ''}`,
+        data: `send:${token}:${d.id}:${sim.slot}`,
+      }])
+    }
+  }
 
   return {
     text: `${head}\n\n💬 ${spoiler(text)}`,
-    buttons: [
-      ...online.map((d) => [{
-        text: online.length > 1 ? `用 ${d.name} 发送` : '确认发送',
-        data: `send:${token}:${d.id}`,
-      }]),
-      [{ text: '取消', data: 'cancel' }],
-    ],
+    buttons: [...rows, [{ text: '取消', data: 'cancel' }]],
   }
+}
+
+/** 双卡才返回内容：单卡时问「用哪张卡」纯属添乱。 */
+function simsOfDevice(d: BotStatsDevice): NonNullable<NonNullable<BotStatsDevice['net']>['sims']> {
+  const sims = d.net?.sims
+  return sims && sims.length > 1 ? sims : []
 }
 
 /** 处理引用回复：把回复内容作为短信发回原发件人。 */
@@ -405,9 +442,9 @@ export async function handleReply(api: BotApi, replyToRef: string, text: string)
   // 引用的不是我们推送的短信（比如回复了 /status 的输出），忽略
   if (!ref) return null
 
-  // 用原事件所属的那台设备回复：多卡场景下必须从收到短信的那张卡发回去，
-  // 否则对方看到的是一个陌生号码
-  const r = await api.sendSms(ref.device_id, ref.sender, text)
+  // 用原事件所属的那台设备、那张卡回复：从别的卡发回去，
+  // 对方看到的是一个陌生号码——哪怕是同一台手机上的另一张卡
+  const r = await api.sendSms(ref.device_id, ref.sender, text, ref.sim_slot ?? null)
   return {
     text: r.status === 'failed'
       ? `发送失败：${esc(r.error ?? '未知原因')}`
@@ -419,7 +456,8 @@ export async function handleReply(api: BotApi, replyToRef: string, text: string)
 export async function handleCallback(api: BotApi, data: string, now = Date.now()): Promise<BotMessage | null> {
   if (data === 'cancel') return { text: '已取消' }
 
-  const m = data.match(/^send:([^:]+):(.+)$/)
+  // 卡槽是可选的第三段。deviceId 里不含冒号，所以用 [^:]+ 切得干净
+  const m = data.match(/^send:([^:]+):([^:]+)(?::(\d))?$/)
   if (!m) return null
 
   const pending = pendingSends.get(m[1]!)
@@ -435,10 +473,12 @@ export async function handleCallback(api: BotApi, data: string, now = Date.now()
     return { text: `${device ? esc(device.name) : '该设备'}当前不在线，未发送` }
   }
 
-  const r = await api.sendSms(deviceId, pending.to, pending.text)
+  const slot = m[3] == null ? null : Number(m[3])
+  const r = await api.sendSms(deviceId, pending.to, pending.text, slot)
+  const via = [device.name, slot == null ? null : `SIM${slot + 1}`].filter(Boolean).join(' ')
   return {
     text: r.status === 'failed'
       ? `发送失败：${esc(r.error ?? '未知原因')}`
-      : `已提交发送 → ${esc(pending.to)}（${esc(device.name)}）`,
+      : `已提交发送 → ${esc(pending.to)}（${esc(via)}）`,
   }
 }

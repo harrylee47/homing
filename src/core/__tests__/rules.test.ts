@@ -56,6 +56,19 @@ describe('规则匹配', () => {
     expect(matchRule(rule({ device_ids: ['dev_1'] }), evt())).toBe(true)
     expect(matchRule(rule({ device_ids: ['dev_2'] }), evt())).toBe(false)
   })
+
+  it('限定卡槽 —— 双卡机上两张卡的用途往往完全不同', () => {
+    expect(matchRule(rule({ sim_slot: [0] }), evt({ sim_slot: 0 }))).toBe(true)
+    expect(matchRule(rule({ sim_slot: [0] }), evt({ sim_slot: 1 }))).toBe(false)
+    expect(matchRule(rule({ sim_slot: [0, 1] }), evt({ sim_slot: 1 }))).toBe(true)
+  })
+
+  it('卡槽未知的消息不被卡槽条件命中 —— 否则这个条件等于没设', () => {
+    expect(matchRule(rule({ sim_slot: [0] }), evt({ sim_slot: null }))).toBe(false)
+    expect(matchRule(rule({ sim_slot: [0] }), evt())).toBe(false)
+    // 不限定时照旧全收，不能因为新增了字段就把老记录挡掉
+    expect(matchRule(rule({}), evt({ sim_slot: null }))).toBe(true)
+  })
 })
 
 describe('时段窗口', () => {
@@ -165,13 +178,13 @@ describe('验证码提取', () => {
 describe('模板渲染', () => {
   it('替换已知占位符', () => {
     expect(render('【{sender}】{content}', {
-      sender: '95533', content: '验证码 123456', code: '123456', time: 't', device: 'd',
+      sender: '95533', content: '验证码 123456', code: '123456', time: 't', device: 'd', sim: '',
     })).toBe('【95533】验证码 123456')
   })
 
   it('未知占位符原样保留，便于发现拼写错误', () => {
     expect(render('{sender} {typo}', {
-      sender: 'a', content: '', code: '', time: '', device: '',
+      sender: 'a', content: '', code: '', time: '', device: '', sim: '',
     })).toBe('a {typo}')
   })
 })

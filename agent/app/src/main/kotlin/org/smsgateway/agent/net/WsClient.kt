@@ -26,6 +26,7 @@ import org.smsgateway.agent.sms.SmsSender
 import org.smsgateway.agent.util.Log
 import org.smsgateway.agent.util.NetStatus
 import org.smsgateway.agent.util.Prefs
+import org.smsgateway.agent.util.SimInfo
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
@@ -536,7 +537,10 @@ class WsClient(
      */
     private fun netPayload(): NetPayload? = runCatching {
         val n = NetStatus.read(ctx)
-        NetPayload(n.wifi, n.type, n.ssid, n.carrier, n.signal, n.online)
+        val sims = SimInfo.read(ctx).map {
+            SimPayload(it.slot, it.carrier, it.label, it.tail, it.signal, it.defaultSms, it.defaultData)
+        }
+        NetPayload(n.wifi, n.type, n.ssid, n.carrier, n.signal, n.online, sims.ifEmpty { null })
     }.getOrNull()
 
     private fun battery(): Int {

@@ -53,6 +53,16 @@ export const RuleMatch = z.object({
   /** 限定设备。空数组视为不限制。 */
   device_ids: z.array(z.string()).default([]),
   /**
+   * 限定卡槽（0 = SIM1）。空数组视为不限制。
+   *
+   * 双卡机上两张卡的用途往往完全不同——一张收银行验证码，一张是垃圾短信重灾区。
+   * 没有这个条件就只能靠发件人号码去区分，而营销号码是无穷的。
+   *
+   * 卡槽未知（老 Agent、ROM 不给）的事件**不会**被卡槽条件命中：
+   * 限定了 SIM1 却把来路不明的也算进去，等于这个条件没设。
+   */
+  sim_slot: z.array(z.number().int().min(0).max(3)).max(4).default([]),
+  /**
    * 方向。空数组视为不限制。
    *
    * 默认规则都限定为 in：给自己发出去的短信再推一遍验证码是荒谬的，
@@ -70,7 +80,7 @@ export const RuleAction = z.object({
   priority: z.enum(['normal', 'high']).default('normal'),
   /** 提取 4–8 位验证码，单独放进推送标题，通知栏无需展开即可见 */
   extract_code: z.boolean().default(false),
-  /** 支持 {sender} {content} {code} {time} {device} 占位符 */
+  /** 支持 {sender} {content} {code} {time} {device} {sim} 占位符 */
   template: z.string().max(1000).default('【{sender}】{content}'),
   archive: z.boolean().default(true),
   /** 命中后不再匹配后续规则 */
@@ -102,6 +112,8 @@ export interface MatchableEvent {
   occurred_at: number
   /** 缺省按 in 处理 */
   direction?: 'in' | 'out' | undefined
+  /** 卡槽序号，0 = SIM1。未知为 null */
+  sim_slot?: number | null | undefined
 }
 
 // ── 匹配 ────────────────────────────────────────────────────
@@ -118,6 +130,10 @@ export function matchRule(rule: Rule, e: MatchableEvent, tzOffsetMin = 0): boole
   if (m.kind.length > 0 && !m.kind.includes(e.kind)) return false
   if (m.device_ids.length > 0 && !m.device_ids.includes(e.device_id)) return false
   if (m.direction.length > 0 && !m.direction.includes(e.direction ?? 'in')) return false
+  if (m.sim_slot.length > 0) {
+    // 卡槽未知时不命中：限定了 SIM1 却把来路不明的也算上，这个条件就白设了
+    if (e.sim_slot == null || !m.sim_slot.includes(e.sim_slot)) return false
+  }
 
   if (m.sender && m.sender.values.length > 0) {
     if (!matchSender(m.sender, e.from)) return false
@@ -278,6 +294,8 @@ export interface TemplateVars {
   code: string
   time: string
   device: string
+  /** 「SIM1」之类。单卡或卡槽未知时是空串 */
+  sim: string
 }
 
 /** 未知占位符原样保留，便于用户发现自己拼错了变量名。 */

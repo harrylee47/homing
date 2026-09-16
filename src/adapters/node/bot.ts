@@ -247,11 +247,11 @@ export class TelegramBot {
         return call(`/api/events?${q.toString()}`) as ReturnType<BotApi['events']>
       },
 
-      sendSms: async (deviceId, to, text) => {
+      sendSms: async (deviceId, to, text, simSlot) => {
         try {
           return (await call('/api/outbound', {
             method: 'POST',
-            body: JSON.stringify({ device_id: deviceId, to, text }),
+            body: JSON.stringify({ device_id: deviceId, to, text, sim_slot: simSlot ?? null }),
           })) as { id: string; status: string }
         } catch (e) {
           return { id: '', status: 'failed', error: e instanceof Error ? e.message : String(e) }
@@ -262,7 +262,7 @@ export class TelegramBot {
       // 不涉及业务逻辑，直接读存储不会造成两端逻辑漂移
       lookupRef: async (ref) => {
         const r = await store.getMessageRef(channelId, ref)
-        return r ? { sender: r.sender, device_id: r.device_id, event_id: r.event_id } : null
+        return r ? { sender: r.sender, device_id: r.device_id, event_id: r.event_id, sim_slot: r.sim_slot } : null
       },
 
       isKnownNumber: async (n) => {

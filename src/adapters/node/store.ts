@@ -56,6 +56,9 @@ const MIGRATIONS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_id, occurred_at DESC)`,
   `ALTER TABLE events ADD COLUMN direction TEXT`,
+  // 双卡：这条是哪张卡收到的。不建索引——它只用于展示与规则匹配，
+  // 而规则匹配发生在内存里（正文本来就是密文，一样要逐条过）
+  `ALTER TABLE events ADD COLUMN sim_slot INTEGER`,
   `ALTER TABLE devices ADD COLUMN net_json TEXT`,
   `ALTER TABLE sessions ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0`,
   `CREATE TABLE IF NOT EXISTS channels (
@@ -127,6 +130,8 @@ const MIGRATIONS: string[] = [
      PRIMARY KEY (channel_id, ref)
    )`,
   `CREATE INDEX IF NOT EXISTS idx_msgrefs_time ON message_refs(created_at)`,
+  // 回复要用原消息那张卡，不只是原设备
+  `ALTER TABLE message_refs ADD COLUMN sim_slot INTEGER`,
   `CREATE TABLE IF NOT EXISTS tasks (
      id            TEXT PRIMARY KEY,
      name          TEXT NOT NULL,
@@ -140,6 +145,8 @@ const MIGRATIONS: string[] = [
      fail_count    INTEGER NOT NULL DEFAULT 0,
      created_at    INTEGER NOT NULL
    )`,
+  // 保号是按卡的事：双卡机上两张卡各自都要定期产生使用记录
+  `ALTER TABLE tasks ADD COLUMN sim_slot INTEGER`,
 ]
 
 /** 状态机的前进顺序。数字大者为更后的状态，用于拒绝倒退的回执。 */
@@ -263,11 +270,11 @@ export class SqliteStore implements Store {
     const r = this.db
       .prepare(
         `INSERT OR IGNORE INTO events
-           (id, device_id, kind, direction, sender_enc, content_enc, enc_ver, occurred_at, received_at, matched_rules, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, device_id, kind, direction, sim_slot, sender_enc, content_enc, enc_ver, occurred_at, received_at, matched_rules, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        e.id, e.device_id, e.kind, e.direction, e.sender_enc, e.content_enc,
+        e.id, e.device_id, e.kind, e.direction, e.sim_slot, e.sender_enc, e.content_enc,
         e.enc_ver, e.occurred_at, e.received_at, e.matched_rules, e.created_at,
       )
     return Number(r.changes) > 0 ? 'stored' : 'duplicate'
@@ -275,7 +282,7 @@ export class SqliteStore implements Store {
 
   async getEvent(id: string): Promise<StoredEvent | null> {
     const row = this.db.prepare('SELECT * FROM events WHERE id = ?').get(id)
-    return row ? (row as unknown as StoredEvent) : null
+    return row ? ({ sim_slot: null, ...(row as object) } as unknown as StoredEvent) : null
   }
 
   async listEvents(q: EventQuery): Promise<StoredEvent[]> {
@@ -432,25 +439,26 @@ export class SqliteStore implements Store {
 
   async listTasks(): Promise<TaskRecord[]> {
     const rows = this.db.prepare('SELECT * FROM tasks ORDER BY created_at').all() as unknown as (Omit<TaskRecord, 'enabled'> & { enabled: number })[]
-    return rows.map((r) => ({ ...r, enabled: r.enabled === 1 }))
+    return rows.map((r) => ({ ...r, enabled: r.enabled === 1, sim_slot: r.sim_slot ?? null }))
   }
 
   async getTask(id: string): Promise<TaskRecord | null> {
     const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as
       | (Omit<TaskRecord, 'enabled'> & { enabled: number }) | undefined
-    return row ? { ...row, enabled: row.enabled === 1 } : null
+    return row ? { ...row, enabled: row.enabled === 1, sim_slot: row.sim_slot ?? null } : null
   }
 
   async upsertTask(t: TaskRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO tasks (id, name, enabled, device_id, to_number, content_enc, schedule_json, last_run_at, last_status, fail_count, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO tasks (id, name, enabled, device_id, to_number, content_enc, sim_slot, schedule_json, last_run_at, last_status, fail_count, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, enabled=excluded.enabled,
            device_id=excluded.device_id, to_number=excluded.to_number,
-           content_enc=excluded.content_enc, schedule_json=excluded.schedule_json`,
+           content_enc=excluded.content_enc, sim_slot=excluded.sim_slot,
+           schedule_json=excluded.schedule_json`,
       )
-      .run(t.id, t.name, t.enabled ? 1 : 0, t.device_id, t.to_number, t.content_enc,
+      .run(t.id, t.name, t.enabled ? 1 : 0, t.device_id, t.to_number, t.content_enc, t.sim_slot,
         t.schedule_json, t.last_run_at, t.last_status, t.fail_count, t.created_at)
   }
 
@@ -477,16 +485,17 @@ export class SqliteStore implements Store {
   async putMessageRef(r: MessageRefRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO message_refs (channel_id, ref, event_id, sender, device_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(channel_id, ref) DO UPDATE SET event_id=excluded.event_id, sender=excluded.sender`,
+        `INSERT INTO message_refs (channel_id, ref, event_id, sender, device_id, sim_slot, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(channel_id, ref) DO UPDATE SET event_id=excluded.event_id,
+           sender=excluded.sender, sim_slot=excluded.sim_slot`,
       )
-      .run(r.channel_id, r.ref, r.event_id, r.sender, r.device_id, r.created_at)
+      .run(r.channel_id, r.ref, r.event_id, r.sender, r.device_id, r.sim_slot, r.created_at)
   }
 
   async getMessageRef(channelId: string, ref: string): Promise<MessageRefRecord | null> {
     const row = this.db.prepare('SELECT * FROM message_refs WHERE channel_id = ? AND ref = ?').get(channelId, ref)
-    return row ? (row as unknown as MessageRefRecord) : null
+    return row ? ({ sim_slot: null, ...(row as object) } as unknown as MessageRefRecord) : null
   }
 
   async cleanupMessageRefs(before: number): Promise<void> {

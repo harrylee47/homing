@@ -11,6 +11,7 @@ import org.smsgateway.agent.App
 import org.smsgateway.agent.db.PendingEvent
 import org.smsgateway.agent.protocol.Protocol
 import org.smsgateway.agent.util.Log
+import org.smsgateway.agent.util.SimInfo
 import java.util.UUID
 
 /**
@@ -56,7 +57,11 @@ class SentSmsObserver(private val ctx: Context) : ContentObserver(Handler(Looper
         runCatching {
             ctx.contentResolver.query(
                 Telephony.Sms.Sent.CONTENT_URI,
-                arrayOf(Telephony.Sms._ID, Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE),
+                arrayOf(
+                    Telephony.Sms._ID, Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE,
+                    // 短信库里存的是 subscriptionId，要反查才知道是哪个卡槽
+                    Telephony.Sms.SUBSCRIPTION_ID,
+                ),
                 "${Telephony.Sms._ID} > ?", arrayOf(lastId.toString()),
                 "${Telephony.Sms._ID} ASC",
             )?.use { c ->
@@ -84,7 +89,7 @@ class SentSmsObserver(private val ctx: Context) : ContentObserver(Handler(Looper
                         from = address,
                         content = content,
                         occurredAt = date,
-                        simSlot = null,
+                        simSlot = SimInfo.slotOfSub(ctx, runCatching { c.getInt(4) }.getOrDefault(-1)),
                         callType = null,
                         pkg = null,
                         truncated = truncated,

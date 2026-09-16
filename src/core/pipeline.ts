@@ -14,6 +14,7 @@ import {
   RuleAction, RuleMatch, type MatchableEvent, type Rule,
 } from './rules.js'
 import { DEFAULT_TIMEZONE, formatWallTime, offsetMs } from './schedule.js'
+import { simLabel, simsOf } from './sim.js'
 import type { Store } from './store.js'
 
 export interface PipelineDeps {
@@ -70,8 +71,12 @@ export async function processEvent(
     // 多设备时才在通知里标出来源设备：单设备场景下那是噪音，
     // 多设备时不标就分不清这条验证码是哪张卡收到的
     const active = devices.filter((d) => d.status !== 'revoked')
-    const deviceName = active.find((d) => d.id === e.device_id)?.name ?? e.device_id
+    const device = active.find((d) => d.id === e.device_id)
+    const deviceName = device?.name ?? e.device_id
     const showDevice = active.length > 1
+    // 双卡时标出是哪张卡收到的。缀在设备名后面而不是另开一个字段：
+    // 三个渠道都已经在显示设备名了，多加一个字段要改三处
+    const sim = simLabel(simsOf(device?.net_json), e.sim_slot)
 
     // 时区取设置里的那一份，与计划任务共用同一个值，避免两处各按各的算
     const tz = deps.tz ?? (await deps.store.getSetting('timezone').catch(() => null)) ?? DEFAULT_TIMEZONE
@@ -130,13 +135,16 @@ export async function processEvent(
         time: safeFormatTime(e.occurred_at, tz),
         // 模板里的 {device} 给设备名而不是 id：id 是给机器看的
         device: deviceName,
+        // {sim} 是用户自己写进模板的，写了就是想要，不受「单卡不显示」约束——
+        // 但单卡时本来就取不到卡槽，结果仍然是空串
+        sim: e.sim_slot == null ? '' : `SIM${e.sim_slot + 1}`,
       }),
       priority: result.matched.length > 0 ? result.priority : action.priority,
       code,
       eventId,
       occurredAt: e.occurred_at,
       consoleUrl: deps.baseUrl ?? null,
-      deviceName: showDevice ? deviceName : null,
+      deviceName: [showDevice ? deviceName : null, sim || null].filter(Boolean).join(' · ') || null,
       ...(action.bark ? { options: { bark: action.bark } } : {}),
     }
 
@@ -148,7 +156,8 @@ export async function processEvent(
       if (!r.ok || !r.ref) continue
       await deps.store.putMessageRef({
         channel_id: r.channelId, ref: r.ref, event_id: eventId,
-        sender: e.from, device_id: e.device_id, created_at: Date.now(),
+        sender: e.from, device_id: e.device_id, sim_slot: e.sim_slot ?? null,
+        created_at: Date.now(),
       }).catch((err: unknown) => log.warn('记录消息映射失败', { error: String(err) }))
     }
 

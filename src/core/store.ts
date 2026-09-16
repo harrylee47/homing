@@ -38,6 +38,8 @@ export interface StoredEvent {
   kind: EventKind
   /** in=收到，out=设备发出。老记录为 null，按 in 处理 */
   direction: 'in' | 'out' | null
+  /** 卡槽序号，0 = SIM1。未知（老记录、ROM 不给）为 null */
+  sim_slot: number | null
   sender_enc: Uint8Array
   content_enc: Uint8Array
   enc_ver: number
@@ -163,6 +165,13 @@ export interface MessageRefRecord {
   /** 原始发件人，回复时作为收件人 */
   sender: string
   device_id: string
+  /**
+   * 原消息是哪张卡收到的。回复时必须用同一张卡。
+   *
+   * 和 device_id 是同一个道理：多卡场景下从别的卡发回去，
+   * 对方看到的是一个陌生号码——只是这次「别的卡」在同一台手机上。
+   */
+  sim_slot: number | null
   created_at: number
 }
 
@@ -180,6 +189,13 @@ export interface TaskRecord {
   device_id: string
   to_number: string
   content_enc: Uint8Array
+  /**
+   * 用哪张卡发。null = 系统默认卡。
+   *
+   * 保号是**按卡**的事：双卡机上两张卡各自都要定期产生使用记录，
+   * 只绑设备的话另一张卡照样会被停机。
+   */
+  sim_slot: number | null
   /** JSON，结构见 schedule.ts 的 Schedule */
   schedule_json: string
   last_run_at: number | null
