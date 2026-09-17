@@ -8,6 +8,7 @@
  */
 import { log } from './logging.js'
 import { barkProvider } from './providers/bark.js'
+import { ntfyProvider } from './providers/ntfy.js'
 import { telegramProvider } from './providers/telegram.js'
 import { webhookProvider } from './providers/webhook.js'
 import { ProviderError, type NotifyMessage, type Provider } from './providers/types.js'
@@ -15,6 +16,7 @@ import { ProviderError, type NotifyMessage, type Provider } from './providers/ty
 export const PROVIDERS: Record<string, Provider<never>> = {
   telegram: telegramProvider as unknown as Provider<never>,
   bark: barkProvider as unknown as Provider<never>,
+  ntfy: ntfyProvider as unknown as Provider<never>,
   webhook: webhookProvider as unknown as Provider<never>,
 }
 

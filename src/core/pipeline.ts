@@ -174,7 +174,10 @@ export async function processEvent(
       occurredAt: e.occurred_at,
       consoleUrl: deps.baseUrl ?? null,
       deviceName: showDevice ? deviceName : null,
-      ...(action.bark ? { options: { bark: action.bark } } : {}),
+      // 渠道私有选项按类型分组带下去。两个渠道各自只读自己那一段
+      ...(action.bark || action.ntfy
+        ? { options: { ...(action.bark ? { bark: action.bark } : {}), ...(action.ntfy ? { ntfy: action.ntfy } : {}) } }
+        : {}),
     }
 
     const results = await dispatch(targets, msg, { retryBaseMs: deps.retryBaseMs })
@@ -224,11 +227,24 @@ function mergeActions(matched: Rule[]): RuleAction {
     template: first.action.template,
     archive: matched.some((r) => r.action.archive),
     stop_processing: first.action.stop_processing,
-    // Bark 选项取优先级最高那条规则的，避免多条互相覆盖导致行为不可预期
-    ...(matched.find((r) => r.action.bark)?.action.bark
-      ? { bark: matched.find((r) => r.action.bark)!.action.bark }
-      : {}),
+    /**
+     * 渠道私有选项取「第一条配了它的规则」的，避免多条互相覆盖导致行为不可预期。
+     *
+     * **每新增一个渠道私有字段，这里都要补一行。** 漏了的表现是
+     * 「规则里配了，但只在没有规则命中、走兜底时才生效」——不报错、
+     * 试跑也看不出来，只有对着真实推送数数才能发现。ntfy 就这么漏过一次。
+     */
+    ...pickChannelOptions(matched, 'bark'),
+    ...pickChannelOptions(matched, 'ntfy'),
   }
+}
+
+/** 取第一条配了该字段的规则的值；都没配就什么都不加（保持 undefined 而不是 null） */
+function pickChannelOptions<K extends 'bark' | 'ntfy'>(
+  matched: Rule[], key: K,
+): Pick<RuleAction, K> | Record<string, never> {
+  const hit = matched.find((r) => r.action[key] !== undefined)
+  return hit ? ({ [key]: hit.action[key] } as Pick<RuleAction, K>) : {}
 }
 
 /** 解析失败的规则会被跳过：一条写坏的规则不该让所有短信都收不到。 */

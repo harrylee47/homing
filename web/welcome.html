@@ -105,22 +105,30 @@
     transition: transform .1s var(--ease), box-shadow .1s var(--ease);
   }
   .tabbar label:active { transform: translate(var(--sx), var(--sx)); box-shadow: none; }
+  /* n 格页签要写 n 条规则，纯 CSS 没有「第 i 个对第 i 个」的写法。
+     加一格就要在这三组里各补一行，漏了的表现是点了没反应 */
   .tabs > input:nth-of-type(1):checked ~ .tabbar label:nth-of-type(1),
   .tabs > input:nth-of-type(2):checked ~ .tabbar label:nth-of-type(2),
-  .tabs > input:nth-of-type(3):checked ~ .tabbar label:nth-of-type(3) {
+  .tabs > input:nth-of-type(3):checked ~ .tabbar label:nth-of-type(3),
+  .tabs > input:nth-of-type(4):checked ~ .tabbar label:nth-of-type(4),
+  .tabs > input:nth-of-type(5):checked ~ .tabbar label:nth-of-type(5) {
     background: var(--cyan); color: var(--on-bright);
   }
   /* 键盘聚焦时要看得见，否则用方向键切页签的人完全没有反馈 */
   .tabs > input:focus-visible ~ .tabbar label { outline: none }
   .tabs > input:nth-of-type(1):focus-visible ~ .tabbar label:nth-of-type(1),
   .tabs > input:nth-of-type(2):focus-visible ~ .tabbar label:nth-of-type(2),
-  .tabs > input:nth-of-type(3):focus-visible ~ .tabbar label:nth-of-type(3) {
+  .tabs > input:nth-of-type(3):focus-visible ~ .tabbar label:nth-of-type(3),
+  .tabs > input:nth-of-type(4):focus-visible ~ .tabbar label:nth-of-type(4),
+  .tabs > input:nth-of-type(5):focus-visible ~ .tabbar label:nth-of-type(5) {
     outline: var(--bw) dashed var(--line); outline-offset: 3px;
   }
   .pane { display: none }
   .tabs > input:nth-of-type(1):checked ~ .panes > .pane:nth-of-type(1),
   .tabs > input:nth-of-type(2):checked ~ .panes > .pane:nth-of-type(2),
-  .tabs > input:nth-of-type(3):checked ~ .panes > .pane:nth-of-type(3) { display: block }
+  .tabs > input:nth-of-type(3):checked ~ .panes > .pane:nth-of-type(3),
+  .tabs > input:nth-of-type(4):checked ~ .panes > .pane:nth-of-type(4),
+  .tabs > input:nth-of-type(5):checked ~ .panes > .pane:nth-of-type(5) { display: block }
 
   .warn-line {
     border-left: 4px solid var(--pink); padding-left: 10px;
@@ -297,20 +305,47 @@
     </div>
   </details>
 
-  <h2>怎么收到通知</h2>
+  <h2>在哪儿看，怎么收到</h2>
+  <p class="hint">每个入口解决的问题不一样，配一个就能用，多配几个互不冲突。</p>
   <div class="tabs">
-    <input type="radio" name="ch" id="ch-bark" checked>
+    <input type="radio" name="ch" id="ch-web" checked>
+    <input type="radio" name="ch" id="ch-bark">
+    <input type="radio" name="ch" id="ch-ntfy">
     <input type="radio" name="ch" id="ch-tg">
     <input type="radio" name="ch" id="ch-hook">
     <div class="tabbar">
-      <label for="ch-bark">Bark（iPhone）</label>
+      <label for="ch-web">网页</label>
+      <label for="ch-bark">Bark · iPhone</label>
+      <label for="ch-ntfy">ntfy · 安卓</label>
       <label for="ch-tg">Telegram</label>
       <label for="ch-hook">Webhook</label>
     </div>
     <div class="panes">
 
       <section class="pane card">
+        <b>网页 —— 全功能的那一个，建议装到主屏幕</b>
+        <p class="muted">历史消息、按号码归成的对话、通话记录、发送短信、规则、设备状态，
+        全都在这里。推送渠道只是「把某几条消息送到你眼前」，
+        <b>要翻、要搜、要改配置，都得回到网页</b>。</p>
+        <ol class="howto">
+          <li>用手机浏览器打开这台网关，登录。</li>
+          <li><b>iPhone</b>：Safari 底部的<b>分享</b>键 → 往下找<b>「添加到主屏幕」</b> → 添加。
+            必须用 Safari，微信和 Chrome 里没有这个选项。</li>
+          <li><b>安卓</b>：Chrome 右上角 <b>⋮</b> → <b>「安装应用」</b>或「添加到主屏幕」。</li>
+          <li>从主屏图标打开，登录时勾上<b>「保持登录 30 天」</b>。</li>
+        </ol>
+        <p class="muted">装上之后是全屏、没有地址栏，和一个 App 没什么差别。
+        控制台的<b>设置页</b>里有一张卡会按你的手机给出对应的步骤。</p>
+        <p class="warn-line">两件事先说清楚：主屏 App 和浏览器是<b>两个独立的存储空间</b>，
+        浏览器里的登录状态带不过去，要再登一次（所以才让你勾「保持登录 30 天」）。
+        另外它<b>不负责推送</b>——通知仍然靠下面那几个渠道，
+        iPhone 上通知点进去也只会开 Safari，不会进主屏 App。</p>
+      </section>
+
+      <section class="pane card">
         <b>Bark —— iPhone 上收验证码的首选</b>
+        <p class="muted" style="margin:6px 0 0"><b>只有 iPhone 有。</b>安卓请看隔壁那格的 ntfy，
+        做的是同一件事。</p>
         <p class="muted">验证码直接显示在锁屏上，<b>长按即复制</b>，不用打开任何 App。
         这台服务器自带一个 Bark 服务端，不用另外部署、也不经过第三方。</p>
         <ol class="howto">
@@ -333,7 +368,28 @@
       </section>
 
       <section class="pane card">
-        <b>Telegram —— 安卓、电脑都能收</b>
+        <b>ntfy —— 安卓上收验证码的首选</b>
+        <p class="muted">和 Bark 做的是同一件事：验证码显示在通知栏，通知上直接有一个
+        <b>「复制验证码」按钮</b>，点一下进剪贴板，不用打开任何 App。开源、可自建，
+        没有封号这回事。</p>
+        <ol class="howto">
+          <li>应用商店（或 F-Droid）装 <b>ntfy</b>。</li>
+          <li>控制台 → 总览「管理渠道」 → 类型选 <b>ntfy</b> →
+            点<b>「随机生成」</b>得到一个主题名 → 保存。</li>
+          <li>回到 ntfy App，点 <b>+</b> 订阅主题：主题名填刚才那个，
+            服务器保持默认（<code>https://ntfy.sh</code>）或填你自建的地址。</li>
+          <li>回控制台点<b>「测试」</b>。手机响了就成了。</li>
+        </ol>
+        <p class="warn-line"><b>主题名就是这条通道的口令。</b>在公共实例上，
+        <b>任何知道主题名的人都能订阅它</b>，没有别的门——而这里流的是你的银行验证码。
+        所以务必用那个「随机生成」按钮，别自己起「sms」「yzm」这种；
+        更稳的做法是自己搭一个 ntfy，或者用受保护的主题加访问令牌。</p>
+        <p class="muted" style="font-size:12px">iOS 上也有 ntfy 客户端，但那个「复制」按钮
+        官方只保证安卓 App 与网页版有。iPhone 还是用 Bark。</p>
+      </section>
+
+      <section class="pane card">
+        <b>Telegram —— 聊天式，安卓电脑都能收</b>
         <p class="muted">正文是打码的（spoiler），点一下才显示。
         <b>这是为了避免 Bot 被封，不是为了防人偷看</b>——内容仍然明文经过 Telegram 的服务器，
         并长期留在你的聊天记录里。</p>
@@ -360,9 +416,10 @@
       </section>
 
       <section class="pane card">
-        <b>Webhook —— 发到你自己的接口</b>
-        <p class="muted">把消息 POST 到你指定的地址，字段是结构化的 JSON，
-        接下来进飞书、钉钉、企业微信、自建服务还是写进数据库，都由你自己决定。</p>
+        <b>Webhook —— 其它一切</b>
+        <p class="muted">把消息以结构化 JSON POST 到你指定的地址。
+        企业微信机器人、钉钉机器人、飞书机器人，或者你自己的服务、写进数据库，
+        都由你自己决定。上面几种满足不了的场景都走这里。</p>
         <ol class="howto">
           <li>控制台 → 总览「管理渠道」 → 类型选 <b>Webhook</b>。</li>
           <li>填目标地址，<b>必须是 https</b>。</li>

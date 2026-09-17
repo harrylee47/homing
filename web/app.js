@@ -1071,8 +1071,53 @@ async function overview() {
       <div class="card tight row">
         <span class="muted">给某个号码发条短信</span>
         <a href="/compose"><button class="sm">去发送</button></a>
-      </div>`)
+      </div>
+      <div id="a2hs_tip"></div>`)
+    paintA2HSTip()
   } catch (e) { fail(e) }
+}
+
+/**
+ * 总览底部那条「装到主屏幕」的提示。
+ *
+ * 默认推荐装成主屏 App——网页是这里唯一的全功能入口，而每次从浏览器里
+ * 翻书签打开它，摩擦大到人就不看了。
+ *
+ * 三条自我约束，免得它变成一条烦人的横幅：
+ * ① 已经装了（standalone）就不出现；② 桌面浏览器不出现——那儿本来就没这个必要；
+ * ③ 关掉之后永久不再出现（记在 localStorage，不占服务端存储）。
+ */
+const A2HS_TIP_KEY = 'gw_a2hs_tip'
+
+function paintA2HSTip() {
+  const box = $('#a2hs_tip')
+  if (!box) return
+  const standalone = matchMedia('(display-mode: standalone)').matches
+    || matchMedia('(display-mode: fullscreen)').matches
+    || navigator.standalone === true
+  // 触点数而不是 UA：iPadOS 的 Safari 默认报 Mac 的 UA
+  const mobile = navigator.maxTouchPoints > 1 || /Android|iPhone|iPad|iPod/.test(navigator.userAgent)
+  let dismissed = false
+  try { dismissed = localStorage.getItem(A2HS_TIP_KEY) === 'off' } catch { /* 隐私模式 */ }
+  if (standalone || !mobile || dismissed) return
+
+  box.innerHTML = `
+    <div class="card tight" style="background:var(--bg)">
+      <div class="row">
+        <div class="col grow">
+          <span><b>把它装到主屏幕</b></span>
+          <span class="muted">全屏打开，不用每次在浏览器里找。设置页里有对应你手机的步骤。</span>
+        </div>
+      </div>
+      <div class="btnrow" style="margin-top:8px">
+        <a href="/settings"><button class="sm">怎么装</button></a>
+        <button class="ghost sm" id="a2hs_no">不用了</button>
+      </div>
+    </div>`
+  $('#a2hs_no').onclick = () => {
+    try { localStorage.setItem(A2HS_TIP_KEY, 'off') } catch { /* 隐私模式下就每次都提示，无妨 */ }
+    box.innerHTML = ''
+  }
 }
 
 // ── 消息 ────────────────────────────────────────────────────
@@ -1932,8 +1977,12 @@ function ruleEditor(rule, chs, devs = []) {
     devs.flatMap((d) => simsOf(d)).map((x) => [x.slot, x]),
   ).values()].sort((a, b) => a.slot - b.slot)
   const bark = {
-    level: 'active', group: '', auto_copy_code: true, deep_link: 'event',
+    level: 'active', group: '', copy_mode: 'code', auto_copy_code: true, deep_link: 'event',
     ...(r.action.bark || {}),
+  }
+  const ntfy = {
+    priority: 'default', tags: [], copy_mode: 'code', deep_link: 'event',
+    ...(r.action.ntfy || {}),
   }
 
   render(`
@@ -2058,6 +2107,33 @@ function ruleEditor(rule, chs, devs = []) {
           <option value="none"${bark.deep_link === 'none' ? ' selected' : ''}>不跳转</option>
         </select>
       </div>` : ''}
+    ${chs.some((c) => c.type === 'ntfy') ? `
+      <h2>ntfy 行为</h2>
+      <div class="card">
+        <div class="muted">字段刻意和 Bark 那几项对齐：同一条规则在两个渠道上表现一致，
+        一个人同时用 iPhone 和安卓时不该看到两种行为。对非 ntfy 渠道无影响。</div>
+        <label>通知级别</label>
+        <select id="n_prio">
+          ${NTFY_LEVELS.map(([v, t]) => `<option value="${v}"${ntfy.priority === v ? ' selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <label>标签（可选）</label>
+        <div id="n_tags"></div>
+        <div class="muted">ntfy 认识一批 emoji 名（如 <span class="mono">warning</span>、
+        <span class="mono">bank</span>），会渲染成 emoji 缀在标题前。</div>
+        <label>点「复制」按钮时复制什么</label>
+        <select id="n_copymode">
+          <option value="code"${ntfy.copy_mode === 'code' ? ' selected' : ''}>验证码（需同时开启上方「提取验证码」）</option>
+          <option value="body"${ntfy.copy_mode === 'body' ? ' selected' : ''}>整条正文</option>
+          <option value="none"${ntfy.copy_mode === 'none' ? ' selected' : ''}>不放这个按钮</option>
+        </select>
+        <div class="muted" id="n_copywarn"></div>
+        <label>点击通知跳转到</label>
+        <select id="n_link">
+          <option value="event"${ntfy.deep_link === 'event' ? ' selected' : ''}>消息详情</option>
+          <option value="compose"${ntfy.deep_link === 'compose' ? ' selected' : ''}>预填回复</option>
+          <option value="none"${ntfy.deep_link === 'none' ? ' selected' : ''}>不跳转</option>
+        </select>
+      </div>` : ''}
     <div class="btnrow">
       <button id="save">保存</button>
       <button class="ghost sm" id="test">用历史消息试跑</button>
@@ -2136,19 +2212,26 @@ function ruleEditor(rule, chs, devs = []) {
    * 拦不住（用户可能正要去开提取），但必须说出来。
    */
   const paintCopyWarn = () => {
-    const warn = $('#b_copywarn')
-    if (!warn) return
-    const bad = $('#b_copymode').value === 'code' && !$('#extract').checked
-    warn.innerHTML = bad
-      ? '<span class="badge err">这样配不会复制任何东西</span> 选了复制验证码，' +
-        '但下方「提取验证码」没开——没有码可复制。要么把它打开，要么改成「整条正文」。'
-      : ''
+    const msg = '<span class="badge err">这样配不会复制任何东西</span> 选了复制验证码，'
+      + '但「提取验证码」没开——没有码可复制。要么把它打开，要么改成「整条正文」。'
+    for (const [sel, warnId] of [['#b_copymode', '#b_copywarn'], ['#n_copymode', '#n_copywarn']]) {
+      const warn = $(warnId)
+      if (!warn) continue
+      warn.innerHTML = $(sel).value === 'code' && !$('#extract').checked ? msg : ''
+    }
   }
 
   // 类型、方向、提取验证码都会改变通知的样子，改哪个都要重画
   $('#extract').onchange = () => { paintPreview(); paintCopyWarn() }
   $('#direction').onchange = paintPreview
-  if ($('#b_copymode')) $('#b_copymode').onchange = () => { paintPreview(); paintCopyWarn() }
+  for (const id of ['#b_copymode', '#n_copymode']) {
+    if ($(id)) $(id).onchange = () => { paintPreview(); paintCopyWarn() }
+  }
+  // ntfy 的标签走标签输入，理由同关键词：中文输入法下逗号/顿号随时混进来
+  const ntfyTagBox = $('#n_tags')
+  const ntfyTags = ntfyTagBox
+    ? tagInput(Object.assign(ntfyTagBox, { className: 'tags' }), ntfy.tags || [], '如 bank，回车添加')
+    : null
   for (const c of app.querySelectorAll('[data-kind]')) c.addEventListener('change', paintPreview)
   paintPreview()
   paintCopyWarn()
@@ -2197,6 +2280,15 @@ function ruleEditor(rule, chs, devs = []) {
               deep_link: $('#b_link').value,
             }
           : (r.action.bark ?? undefined),
+        // 同理：界面上没有 ntfy 区块时保留原值，别因为没显示就抹掉
+        ntfy: $('#n_prio')
+          ? {
+              priority: $('#n_prio').value,
+              tags: ntfyTags ? ntfyTags.values() : [],
+              copy_mode: $('#n_copymode').value,
+              deep_link: $('#n_link').value,
+            }
+          : (r.action.ntfy ?? undefined),
       },
     }
   }
@@ -2250,6 +2342,15 @@ const BARK_LEVELS = [
   ['timeSensitive', '时效性（可穿透专注模式）'],
   ['critical', '重要警告（静音也会响）'],
   ['passive', '安静（不亮屏）'],
+]
+
+/** 与 core/providers/ntfy.ts 的 NTFY_PRIORITY 对应。ntfy 只有五档，没有 Bark 那种「静音也响」 */
+const NTFY_LEVELS = [
+  ['default', '普通'],
+  ['max', '最高（长震动 + 弹出横幅）'],
+  ['high', '较高（震动 + 弹出）'],
+  ['low', '安静（不震动不响）'],
+  ['min', '最低（折叠在「其它通知」里）'],
 ]
 
 /** 占位符清单与服务端 core/rules.ts 的 TemplateVars 一一对应，改动要同步。 */
@@ -2367,7 +2468,8 @@ async function channels() {
       <div class="card">
         <label>类型</label>
         <select id="type">
-          <option value="bark">Bark（推荐用于验证码）</option>
+          <option value="bark">Bark（iPhone，验证码首选）</option>
+          <option value="ntfy">ntfy（安卓，验证码首选）</option>
           <option value="telegram">Telegram</option>
           <option value="webhook">Webhook</option>
         </select>
@@ -2468,10 +2570,44 @@ async function channels() {
                <div class="muted" style="margin-top:8px">正文会以模糊形式发送，点击才可见——明文转发验证码会导致 Bot 被封禁。</div>`,
         collect: () => ({ bot_token: $('#f_bt').value.trim(), chat_id: $('#f_cid').value.trim() }),
       },
+      ntfy: {
+        name: '我的 ntfy',
+        html: `<div class="card tight" style="background:var(--bg)">
+                 <b>为什么给安卓推荐它</b>
+                 <div class="muted" style="margin:6px 0 0">Bark 只有 iPhone。ntfy 在安卓上能做到同一件事：
+                 验证码显示在通知栏，通知上直接有一个<b>「复制验证码」按钮</b>，点一下进剪贴板，
+                 不用打开任何 App。iOS 上也有客户端，但那个复制按钮官方只保证安卓 App 与网页版有。</div>
+               </div>
+               <label>服务器地址</label>
+               <input id="f_server" class="mono" value="https://ntfy.sh" placeholder="https://ntfy.sh">
+               <div class="muted">用公共实例就保持默认。自己搭了就填自己的地址。</div>
+               <label>主题名</label>
+               <div style="display:flex;gap:8px">
+                 <div class="grow"><input id="f_topic" class="mono" placeholder="8–64 位，字母数字与 - _"></div>
+                 <button class="ghost sm" id="f_gen" type="button" style="flex:none">随机生成</button>
+               </div>
+               <div class="notice" style="margin-top:8px"><b>主题名就是这条通道的口令。</b>
+               在公共实例上，<b>任何知道主题名的人都能订阅它</b>，没有别的门——而这里流的是你的银行验证码。
+               所以别用「sms」「mycode」这种；点上面的按钮生成一串随机的，或者自己搭一个 ntfy 并用受保护主题。</div>
+               <label>访问令牌（可选）</label>
+               <input id="f_token" class="mono" type="password" autocomplete="off" placeholder="tk_… 受保护主题才需要">
+               <label>通知图标（可选）</label>
+               <input id="f_icon" class="mono" value="${esc(iconUrl())}" placeholder="留空则不显示图标">
+               <div class="muted">和 Bark 一样：去取图的是<b>你的手机</b>，地址要公网可达，且只认 PNG / JPEG。</div>
+               <div class="muted"><b>手机上怎么收：</b>应用商店装 ntfy → 点 <b>+</b> 订阅主题 →
+               服务器填上面那个地址、主题填上面那个名字。装完回来点「测试」。</div>`,
+        collect: () => ({
+          server: $('#f_server').value.trim() || 'https://ntfy.sh',
+          topic: $('#f_topic').value.trim(),
+          token: $('#f_token').value.trim() || null,
+          icon: $('#f_icon').value.trim() || null,
+        }),
+      },
       webhook: {
         name: 'Webhook',
         html: `<label>目标地址</label><input id="f_url" class="mono" placeholder="https://example.com/hook">
-               <div class="muted">正文会发往这个地址，必须是 https。</div>`,
+               <div class="muted">正文会以结构化 JSON 发往这个地址，必须是 https。
+               企业微信机器人、钉钉机器人，或者你自己的接口都行。</div>`,
         collect: () => ({ url: $('#f_url').value.trim() }),
       },
     }
@@ -2500,6 +2636,20 @@ async function channels() {
           }
         } catch (e) { $('#discovered').textContent = e.message }
         dis.disabled = false
+      }
+
+      /**
+       * 随机主题名。
+       *
+       * 这不是「方便」，是安全默认值：公共实例上主题名就是唯一的门，
+       * 让人自己想一个的结果是「sms」「yzm」这种——等于把银行验证码挂在公开频道上。
+       * 用 crypto.getRandomValues 而不是 Math.random。
+       */
+      const gen = $('#f_gen')
+      if (gen) gen.onclick = () => {
+        const A = 'abcdefghijkmnpqrstuvwxyz23456789'
+        const r = crypto.getRandomValues(new Uint8Array(20))
+        $('#f_topic').value = 'homing-' + Array.from(r, (x) => A[x % A.length]).join('')
       }
 
       // Bark 服务器二维码：内容就是服务器地址本身，Bark App 的「添加服务器」认这个
@@ -2576,6 +2726,12 @@ function channelEditor(c, bark) {
     bark: [
       { key: 'server', label: '推送地址（内部）', secret: false, placeholder: bark?.upstream || 'http://bark:8080' },
       { key: 'key', label: '设备 Key', secret: true },
+      { key: 'icon', label: '通知图标（PNG/JPEG 的公网地址）', secret: false, placeholder: iconUrl(), clearable: true },
+    ],
+    ntfy: [
+      { key: 'server', label: '服务器地址', secret: false, placeholder: 'https://ntfy.sh' },
+      { key: 'topic', label: '主题名（就是这条通道的口令）', secret: false },
+      { key: 'token', label: '访问令牌', secret: true, clearable: true },
       { key: 'icon', label: '通知图标（PNG/JPEG 的公网地址）', secret: false, placeholder: iconUrl(), clearable: true },
     ],
     webhook: [{ key: 'url', label: '目标地址', secret: false }],

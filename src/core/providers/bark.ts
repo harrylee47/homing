@@ -9,7 +9,12 @@
  * 不需要自备证书。
  */
 import { z } from 'zod'
-import { ProviderError, type NotifyMessage, type Provider } from './types.js'
+import { ProviderError, type Provider } from './types.js'
+import { copyText, deepLink } from './deeplink.js'
+
+// 深链与「复制什么」和 ntfy 共用一份实现，见 deeplink.ts。
+// 这里再导出一次是为了不打断既有的 import 路径
+export { deepLink } from './deeplink.js'
 
 export const BarkConfig = z.object({
   /** 自建服务端地址，如 https://bark.example.com */
@@ -91,9 +96,7 @@ export const barkProvider: Provider<BarkConfig> = {
     // copy 指定长按通知时复制的内容；autoCopy 在部分 iOS 版本上可直接进剪贴板。
     // code 模式下没提取到码就整个不带 copy——宁可不复制，也不要让人长按之后
     // 粘出来一整条「【建设银行】您尾号…」。
-    const copy = o.copy_mode === 'code' ? msg.code
-      : o.copy_mode === 'body' ? (msg.body || null)
-      : null
+    const copy = copyText(msg, o.copy_mode)
     if (copy) {
       body.copy = copy
       if (o.auto_copy_code) body.autoCopy = 1
@@ -122,14 +125,4 @@ export const barkProvider: Provider<BarkConfig> = {
       )
     }
   },
-}
-
-/** 深链指向控制台。没有配 GW_BASE_URL 时不带 url，通知点击就只是展开。 */
-export function deepLink(msg: NotifyMessage, mode: BarkOptions['deep_link']): string | null {
-  if (mode === 'none' || !msg.consoleUrl) return null
-  const base = msg.consoleUrl.replace(/\/$/, '')
-  if (mode === 'compose') {
-    return `${base}/compose?to=${encodeURIComponent(msg.title)}&ref=${encodeURIComponent(msg.eventId)}`
-  }
-  return msg.eventId ? `${base}/events/${encodeURIComponent(msg.eventId)}` : base
 }

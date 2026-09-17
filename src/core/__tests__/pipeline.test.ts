@@ -542,3 +542,89 @@ describe('删除设备记录', () => {
     expect([...store.outbound.keys()]).toEqual(['c'])
   })
 })
+
+/**
+ * 渠道私有选项（bark / ntfy）必须跟着命中的规则一路带到 provider。
+ *
+ * 这一组盯的是 mergeActions 里那份「每加一个渠道就要补一行」的清单。
+ * 漏掉一个的表现极其隐蔽：**兜底路径照常生效，只有规则命中时才丢**——
+ * 也就是「我不写规则的时候是好的，一写规则就不灵了」。ntfy 漏过一次。
+ */
+describe('规则里的渠道私有选项要真的送到渠道', () => {
+  let store: MemoryStore
+  let cipher: Cipher
+
+  const addChannel = async (id: string) => {
+    store.channels.set(id, {
+      id, user_id: 'u1', type: 'stub', name: id,
+      config_enc: await cipher.encrypt(JSON.stringify({ tag: id })),
+      enabled: true, created_at: 0,
+    })
+  }
+  const addRule = (id: string, priority: number, action: Partial<RuleAction>) => {
+    store.rules.set(id, {
+      id, user_id: 'u1', name: id, priority, enabled: true,
+      match_json: JSON.stringify(RuleMatch.parse({ kind: ['sms'] })),
+      action_json: JSON.stringify(RuleAction.parse({ channels: ['ch_a'], ...action })),
+      created_at: 0,
+    })
+  }
+
+  beforeEach(async () => {
+    store = new MemoryStore()
+    cipher = await createCipher(generateDek())
+    sent.length = 0
+    failTimes = 0
+    store.events.set('evt_1', {
+      id: 'evt_1', user_id: 'u1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
+      sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
+      enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
+    })
+    await addChannel('ch_a')
+  })
+
+  const run = () => processEvent({ store, cipher, retryBaseMs: 1 }, 'evt_1', evt())
+
+  it('Bark 选项跟着规则走', async () => {
+    addRule('r1', 10, { bark: { level: 'critical', group: '验证码', copy_mode: 'body', auto_copy_code: false, deep_link: 'none' } })
+    await run()
+    expect(sent[0]!.options?.bark).toMatchObject({ level: 'critical', group: '验证码', copy_mode: 'body' })
+  })
+
+  it('ntfy 选项跟着规则走', async () => {
+    addRule('r1', 10, { ntfy: { priority: 'max', tags: ['bank'], copy_mode: 'body', deep_link: 'none' } })
+    await run()
+    expect(sent[0]!.options?.ntfy).toMatchObject({ priority: 'max', tags: ['bank'], copy_mode: 'body' })
+  })
+
+  it('两个一起配也都要到', async () => {
+    addRule('r1', 10, {
+      bark: { level: 'timeSensitive', group: null, copy_mode: 'code', auto_copy_code: true, deep_link: 'event' },
+      ntfy: { priority: 'high', tags: [], copy_mode: 'code', deep_link: 'event' },
+    })
+    await run()
+    expect(sent[0]!.options?.bark).toBeDefined()
+    expect(sent[0]!.options?.ntfy).toBeDefined()
+  })
+
+  it('多条规则命中时取第一条配了它的，不互相覆盖', async () => {
+    addRule('r_low', 5, { ntfy: { priority: 'max', tags: ['first'], copy_mode: 'code', deep_link: 'event' } })
+    addRule('r_high', 50, { ntfy: { priority: 'min', tags: ['second'], copy_mode: 'none', deep_link: 'none' } })
+    await run()
+    // priority 数字小者先匹配，所以 r_low 排在前面
+    expect((sent[0]!.options?.ntfy as { tags: string[] }).tags).toEqual(['first'])
+  })
+
+  it('两条规则里只有一条配了 ntfy，也要带上 —— 不能因为第一条没配就丢掉', async () => {
+    addRule('r_first', 5, {})
+    addRule('r_second', 50, { ntfy: { priority: 'low', tags: ['x'], copy_mode: 'none', deep_link: 'none' } })
+    await run()
+    expect((sent[0]!.options?.ntfy as { priority: string }).priority).toBe('low')
+  })
+
+  it('一条都没配就不带 options', async () => {
+    addRule('r1', 10, {})
+    await run()
+    expect(sent[0]!.options).toBeUndefined()
+  })
+})

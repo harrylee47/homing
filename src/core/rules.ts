@@ -6,6 +6,7 @@
  */
 import { z } from 'zod'
 import { BarkOptions } from './providers/bark.js'
+import { NtfyOptions } from './providers/ntfy.js'
 import { EventKind } from './protocol.js'
 
 // ── 匹配条件 ────────────────────────────────────────────────
@@ -96,6 +97,12 @@ export const RuleAction = z.object({
    * 是因为它随消息类型变化：银行验证码要穿透专注模式，广告短信不该。
    */
   bark: BarkOptions.optional(),
+  /**
+   * ntfy 专属字段。与 bark 同一个道理，字段语义也刻意对齐
+   * （priority / copy_mode / deep_link），这样同一条规则在两个渠道上
+   * 表现一致——一个人同时用 iPhone 和安卓时，不该看到两种行为。
+   */
+  ntfy: NtfyOptions.optional(),
 })
 export type RuleAction = z.infer<typeof RuleAction>
 
