@@ -1871,7 +1871,11 @@ async function sent() {
       <a href="/compose" class="muted">← 发送短信</a>
     </div>
     <div class="card">
-      <input id="f_to" inputmode="tel" placeholder="按收件人号码筛选" value="${esc(get('to'))}">
+      <!-- 和消息页保持一致：回车能筛不等于人知道能回车，给一颗看得见的按钮 -->
+      <div class="searchbar">
+        <input id="f_to" enterkeyhint="search" inputmode="tel" placeholder="按收件人号码筛选" value="${esc(get('to'))}">
+        <button id="f_go" class="sm">筛选</button>
+      </div>
       <div style="display:flex;gap:8px">
         <div class="grow">
           <label>状态</label>
@@ -1911,6 +1915,7 @@ async function sent() {
   $('#f_apply').onclick = () => apply({})
   $('#f_clear').onclick = () => go('/sent')
   $('#f_to').onkeydown = (e) => { if (e.key === 'Enter') apply({}) }
+  $('#f_go').onclick = () => apply({})
 
   try {
     const query = new URLSearchParams(location.search)

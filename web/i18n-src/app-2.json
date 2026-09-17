@@ -225,7 +225,8 @@
     "发送记录 →": "Send log →",
     "没有在线设备": "No devices online",
     "收到这条消息的设备当前不在线，换用其他设备发送时对方看到的会是另一个号码。": "The device that received this message is offline right now. Send from another device and the other side sees a different number.",
-    "搜索": "Search"
+    "搜索": "Search",
+    "筛选": "Filter"
   },
   "rules": [
     {

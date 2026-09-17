@@ -2,6 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+      **这台设备必须有电话功能。** 没有 SIM 的平板或 ChromeOS 机器当不了短信网关
+      ——那正是这个 App 唯一要做的事，所以 required="true" 是照实说，
+      顺带让应用商店不要把它推给装不了的设备。
+
+      lint 的 PermissionImpliesUnsupportedChromeOsHardware 想要的是 required="false"
+      （好让它能装到 ChromeOS 上），那条建议对这个 App 不成立：装上去也一条短信都收不到。
+    -->
+    <uses-feature android:name="android.hardware.telephony" android:required="true" />
+
     <!-- 采集 -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />

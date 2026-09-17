@@ -39,6 +39,13 @@ jobs:
       - name: 单元测试
         working-directory: agent
         run: ./gradlew :app:testDebugUnitTest
+      # lint 曾经长期是红的（MissingPermission 那条），而红着的检查等于没有检查。
+      # 2026-09-18 清干净之后挂上来守住——它抓到的两条都不是误报：
+      # 没 READ_PHONE_STATE 时会静默用错卡发短信，以及 createForSubscriptionId
+      # 在 API 31 以下根本不存在（旧机上指定哪张卡都没用）。
+      - name: Lint
+        working-directory: agent
+        run: ./gradlew :app:lintDebug
       - name: 构建 APK
         working-directory: agent
         run: ./gradlew :app:assembleDebug

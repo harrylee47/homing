@@ -780,6 +780,43 @@ M0 技术验证 → M1 最小闭环 → M2 下行发送 → M3 Web 控制台 →
 
 远程开关 WiFi 做不到：Android 10 起 `setWifiEnabled` 对普通应用是空操作。只查不改。
 
+## lint 红着就等于没有 lint
+
+`./gradlew :app:lintDebug` 长期是红的（`MissingPermission` 那条），于是没人跑它，
+于是它后面排着的问题谁也看不见。2026-09-18 清干净并挂进 CI。
+
+**清的过程里，它抓到的两条都不是误报，而且都是「静默用错卡发短信」这一类**
+——CLAUDE.md 反复说的那条：「收件人看到的号码取决于用哪张卡，挑错等于用错身份」。
+
+- **没有 `READ_PHONE_STATE` 时会静默回落到默认卡。**
+  `SubscriptionManager.activeSubscriptionInfoList` 需要这个权限，而原来那句被
+  `runCatching` 一吞就退回默认卡：**双卡机上指定了 SIM2，却从 SIM1 发出去，
+  对方看到的是陌生号码，两头都没有任何报错。**
+  现在显式查权限，并按卡槽数分档：**单卡机照旧回落**（只有一张卡，回落就是对的，
+  为此拒发是添乱），**双卡机认不出就拒发**并说明原因。
+  卡槽数用 `TelephonyManager.activeModemCount/phoneCount` 问——它不需要任何权限，
+  避免「为了判断要不要检查权限，先得有那个权限」的死结。
+- **`SmsManager.createForSubscriptionId` 是 API 31 才有的实例方法。**
+  minSdk 是 24，所以在 Android 7–11 上它抛 `NoSuchMethodError`，同样被 runCatching
+  吞掉 → 退回默认卡。也就是说**旧机上指定哪张卡都没用，永远从默认卡发**——
+  而「翻一台闲置旧机」正是这个产品的前提，这条路才是多数人会走的那条。
+  31 以下要用静态的 `getSmsManagerForSubscriptionId`。
+
+另外两处清理，它们是「工具的意见」而不是真问题，但正确的答法不是压制而是照实声明：
+
+- `app_name` 加 `translatable="false"`：它是**品牌名**，本来就不该有中文版。
+  为了让 lint 闭嘴去硬塞一条中文应用名，是把工具的意见当成了需求。
+- 清单里显式写 `<uses-feature android:name="android.hardware.telephony"
+  android:required="true" />`：lint 的 ChromeOS 检查想要 `required="false"`，
+  而那条建议对这个 App 不成立——没有 SIM 的设备装上去一条短信都收不到。
+  照实声明之后 lint 自己就过了，顺带让应用商店别推给装不了的设备。
+
+连带一条：`SmsCommandHandler.reply()` 也补了显式权限检查。**那不只是让 lint 闭嘴**
+——没授予 `SEND_SMS` 时原来只会吞成一句「短信指令回复异常」，而人在外面收不到
+任何东西、根本不知道是权限没给。而这条链路存在的全部意义就是「手机联不上服务端了，
+我还想知道它怎么了」，它自己静默失效是最糟的一种。现在回复失败的原因会跟着上报走，
+设备一旦重连，控制台里那条消息就写着缺了什么。
+
 ## 已发送短信
 
 Android 没有「短信已发出」广播，只能用 ContentObserver 盯 `Telephony.Sms.CONTENT_URI`

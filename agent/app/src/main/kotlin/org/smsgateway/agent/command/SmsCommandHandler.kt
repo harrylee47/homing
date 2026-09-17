@@ -1,12 +1,15 @@
 package org.smsgateway.agent.command
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.telephony.TelephonyManager
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
 import org.smsgateway.agent.App
 import org.smsgateway.agent.R
@@ -63,8 +66,8 @@ class SmsCommandHandler(private val ctx: Context) {
         }
 
         if (parsed is SmsCommand.Parsed.UnknownAction) {
-            reply(from, ctx.getString(R.string.sms_help), cfg.reply)
-            report(from, "未知指令", null)
+            val err = reply(from, ctx.getString(R.string.sms_help), cfg.reply)
+            report(from, "未知指令", err)
             return true
         }
 
@@ -99,8 +102,10 @@ class SmsCommandHandler(private val ctx: Context) {
     }
 
     private fun finish(from: String, action: SmsCommand.Action, text: String, replyEnabled: Boolean) {
-        reply(from, text, replyEnabled)
-        report(from, action.name, text)
+        val replyErr = reply(from, text, replyEnabled)
+        // 回复发不出去时把原因一起带上：发指令的人收不到短信，
+        // 但设备重新连上之后，控制台里那条消息会告诉他缺的是什么
+        report(from, action.name, if (replyErr == null) text else "$text\n（$replyErr）")
     }
 
     // ── 状态采集 ────────────────────────────────────────────
@@ -173,14 +178,36 @@ class SmsCommandHandler(private val ctx: Context) {
 
     // ── 回复与上报 ──────────────────────────────────────────
 
-    /** 回复走短信：数据网络可能正是坏掉的那一环，而短信还能走。 */
-    private fun reply(to: String, text: String, enabled: Boolean) {
-        if (!enabled) return
-        runCatching {
+    /**
+     * 回复走短信：数据网络可能正是坏掉的那一环，而短信还能走。
+     *
+     * **发之前先显式查一次 SEND_SMS。** 这不只是让 lint 闭嘴（`runCatching` 确实
+     * 接得住 SecurityException，只是 lint 看不穿）——真正的问题是**没权限时的表现**：
+     * 原来只会吞成一句「短信指令回复异常」，而人在外面收不到任何东西，
+     * 根本不知道是权限没给。而这条链路存在的全部意义就是「手机联不上服务端了，
+     * 我还想知道它怎么了」，它自己静默失效是最糟的一种。
+     *
+     * 查到没权限就写一条**说得出原因**的日志，并让上报那条带上它——
+     * 设备一旦重新连上，用户在控制台里就能看到到底缺了什么。
+     * WsClient.onSendSms 早就是这么做的，这里照抄。
+     */
+    private fun reply(to: String, text: String, enabled: Boolean): String? {
+        if (!enabled) return null
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.SEND_SMS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e("短信指令无法回复：未授予 SEND_SMS 权限（请在 App 里点「申请权限」）")
+            return "未授予 SEND_SMS 权限，回复发不出去"
+        }
+        return runCatching {
             SmsSender(ctx).send("smscmd_${UUID.randomUUID()}", to, text, null) { _, status, err ->
                 if (status == "failed") Log.e("短信指令回复失败：$err")
             }
-        }.onFailure { Log.e("短信指令回复异常", it) }
+            null
+        }.getOrElse {
+            Log.e("短信指令回复异常", it)
+            "回复发送异常：${it.javaClass.simpleName}"
+        }
     }
 
     /**

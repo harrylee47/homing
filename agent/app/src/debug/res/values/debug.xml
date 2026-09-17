@@ -11,6 +11,11 @@
 
       改动只在 debug 源集，release 一个字节都不受影响。
     -->
-    <string name="app_name">Homing debug</string>
+    <!--
+      translatable="false"：它是**品牌名**，不该被翻译，所以 values-zh 里也不该
+      有对应的一条。不写这个属性的话 lint 会报 MissingTranslation，
+      而「为了让 lint 闭嘴去硬塞一条中文的应用名」是把工具的意见当成了需求。
+    -->
+    <string name="app_name" translatable="false">Homing debug</string>
     <color name="ic_launcher_background">#FF6B9D</color>
 </resources>

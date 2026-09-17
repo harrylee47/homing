@@ -12,7 +12,8 @@
   该跟控制台的语言走，不是跟手机的）。
 -->
 <resources>
-    <string name="app_name">Homing</string>
+    <!-- 品牌名，两种语言下都一样，见 debug.xml 里那段注释 -->
+    <string name="app_name" translatable="false">Homing</string>
 
     <!-- 常驻通知 -->
     <string name="notification_channel">Status</string>
