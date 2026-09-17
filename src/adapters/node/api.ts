@@ -275,7 +275,7 @@ route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
   await deps.store.audit({ user_id: FIRST_USER_ID, actor: 'setup', action: 'setup.password', detail: name, ip, created_at: now() })
 
   const uri = totpUri(secret, name)
-  json(res, 200, { secret, uri, qr: toSvg(uri), name })
+  json(res, 200, { secret, uri, qr: toSvg(uri, { label: '两步验证绑定二维码' }), name })
 }, false, true)
 
 /** 第二步：验证一次 TOTP，确认认证器已正确绑定，然后才置初始化标记。 */
@@ -565,7 +565,7 @@ route('POST', '/api/users', async ({ user, res, body, deps, ip }) => {
 
   const uri = totpUri(secret, name)
   // 口令与二维码只在这里出现一次，此后服务端只留哈希
-  json(res, 200, { id, name, password, secret, uri, qr: toSvg(uri) })
+  json(res, 200, { id, name, password, secret, uri, qr: toSvg(uri, { label: '两步验证绑定二维码' }) })
 })
 
 /** 停用 / 启用。停用后手里的会话立刻失效，但数据还在，可以随时恢复。 */
@@ -663,7 +663,7 @@ route('POST', '/api/users/:id/reset', async ({ user, res, params, deps, ip }) =>
   void deps.onPasswordReset?.(target.id, user.name)
 
   const uri = secret ? totpUri(secret, target.name) : null
-  json(res, 200, { name: target.name, password, secret, uri, qr: uri ? toSvg(uri) : null })
+  json(res, 200, { name: target.name, password, secret, uri, qr: uri ? toSvg(uri, { label: '两步验证绑定二维码' }) : null })
 })
 
 // ── 两步验证：自助绑定、解绑、找回 ──────────────────────────
@@ -703,7 +703,7 @@ route('POST', '/api/auth/totp/setup', async ({ user, res, deps }) => {
   await deps.store.setUserSetting(user.id, S_TOTP_PENDING,
     JSON.stringify({ secret, until: now() + TOTP_SETUP_TTL_MS }))
   const uri = totpUri(secret, user.name)
-  json(res, 200, { secret, uri, qr: toSvg(uri) })
+  json(res, 200, { secret, uri, qr: toSvg(uri, { label: '两步验证绑定二维码' }) })
 })
 
 route('POST', '/api/auth/totp/enable', async ({ user, res, body, deps, ip }) => {
@@ -1275,7 +1275,7 @@ route('POST', '/api/devices/pairing-code', async ({ user, res, body, deps }) => 
     ws_url: ws,
     // 没配 GW_BASE_URL 时不给二维码：与其给一个指向 localhost 的错地址，
     // 不如让用户手输——错的二维码比没有二维码更难排查
-    qr: ws ? toSvg(pairPayload(ws, r.code), { cell: 4 }) : null,
+    qr: ws ? toSvg(pairPayload(ws, r.code), { cell: 4, label: '设备配对二维码' }) : null,
   })
 })
 
@@ -1727,7 +1727,7 @@ route('GET', '/api/bark/info', async ({ user, res, deps }) => {
     public_url: deps.barkPublicUrl ?? null,
     // Bark App 的「添加服务器」支持扫码，内容就是服务器地址本身。
     // 手打一个带路径的 https 地址是这一步最容易出错的地方。
-    qr: deps.barkPublicUrl ? toSvg(deps.barkPublicUrl, { cell: 4 }) : null,
+    qr: deps.barkPublicUrl ? toSvg(deps.barkPublicUrl, { cell: 4, label: 'Bark 服务器地址二维码' }) : null,
     access: await barkAccess(deps.store),
   })
 })

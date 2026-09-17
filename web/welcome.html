@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Homing — 人在国外，国内手机号的验证码照样收得到</title>
-<meta name="description" content="把插着国内卡的旧安卓手机放在家里，它收到的短信、来电、App 通知几秒内推到你身边的手机上。开源、自托管。">
+<title>Homing — 卡留在家，号跟着你走</title>
+<meta name="description" content="新手机只有 eSIM，国内实体卡插不进去。把那张卡留在家里一台旧安卓机上，收到的短信、来电、App 通知几秒内响在你身边的手机上。开源、自托管。">
 <meta name="theme-color" content="#f4f2ec">
 <link rel="icon" type="image/svg+xml" href="/logo.svg">
 <link rel="stylesheet" href="/style.css">
@@ -15,7 +15,11 @@
   （未初始化去向导、无 token 去登录）；② 它是这个站上唯一希望被搜到的页面，
   而控制台的 index.html 是 noindex；③ 它**零 JS**——CSP 的 script-src 只允许
   同源外链脚本，内联的 script 标签会被静默拦掉，页面照常渲染但按钮没反应，
-  是做独立页最容易第一脚踩进去的坑。所以交互全部用 <details> 和锚点。
+  是做独立页最容易第一脚踩进去的坑。
+
+  所以全部交互都是纯 CSS：<details> 做手风琴，radio + label 做标签页。
+  代价是页签状态进不了 URL（分享链接回不到某一格），换来的是没有 JS 也完整可读、
+  能被 Ctrl+F 搜到、能被搜索引擎抓全。对一个「介绍页」这笔交换是划算的。
 -->
 <style>
   .wrap { max-width: 860px; margin: 0 auto; padding: 0 16px; }
@@ -23,15 +27,21 @@
     position: sticky; top: 0; z-index: 10; background: var(--bg);
     border-bottom: var(--bw) solid var(--line); padding: 10px 0; margin-bottom: 22px;
   }
-  .top .wrap { display: flex; align-items: center; gap: 10px; }
-  .top img { width: 30px; height: 30px; }
+  .top .wrap { display: flex; align-items: center; gap: 8px; }
+  .top img { width: 30px; height: 30px; flex: none; }
   .top .name { font-weight: 800; font-size: 18px; letter-spacing: .02em; }
   .top .sp { flex: 1 }
   .hero h1 { font-size: 30px; line-height: 1.3; margin: 8px 0 12px; }
   .hero p { font-size: 16px; line-height: 1.7; margin: 0 0 14px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-  @media (max-width: 720px) { .grid2, .grid3 { grid-template-columns: 1fr } .hero h1 { font-size: 25px } }
+  /* 720px 这个断点同时管三件事，改的时候注意 iPad 竖屏（768）仍走多列 */
+  @media (max-width: 720px) {
+    .grid2, .grid3 { grid-template-columns: 1fr }
+    .hero h1 { font-size: 25px }
+    /* 顶栏三个按钮在窄屏放不下：品牌名让位，logo 还在 */
+    .top .name { display: none }
+  }
   /* 截图横向滚动而不是纵向铺开：六张 334×700 的手机竖截图铺成一列，
      在手机上会把整页撑到近两万像素，没人会滚到底。横滑一条是应用商店的
      成熟做法，而且截图按原尺寸显示不会被拉糊 */
@@ -46,16 +56,118 @@
   .shot img { display: block; width: 100%; height: auto; }
   .cap { font-size: 12px; color: var(--muted); padding: 7px 9px; border-top: var(--bw) solid var(--line); line-height: 1.5; }
   .hint { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
-  .step { display: flex; gap: 11px; align-items: flex-start; margin: 0 0 14px; }
-  .step .n {
-    flex: none; width: 27px; height: 27px; border-radius: 50%;
-    border: var(--bw) solid var(--line); background: var(--yellow); color: var(--on-bright);
-    display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px;
-  }
-  .step b { display: block; margin-bottom: 3px; }
-  .step .muted { line-height: 1.65; }
   .foot { margin: 34px 0 20px; font-size: 12px; color: var(--muted); line-height: 1.8; }
   a.btnlink { text-decoration: none; }
+
+  /* ── 手风琴 ──────────────────────────────────────────────
+     <details name="..."> 让同组只能展开一个，浏览器原生互斥，不需要一行 JS。
+     老浏览器不认 name，退化成「都能同时展开」——是可接受的降级，不是坏掉。 */
+  .fold {
+    background: var(--card); border: var(--bw) solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    margin-bottom: 10px; overflow: hidden;
+  }
+  .fold > summary {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    padding: 12px 14px; font-size: 14px; font-weight: 800;
+    list-style: none; color: var(--fg);
+  }
+  .fold > summary::-webkit-details-marker { display: none }
+  .fold > summary::before { content: none }   /* style.css 给 summary 加过 ▸，这里自绘编号球 */
+  .fold > summary::after {
+    content: "▸"; margin-left: auto; font-size: 12px; color: var(--muted);
+    transition: transform .15s var(--ease);
+  }
+  .fold[open] > summary { background: var(--yellow); color: var(--on-bright); border-bottom: var(--bw) solid var(--line); }
+  .fold[open] > summary::after { transform: rotate(90deg); color: var(--on-bright); }
+  .fold .n {
+    flex: none; width: 24px; height: 24px; border-radius: 50%;
+    border: var(--bw) solid var(--line); background: var(--yellow); color: var(--on-bright);
+    display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px;
+  }
+  .fold[open] .n { background: var(--card); color: var(--fg); }
+  .fold-body { padding: 12px 14px; }
+  .fold-body p { margin: 0 0 8px; line-height: 1.7; }
+  .fold-body p:last-child { margin-bottom: 0 }
+
+  /* ── 标签页 ──────────────────────────────────────────────
+     radio + label。不能用 display:none 藏 radio——那样键盘就焦点不到，
+     整组切不了。用绝对定位移出视觉流，保留可聚焦性。 */
+  .tabs > input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .tabbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  /* style.css 里 label 是全局的小灰大写字，这里必须整条盖掉 */
+  .tabbar label {
+    display: inline-block; margin: 0; padding: 8px 14px;
+    font-size: 13px; font-weight: 800; letter-spacing: 0; text-transform: none;
+    color: var(--fg); background: var(--card);
+    border: var(--bw) solid var(--line); border-radius: var(--radius);
+    box-shadow: var(--shadow); cursor: pointer;
+    transition: transform .1s var(--ease), box-shadow .1s var(--ease);
+  }
+  .tabbar label:active { transform: translate(var(--sx), var(--sx)); box-shadow: none; }
+  .tabs > input:nth-of-type(1):checked ~ .tabbar label:nth-of-type(1),
+  .tabs > input:nth-of-type(2):checked ~ .tabbar label:nth-of-type(2),
+  .tabs > input:nth-of-type(3):checked ~ .tabbar label:nth-of-type(3) {
+    background: var(--cyan); color: var(--on-bright);
+  }
+  /* 键盘聚焦时要看得见，否则用方向键切页签的人完全没有反馈 */
+  .tabs > input:focus-visible ~ .tabbar label { outline: none }
+  .tabs > input:nth-of-type(1):focus-visible ~ .tabbar label:nth-of-type(1),
+  .tabs > input:nth-of-type(2):focus-visible ~ .tabbar label:nth-of-type(2),
+  .tabs > input:nth-of-type(3):focus-visible ~ .tabbar label:nth-of-type(3) {
+    outline: var(--bw) dashed var(--line); outline-offset: 3px;
+  }
+  .pane { display: none }
+  .tabs > input:nth-of-type(1):checked ~ .panes > .pane:nth-of-type(1),
+  .tabs > input:nth-of-type(2):checked ~ .panes > .pane:nth-of-type(2),
+  .tabs > input:nth-of-type(3):checked ~ .panes > .pane:nth-of-type(3) { display: block }
+
+  /* 教程里的有序步骤。数字用 counter 而不是手写，插一步不用重排 */
+  .howto { list-style: none; counter-reset: s; margin: 0; padding: 0; }
+  .howto li {
+    counter-increment: s; position: relative; padding-left: 30px;
+    margin-bottom: 10px; font-size: 13px; line-height: 1.7; color: var(--muted);
+  }
+  .howto li::before {
+    content: counter(s); position: absolute; left: 0; top: 1px;
+    width: 21px; height: 21px; border-radius: 50%;
+    border: var(--bw) solid var(--line); background: var(--card); color: var(--fg);
+    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800;
+  }
+  .howto li b, .howto li code { color: var(--fg) }
+  .howto code {
+    font-family: var(--mono); font-size: 12px; background: var(--bg);
+    border: var(--bw) solid var(--line); border-radius: 5px; padding: 0 4px;
+  }
+  .warn-line {
+    border-left: 4px solid var(--pink); padding-left: 10px;
+    font-size: 13px; line-height: 1.7; color: var(--muted); margin: 10px 0 0;
+  }
+
+  /* ── 可横滑的卡片组 ──────────────────────────────────────
+     桌面两列铺开；手机上六张卡一列排下来是 1100px，等于三屏纯文字，
+     没人会读完。改成横滑一条，和上面截图条是同一套手势，一个字都不用删。 */
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) {
+    .cards {
+      display: flex; gap: 12px; overflow-x: auto;
+      scroll-snap-type: x mandatory; padding-bottom: 8px;
+      /* 负边距让卡片贴着屏幕边缘滑出去——右边露一条缝，视觉上就是「还有」 */
+      margin-inline: -16px; padding-inline: 16px;
+    }
+    .cards > .card { flex: 0 0 82%; scroll-snap-align: start; margin: 0; }
+  }
+  .hint.narrow-only { display: none }
+  @media (max-width: 720px) { .hint.narrow-only { display: block } }
+
+  /* ── 下载区 ────────────────────────────────────────────── */
+  .dl { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .dl .qrwrap {
+    flex: none; width: 132px; height: 132px; padding: 7px; background: #fff;
+    border: var(--bw) solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
+  }
+  .dl .qrwrap img { display: block; width: 100%; height: 100%; }
+  .dl .col { flex: 1 1 260px; min-width: 0; }
 </style>
 </head>
 <body>
@@ -64,17 +176,20 @@
   <img src="/logo.svg" alt="">
   <span class="name">Homing</span>
   <span class="sp"></span>
-  <a class="btnlink" href="/register"><button class="sm">注册账号</button></a>
+  <a class="btnlink" href="/download/homing.apk" download><button class="sm">下载 App</button></a>
+  <a class="btnlink" href="/register"><button class="ghost sm">注册</button></a>
   <a class="btnlink" href="/login"><button class="ghost sm">登录</button></a>
 </div></div>
 
 <div class="wrap">
 
   <section class="hero">
-    <h1>人在国外，国内号码的验证码，照样收得到。</h1>
-    <p>把插着那张卡的旧安卓手机放在家里，插上电、连上 WiFi。它收到的短信、来电、App 通知，
-    几秒之内出现在<b>你身边这台手机</b>的通知栏里——验证码长按就复制，不用打开任何 App，
-    也不用麻烦家里人。</p>
+    <h1>卡留在家，号跟着你走。</h1>
+    <p>新 iPhone 只有 eSIM，那张用了十年、绑着银行和支付宝的实体卡插不进去；想转 eSIM，
+    多半要本人回归属地营业厅办——而你在八千公里外。于是国内号码被钉在一台旧安卓机上：
+    背着走，包里多一台要单独充电的手机；放家里，验证码就收不到。</p>
+    <p>Homing 是第三种：<b>那台手机留在家里的插座上</b>，它收到的短信、来电、App 通知，
+    几秒之内响在你身边这台手机上——验证码长按就复制，不用打开任何 App，也不用叫醒任何人。</p>
     <div class="row" style="justify-content:flex-start;gap:8px;flex-wrap:wrap;margin-bottom:8px">
       <span class="badge plain">开源 AGPL-3.0</span>
       <span class="badge plain">不需要公网 IP</span>
@@ -83,15 +198,18 @@
     <p class="muted" style="font-size:13px">Homing 取自 homing pigeon（信鸽）：一只待在老家的鸽子，把消息带到你身边。</p>
   </section>
 
-  <h2>你大概遇到过这些</h2>
-  <div class="grid2">
-    <div class="card"><b>转账卡住了</b><p class="muted">银行 App 要发一条短信验证码，而那条短信正躺在国内那台手机里。一笔转账拖三天，客服只会说「请用预留手机号接收」。</p></div>
-    <div class="card"><b>登录不进去</b><p class="muted">支付宝、微信、12306、医保、社保、学信网——每一个都要验证码，每一个都只认那个国内号码。</p></div>
-    <div class="card"><b>消息永远慢一步</b><p class="muted">快递到了、学校通知、医院叫号、亲戚发的短信，全发到那个号码上。你得等到有人想起来截图给你。</p></div>
-    <div class="card"><b>号快被停了</b><p class="muted">为了保号，每个月还得麻烦家里人发条短信、打个电话。忘一次，号就没了，绑在上面的一切跟着废掉。</p></div>
+  <h2>出门只带一台手机</h2>
+  <p class="hint narrow-only">← 左右滑动看更多 →</p>
+  <div class="cards">
+    <div class="card"><b>新手机没有卡槽</b><p class="muted">美版 iPhone 从 14 起取消了实体卡槽，iPhone Air 更是全球只有 eSIM。换机那天你才发现，那张绑着银行、支付宝和一堆账号的卡，在新手机上没地方插。</p></div>
+    <div class="card"><b>转 eSIM 要本人回去办</b><p class="muted">实体卡转 eSIM 要走实名流程，机型、套餐、归属地各有条件，多数情况要本人到营业厅。人在国外，客服的标准答复是「请到归属地营业厅办理」。</p></div>
+    <div class="card"><b>60 秒，转不到第二手</b><p class="muted">银行和支付类验证码多数 60 秒过期。对方看到消息、翻到那条短信、截图发给你，你再照着输——按下确认时页面已经提示「验证码已失效」。不是没人帮你，是来不及。</p></div>
+    <div class="card"><b>你的白天，他们的凌晨</b><p class="muted">时差是硬的。你办事的时间正好是家里人睡着的时间，而转账、改绑、抢票这些事往往排不到明天。</p></div>
+    <div class="card"><b>麻烦人是有额度的</b><p class="muted">登录要、转账要、改绑要、挂号要，一个月好几次。次数多了你会开始掂量「这事值不值得再麻烦一次」，于是该办的一拖再拖——这才是最贵的那部分。</p></div>
+    <div class="card"><b>代收的人，顺便全看见了</b><p class="muted">让家里人转发，等于把银行验证码、余额变动、你正在办什么事一并给了对方。多半没人会介意，但这件事本来不必让任何人经手。</p></div>
   </div>
-  <p class="muted" style="margin-top:10px">常见的几种办法都不太行：开国际漫游贵，而且不是每家运营商都转发验证码；
-  让家里人转发，验证码常常 60 秒就过期，等转到手已经失效；接码平台等于把号码交给陌生人。</p>
+  <p class="muted" style="margin-top:10px">几种常见办法都不太行：国际漫游贵，而且不是每家运营商都转发验证码；
+  让家里人转发，等转到手多半已经失效；接码平台等于把号码交给陌生人。</p>
 
   <h2>它是怎么工作的</h2>
   <div class="grid3">
@@ -99,6 +217,27 @@
     <div class="card"><b>2 · 这台服务器</b><p class="muted">手机主动连上来，不需要公网 IP、不用内网穿透。收到的消息按你写的规则分发。</p></div>
     <div class="card"><b>3 · 你身边的手机</b><p class="muted">验证码出现在通知栏，长按即复制。也可以发到 Telegram 或你自己的接口。</p></div>
   </div>
+
+  <h2>它也替你盯着那台手机</h2>
+  <details class="fold" name="watch">
+    <summary>掉线就告诉你</summary>
+    <div class="fold-body"><p class="muted">插头被拔、WiFi 换了密码、被系统清后台——这些平时发现不了，
+      都是在你急着要验证码的那一刻才暴露。它掉线超过阈值会直接推给你，电量太低也会。
+      <b>告警走的是不经过那台手机的通道</b>——用掉线的设备通知你它掉线了，没有意义。</p></div>
+  </details>
+  <details class="fold" name="watch">
+    <summary>按时发保号短信</summary>
+    <div class="fold-body"><p class="muted">长期零消费会停机，停久了号被回收卖给下一个人——
+      那时他手机上收到的，是你银行和支付账户的验证码。这才是保号真正的理由。
+      保号任务按排期自己发，双卡的话一张卡一个任务，不用每月托人记着。</p></div>
+  </details>
+  <details class="fold" name="watch">
+    <summary>联系不上它的时候，还能问它</summary>
+    <div class="fold-body"><p class="muted">服务端连不上那台手机时，可以直接给它发一条带口令的短信，
+      问电量、信号、网络、位置。这条路<b>完全在手机本地跑完</b>，一步都不经过服务器——
+      「手机联不上服务端了，我还想知道它怎么了」，这个功能的全部意义在此。</p>
+      <p class="muted">能力是刻意做窄的：只能查，不能发短信。口令泄漏最多让人知道这台手机还活着。</p></div>
+  </details>
 
   <h2>长什么样</h2>
   <p class="hint">← 左右滑动看更多 →</p>
@@ -111,62 +250,162 @@
     <figure class="shot"><img src="/img/pairing.png" alt="配对" width="334" height="700"><figcaption class="cap">配对：扫一次码，地址和配对码都不用手打</figcaption></figure>
   </div>
 
-  <h2>五步走完</h2>
+  <h2>下载 App</h2>
   <div class="card">
-    <div class="step"><span class="n">1</span><div><b>注册账号</b><span class="muted">向邀请你的人要一个邀请码，打开注册页填上。注册前会让你读一份风险声明——请真的读完。</span></div></div>
-    <div class="step"><span class="n">2</span><div><b>下载并安装 App</b><span class="muted">
-      <a href="/download/homing.apk" download>下载 Homing.apk</a>（约 2.7 MB，安卓 8.0 以上）。
-      系统会提示「来自未知来源」——在弹出的设置里允许浏览器安装应用即可。这是旁加载的正常提示。</span></div></div>
-    <div class="step"><span class="n">3</span><div><b>把手机和账号配上对</b><span class="muted">
-      在控制台的「设备」页点生成配对码，用 App 里的「扫码配对」对准那个二维码。
-      配对前 App 会显示要连到哪台服务器，<b>请看清楚再确认</b>——扫错一个码，之后所有验证码都会发给别人。</span></div></div>
-    <div class="step"><span class="n">4</span><div><b>给 App 权限、让它别被杀掉</b><span class="muted">
-      短信、通话记录、通知读取三项权限要给全；再把这个 App 加进电池优化白名单（不同手机叫法不一样，
-      一般在「电池 → 后台运行 / 自启动」）。少给一项，对应的那类消息就静悄悄地收不到。</span></div></div>
-    <div class="step"><span class="n">5</span><div><b>配一个推送渠道，然后按测试按钮</b><span class="muted">
-      到「设置 → 渠道」加一个 Bark 或 Telegram，<b>一定要点那个测试按钮</b>——
-      渠道配错是最常见的故障，而它的表现是「什么都没发生」。测通了再去规则页点「写入建议规则」。</span></div></div>
+    <div class="dl">
+      <!-- 二维码由服务端按 GW_BASE_URL 现算（/qr/apk.svg）。
+           写死在 HTML 里的话，除官方实例外每个自托管的人扫到的都是错地址。
+           没配 GW_BASE_URL 时这个端点回 404，浏览器显示 alt 文字，页面不塌。 -->
+      <div class="qrwrap"><img src="/qr/apk.svg" alt="用手机扫码下载" width="118" height="118"></div>
+      <div class="col">
+        <p class="muted" style="margin:0 0 8px;line-height:1.7">
+          用<b>家里那台安卓机</b>扫左边的码，或者直接在它的浏览器里打开下面的链接。
+          装在需要转发的那台手机上，不是你身边这台。</p>
+        <div class="btnrow" style="margin-bottom:8px">
+          <a class="btnlink" href="/download/homing.apk" download><button class="sm">下载 homing.apk</button></a>
+        </div>
+        <p class="muted" style="margin:0;font-size:12px">安卓 8.0 以上。系统会提示「来自未知来源」，
+        在弹出的设置里允许浏览器安装应用即可——这是旁加载的正常提示。iPhone 这边不用装任何 App，
+        收通知用 Bark 或 Telegram。</p>
+      </div>
+    </div>
   </div>
 
-  <h2>怎么收到通知</h2>
-  <div class="grid2">
-    <div class="card">
-      <b>Bark（iPhone，推荐）</b>
-      <p class="muted">验证码直接显示在锁屏上，长按即复制，不用打开任何 App。
-      服务端自带 Bark 服务器，不用另外部署。</p>
-      <details><summary class="muted">怎么配</summary>
-        <p class="muted">① App Store 搜「Bark」装上 →
-        ② 打开控制台「设置 → 渠道 → 添加 Bark」，页面上有服务器二维码 →
-        ③ 在 Bark App 里点「+」扫那个码 →
-        ④ 把 Bark 给你的地址整条粘回控制台，系统会自动认出里面的 Key →
-        ⑤ 点测试按钮，手机响了就成了。</p>
-      </details>
+  <h2>五步走完</h2>
+  <details class="fold" name="setup" open>
+    <summary><span class="n">1</span>注册账号</summary>
+    <div class="fold-body">
+      <p class="muted">向邀请你的人要一个邀请码，打开<a href="/register">注册页</a>填上。
+      注册前会让你读一份风险声明——请真的读完，那不是免责套话。</p>
     </div>
-    <div class="card">
-      <b>Telegram（安卓 / 电脑都行）</b>
-      <p class="muted">正文是打码的，点一下才显示。<b>这是为了避免 Bot 被封，不是为了防人偷看</b>——
-      内容仍然明文经过 Telegram 的服务器，并留在你的聊天记录里。</p>
-      <details><summary class="muted">怎么配</summary>
-        <p class="muted">① 在 Telegram 里找 @BotFather，发 /newbot，拿到一串 Token →
-        ② 找 @userinfobot 拿到你自己的 chat id →
-        ③ 填进控制台「设置 → 渠道 → 添加 Telegram」 →
-        ④ 点测试按钮。</p>
-      </details>
+  </details>
+  <details class="fold" name="setup">
+    <summary><span class="n">2</span>下载并安装 App</summary>
+    <div class="fold-body">
+      <p class="muted">装在<b>家里那台插着国内卡的安卓机</b>上，见上面的下载区。
+      系统提示「来自未知来源」时，在弹出的设置里允许浏览器安装应用。</p>
+    </div>
+  </details>
+  <details class="fold" name="setup">
+    <summary><span class="n">3</span>把手机和账号配上对</summary>
+    <div class="fold-body">
+      <p class="muted">在控制台的「设备」页点<b>生成配对码</b>，用 App 里的「扫码配对」对准那个二维码。</p>
+      <p class="warn-line">配对前 App 会显示要连到哪台服务器，<b>请看清楚再确认</b>——
+      扫错一个码，这台手机之后收到的每一条验证码都会发给别人。</p>
+    </div>
+  </details>
+  <details class="fold" name="setup">
+    <summary><span class="n">4</span>给权限、让它别被杀掉</summary>
+    <div class="fold-body">
+      <p class="muted">短信、通话记录、通知读取三项权限要给全；再把这个 App 加进电池优化白名单。
+      不同手机叫法不一样，一般在「电池 → 后台运行 / 自启动」，小米叫「省电策略 → 无限制」，
+      华为叫「应用启动管理 → 手动管理」。</p>
+      <p class="warn-line">少给一项，对应的那类消息就<b>静悄悄地</b>收不到——不会报错，也不会有提示。</p>
+    </div>
+  </details>
+  <details class="fold" name="setup">
+    <summary><span class="n">5</span>配推送渠道，然后按测试</summary>
+    <div class="fold-body">
+      <p class="muted">在总览页点「管理渠道」（或 设置 → 通知渠道 → 管理），加一个 Bark 或 Telegram。
+      具体步骤见下一节。</p>
+      <p class="warn-line"><b>一定要点那个测试按钮。</b>渠道配错是最常见的故障，
+      而它的表现是「什么都没发生」——你不会收到任何错误提示，只是验证码再也不来了。</p>
+      <p class="muted">测通了再去规则页点「写入建议规则」，验证码才会穿透专注模式、广告才会只归档。</p>
+    </div>
+  </details>
+
+  <h2>怎么收到通知</h2>
+  <div class="tabs">
+    <input type="radio" name="ch" id="ch-bark" checked>
+    <input type="radio" name="ch" id="ch-tg">
+    <input type="radio" name="ch" id="ch-hook">
+    <div class="tabbar">
+      <label for="ch-bark">Bark（iPhone）</label>
+      <label for="ch-tg">Telegram</label>
+      <label for="ch-hook">Webhook</label>
+    </div>
+    <div class="panes">
+
+      <section class="pane card">
+        <b>Bark —— iPhone 上收验证码的首选</b>
+        <p class="muted">验证码直接显示在锁屏上，<b>长按即复制</b>，不用打开任何 App。
+        这台服务器自带一个 Bark 服务端，不用另外部署、也不经过第三方。</p>
+        <ol class="howto">
+          <li>App Store 搜 <b>Bark</b> 装上。</li>
+          <li>打开控制台 → 总览页点<b>「管理渠道」</b> → 类型选 <b>Bark</b>。
+            表单顶上有一块灰底说明，里面是<b>服务器二维码</b>和服务器地址
+            （形如 <code>https://你的域名/bark</code>）。</li>
+          <li>回到 Bark App，切到底部的<b>「服务器」</b>页，点<b>右上角的 ＋</b>。
+            注意这一步加的是<b>服务器</b>——不是「添加 Bark」，也不是加推送。
+            扫上一步那个码，或者手动把服务器地址填进去。</li>
+          <li>加完服务器后回 Bark 首页，上面有一条<b>示例推送地址</b>，形如
+            <code>https://你的域名/bark/<b>xxxxxxxx</b>/推送内容</code>。
+            中间那段就是<b>设备 Key</b>——Bark 首页不会单独把它列出来，只能从这条地址里认。</li>
+          <li>把<b>整条地址</b>复制，粘进控制台表单里的「粘贴整条推送地址」框。
+            系统会自己认出里面的 Key 填好，不用你去数是哪一段。</li>
+          <li>点<b>「测试」</b>。手机响了就成了。</li>
+        </ol>
+        <p class="warn-line">第一次绑定要把「开放档位」临时调成<b>完全开放</b>，绑完调回「允许推送」。
+        这个开关<b>只有管理员能改</b>——如果你是被邀请进来的成员，这一步要找管理员开一下。</p>
+      </section>
+
+      <section class="pane card">
+        <b>Telegram —— 安卓、电脑都能收</b>
+        <p class="muted">正文是打码的（spoiler），点一下才显示。
+        <b>这是为了避免 Bot 被封，不是为了防人偷看</b>——内容仍然明文经过 Telegram 的服务器，
+        并长期留在你的聊天记录里。</p>
+        <ol class="howto">
+          <li>在 Telegram 里搜 <b>@BotFather</b>（认准带蓝色对勾那个），发一条 <code>/newbot</code>。</li>
+          <li>它先问你 Bot 的<b>显示名</b>（随便起，比如 <code>我的网关</code>），
+            再问<b>用户名</b>——这个必须全局唯一且<b>以 bot 结尾</b>，比如 <code>harry_homing_bot</code>。</li>
+          <li>起好之后它回一段话，里面有一行很长的 <b>token</b>，形如
+            <code>8123456789:AAH...</code>。整行复制下来，这就是 Bot Token。</li>
+          <li><b>先去给你的 Bot 发一条 <code>/start</code></b>。
+            点它回复里那个 <code>t.me/你的bot名</code> 链接进去，点底部的「开始 / START」。
+            这一步不做，下一步一定读不到你。</li>
+          <li>控制台 → 总览「管理渠道」 → 类型选 <b>Telegram</b> → 把 token 粘进「Bot Token」。</li>
+          <li>点<b>「自动获取 Chat ID」</b>，它会把这个 Bot 最近对话过的人列出来，点你自己那一条即可
+            ——<b>不需要</b>再去找 @userinfobot。然后保存、点「测试」。</li>
+        </ol>
+        <p class="warn-line"><b>一人一个 Bot。</b>两个人共用同一个 token，推送不受影响（各发各的 chat），
+        但 <b>Bot 命令会互相抢</b>：Telegram 只允许一个程序拉取一个 Bot 的消息，
+        两边会随机丢命令，而且没有任何错误提示。要在这台网关上用 <code>/recent</code>
+        这类命令，就各自去 @BotFather 建一个。</p>
+        <p class="warn-line">还有一条顺序坑：<b>渠道一旦保存并启用，最晚一分钟后「自动获取 Chat ID」就用不了了</b>
+        （Bot 已经被网关接管）。所以正确顺序是：填 token → 发 /start → 点自动获取 → 选中 → 再保存。
+        事后要改 Chat ID，先把渠道停用、等约一分钟再回来点。</p>
+      </section>
+
+      <section class="pane card">
+        <b>Webhook —— 发到你自己的接口</b>
+        <p class="muted">把消息 POST 到你指定的地址，字段是结构化的 JSON，
+        接下来进飞书、钉钉、企业微信、自建服务还是写进数据库，都由你自己决定。</p>
+        <ol class="howto">
+          <li>控制台 → 总览「管理渠道」 → 类型选 <b>Webhook</b>。</li>
+          <li>填目标地址，<b>必须是 https</b>。</li>
+          <li>点「测试」，确认你那边真的收到了。</li>
+        </ol>
+        <p class="warn-line">内网地址会被拒绝（127.0.0.1、192.168.x、169.254.x 这类）。
+        这是防 SSRF 的硬限制：一个能让服务器往任意地址发请求的接口，等于把内网借给了别人。
+        管理员可以对自己的渠道放开这条。</p>
+      </section>
+
     </div>
   </div>
 
   <h2>两步验证</h2>
-  <div class="card">
-    <p class="muted">可选，但建议开。开了之后登录要多输一次认证器 App 上的 6 位动态码——
-    就这一处差别，口令规则、登录保持时长、找回口令的能力都和不开时一样。</p>
-    <details><summary class="muted">怎么开、认证器用哪个</summary>
+  <details class="fold">
+    <summary>可选，但建议开 —— 怎么开、认证器用哪个</summary>
+    <div class="fold-body">
+      <p class="muted">开了之后登录要多输一次认证器 App 上的 6 位动态码。
+      就这一处差别：口令规则、登录保持时长、找回口令的能力，开不开都一样。</p>
       <p class="muted">手机上装 Google Authenticator、Microsoft Authenticator、1Password，
       或者直接用 iOS 自带的「密码」App 都行。在控制台「设置 → 两步验证 → 开启」扫码，
       再输一次它显示的 6 位数字即可。</p>
       <p class="muted">忘了口令有两条路：让系统把找回码发到你配好的推送渠道，
       或者直接用认证器上的动态码。两样都没有的话，只能请管理员帮你重置。</p>
-    </details>
-  </div>
+    </div>
+  </details>
 
   <h2>关于安全，说实话</h2>
   <div class="card">

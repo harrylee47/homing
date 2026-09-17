@@ -7,6 +7,7 @@ import { createCipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
 import { DEFAULT_AGENT_CONFIG, ErrorCode } from '../../core/protocol.js'
 import { CLOSE_AUTH_FAILED } from '../../core/session.js'
+import { toSvg } from '../../core/qr.js'
 import { loadConfig } from './config.js'
 import { MemoryHub } from './hub.js'
 import { SqliteStore } from './store.js'
@@ -427,6 +428,29 @@ const server = createServer((req, res) => {
       }
       proxyBark(cfg.barkUpstream!, req, res)
     })()
+    return
+  }
+
+  /**
+   * 落地页的「扫码下载 APK」。
+   *
+   * 二维码必须编进**绝对地址**，而落地页是每个自托管实例在自己域名下发的静态文件——
+   * 把地址写死在 HTML 里，对除官方实例之外的每个人都是错的。所以由服务端按
+   * GW_BASE_URL 现算一张，落地页只写 <img src="/qr/apk.svg">（CSP 的 img-src 'self' 放行）。
+   *
+   * 没配 GW_BASE_URL 就回 404：指向 localhost 的错二维码比没有二维码更难排查，
+   * 这和配对码那边「没配就不给二维码」是同一条规矩。
+   */
+  if (req.url === '/qr/apk.svg') {
+    const base = cfg.baseUrl?.replace(/\/$/, '')
+    if (!base) { res.writeHead(404).end(); return }
+    const svg = toSvg(`${base}/download/homing.apk`, { cell: 4, label: '扫码下载 Homing 安卓 App' })
+    res.writeHead(200, {
+      'content-type': 'image/svg+xml; charset=utf-8',
+      'cache-control': 'no-cache',
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
+    })
+    res.end(svg)
     return
   }
 
