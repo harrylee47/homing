@@ -1663,9 +1663,22 @@ async function thread(key) {
     const online = devs.filter((d) => d.status === 'online')
     const multi = devs.filter((d) => d.status !== 'revoked').length > 1
 
-    // 回复默认用最近一条收到的消息那台设备、那张卡：
-    // 换一张卡发回去，对方看到的是陌生号码
-    const prefDev = online.some((d) => d.id === r.reply_device) ? r.reply_device : (online[0]?.id ?? '')
+    /**
+     * 回复默认用最近一条收到的消息那台设备、那张卡：
+     * 换一张卡发回去，对方看到的是陌生号码。
+     *
+     * **取不到时不再偷偷挑第一台在线设备。** 原来的 `online[0]` 回落正是
+     * CLAUDE.md 点名警告过的那种写法——收件人看到的号码取决于用哪张卡，
+     * 挑错等于用错身份，而这件事不报错、不提示，只有对方问你「你换号了？」
+     * 的时候才会发现。
+     *
+     * 取不到的两种原因：这条会话里收到的那半边已经被保留上限清理了
+     * （outbound 还在，所以会话看起来还有内容），或者那台设备已经吊销。
+     * 两种都得说出来，并且强制让人自己选。
+     */
+    const known = online.some((d) => d.id === r.reply_device)
+    const prefDev = known ? r.reply_device : ''
+    const ambiguous = !known && online.length > 0
 
     let lastDay = ''
     const bubbles = r.items.map((x) => {
@@ -1695,8 +1708,12 @@ async function thread(key) {
         ${online.length ? `
           <label>回复</label>
           <textarea id="t_text" rows="2" placeholder="输入内容，回车换行"></textarea>
-          ${multi ? `<label>用哪台设备</label>
-            <select id="t_dev">${online.map((d) =>
+          ${ambiguous ? `<div class="warn-line"><b>不确定该用哪张卡回复。</b>
+            这段对话里收到的那部分已经不在库里了（多半是按保留上限清理的），
+            所以查不到当初是哪台设备、哪张卡收的。<b>换一张卡发回去，对方看到的是陌生号码</b>——
+            请自己确认下面选的是对的。</div>` : ''}
+          ${multi || ambiguous ? `<label>用哪台设备</label>
+            <select id="t_dev">${ambiguous ? '<option value="">请选择…</option>' : ''}${online.map((d) =>
               `<option value="${esc(d.id)}"${d.id === prefDev ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>` : ''}
           <div id="t_simbox"></div>
           <div class="btnrow"><button id="t_send">发送</button></div>
@@ -1723,6 +1740,10 @@ async function thread(key) {
     $('#t_send').onclick = async () => {
       const text = $('#t_text').value
       if (!text.trim()) return ($('#t_err').textContent = '内容不能为空')
+      // 不确定用哪张卡时必须自己选，不给默认——挑错等于用错身份
+      if (ambiguous && !$('#t_dev')?.value) {
+        return ($('#t_err').textContent = '请先选一台设备：原消息已不在库里，系统不能替你猜用哪张卡')
+      }
       $('#t_send').disabled = true
       $('#t_err').textContent = ''
       try {

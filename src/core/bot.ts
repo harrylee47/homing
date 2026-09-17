@@ -618,7 +618,26 @@ async function threadView(api: BotApi, key: string): Promise<BotMessage> {
  */
 async function replyPrompt(api: BotApi, eventId: string): Promise<BotMessage> {
   const e = await api.event(eventId)
-  if (!e) return { text: '这条消息不存在，无法回复' }
+  /**
+   * 事件没了。
+   *
+   * 「这条消息不存在」是句静默的错误：它听起来像 Bot 出了问题，而实际原因
+   * 多半是**按消息保留上限清理掉了**——而那是用户自己设的，他只是不记得
+   * 这条会先被删。所以把原因说出来，并给下一步。
+   *
+   * 这里没法回落到 message_refs：那张表按「渠道 + 渠道侧消息 id」索引，
+   * 用来支持「直接引用回复那条推送」，key 不是 event_id。
+   * 也就是说同一条 Telegram 推送，引用回复照样能用，点这个按钮却不行——
+   * 更要把话说清楚，否则这个差别没人解释得了。
+   */
+  if (!e) {
+    return {
+      text: '这条消息已经不在库里了。\n\n'
+        + '多半是按<b>消息保留上限</b>清理掉了（控制台「设置 → 消息保留上限」可以看当前设置），'
+        + '也可能是被手动删除。\n\n'
+        + '想给这个号码发消息，用 <code>/send 号码 内容</code>。',
+    }
+  }
   const via = [e.device_name, e.sim_slot == null ? null : `SIM${e.sim_slot + 1}`].filter(Boolean).join(' ')
   return {
     text: `回复 <b>${esc(e.from)}</b>${via ? `（用 ${esc(via)}）` : ''}`,

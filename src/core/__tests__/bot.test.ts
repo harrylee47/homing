@@ -698,3 +698,18 @@ describe('不用记命令也能用', () => {
     expect(thread).toHaveBeenCalledWith('800138000')
   })
 })
+
+/**
+ * 事件被保留上限清理之后的两条路径。原来它们都是静默的：
+ * Bot 回一句「这条消息不存在」（听起来像 Bot 坏了），
+ * 网页则悄悄换一台在线设备（挑错等于用错身份，而这件事不报错）。
+ */
+describe('记录被清理之后', () => {
+  it('Bot 的回复按钮要说清为什么，并给下一步', async () => {
+    const api = makeApi({ async event() { return null } })
+    const r = await handleCallback(api, 're:evt_00000000-0000-4000-8000-000000000000')
+    expect(r!.text).toContain('保留上限')
+    expect(r!.text).toContain('/send')
+    expect(r!.text).not.toContain('这条消息不存在')
+  })
+})

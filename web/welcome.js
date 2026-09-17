@@ -82,10 +82,59 @@
     io.observe(strip)
   }
 
+  /**
+   * 第一屏那三幕的滚动进度。
+   *
+   * 只做一件事：把 0→1 的进度写成 `--p`（以及重映射过的 `--fly`）。
+   * 透明度、航线的揭开、鸽子的位置全部由 CSS 从这一个变量算出来——
+   * 逐帧改样式的话，三幕十几个元素每帧都要碰一遍，滚动会发涩。
+   *
+   * 读 `getBoundingClientRect` 放在 rAF 里、写样式紧跟其后，一帧内
+   * 只有一次读一次写，不会来回触发同步布局。
+   */
+  function stage() {
+    var el = document.getElementById('stage')
+    if (!el) return
+    var inner = el.querySelector('.stage-in')
+    var cue = document.getElementById('stage_cue_t')
+    var ticking = false
+    var lastCue = ''
+
+    function frame() {
+      ticking = false
+      var span = el.offsetHeight - inner.offsetHeight
+      if (span <= 0) return
+      var p = -el.getBoundingClientRect().top / span
+      if (p < 0) p = 0
+      if (p > 1) p = 1
+      el.style.setProperty('--p', p.toFixed(4))
+      // 鸽子只在中间那段飞：两头留给幕一与幕三的淡入淡出
+      var fly = (p - 0.25) / 0.5
+      if (fly < 0) fly = 0
+      if (fly > 1) fly = 1
+      el.style.setProperty('--fly', fly.toFixed(4))
+
+      if (cue) {
+        var t = p < 0.22 ? '往下滑' : p < 0.78 ? '继续往下滑' : '再往下，是正文'
+        if (t !== lastCue) { cue.textContent = t; lastCue = t }
+      }
+    }
+
+    function onScroll() {
+      if (ticking) return
+      ticking = true
+      requestAnimationFrame(frame)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    frame()
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { start(); nudge() })
+    document.addEventListener('DOMContentLoaded', function () { start(); nudge(); stage() })
   } else {
     start()
     nudge()
+    stage()
   }
 })()
