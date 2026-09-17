@@ -28,6 +28,7 @@ import { toSvg } from '../../core/qr.js'
 import { eventFingerprint, planReconcile } from '../../core/fingerprint.js'
 import { scanMatches } from '../../core/search.js'
 import { simLabel, simsOf } from '../../core/sim.js'
+import { daysLeft, inactiveReason, userActive } from '../../core/users.js'
 import { groupThreads, mergeThread, threadKey, type ThreadItem } from '../../core/thread.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
@@ -107,9 +108,35 @@ interface Ctx {
  */
 const FIRST_USER_ID = 'usr_first'
 
+/**
+ * 隐私声明的版本。
+ *
+ * 改了声明内容就 +1：已经同意过旧版的人下次登录要重新看一遍。
+ * 不做版本管理的话，「他同意的是哪一版」这个问题永远答不上来。
+ */
+export const PRIVACY_VERSION = '2026-09-17'
+
+/** 账号有效期的可选档位（天）。null = 永久。 */
+const VALIDITY_DAYS = [7, 30, 90, 180, 365] as const
+
+/**
+ * 把「几天」换成到期时刻。
+ *
+ * 不接受任意数字：这是个有限集合，按 CLAUDE.md 那条「不要让人手写枚举值」，
+ * 界面上给下拉，后端也只认这几个值——省得有人传个 99999 天当永久用。
+ */
+function expiresAtFrom(days: unknown): number | null {
+  const n = Number(days)
+  return (VALIDITY_DAYS as readonly number[]).includes(n) ? now() + n * 86_400_000 : null
+}
+
 /** 给前端的用户信息。口令哈希、TOTP 密钥、bot token 一概不出门 */
 const publicUser = (u: UserRecord): Record<string, unknown> => ({
-  id: u.id, name: u.name, role: u.role, disabled: u.disabled, created_at: u.created_at,
+  id: u.id, name: u.name, role: u.role, disabled: u.disabled,
+  expires_at: u.expires_at, days_left: daysLeft(u, now()),
+  totp: u.totp_secret !== '',
+  agreed_version: u.agreed_version,
+  created_at: u.created_at,
 })
 
 /**
@@ -127,7 +154,8 @@ function validateUserName(name: string): { ok: true } | { ok: false; error: stri
 /** 免鉴权路由用的占位用户。id 为空串，查什么都是空 */
 const ANON: UserRecord = {
   id: '', name: '', password_hash: '', totp_secret: '',
-  role: 'member', bot_token: '', disabled: false, created_at: 0,
+  role: 'member', bot_token: '', disabled: false,
+  expires_at: null, agreed_version: null, agreed_at: null, created_at: 0,
 }
 
 // ── 路由表 ──────────────────────────────────────────────────
@@ -229,7 +257,9 @@ route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
     password_hash: await hashPassword(pw),
     totp_secret: secret,
     role: 'admin', bot_token: generateSessionToken(),
-    disabled: false, created_at: now(),
+    // 第一个管理员不设期限，也视同已同意——这台机器是他自己的
+    disabled: false, expires_at: null,
+    agreed_version: PRIVACY_VERSION, agreed_at: now(), created_at: now(),
   })
   await deps.store.audit({ user_id: FIRST_USER_ID, actor: 'setup', action: 'setup.password', detail: name, ip, created_at: now() })
 
@@ -269,8 +299,16 @@ route('POST', '/api/auth/login', async ({ user, req, res, body, deps, ip }) => {
     ? await deps.store.getUserByName(b.name.trim())
     : (await deps.store.listUsers()).find((u) => u.role === 'admin') ?? null
 
-  const okPw = !!acct && !acct.disabled && verifyPassword(b.password ?? '', acct.password_hash)
-  const okTotp = okPw && (await verifyTotp(acct!.totp_secret, b.code ?? ''))
+  const okPw = !!acct && userActive(acct, now()) && verifyPassword(b.password ?? '', acct.password_hash)
+  /**
+   * 两步验证是可选的，所以这里要分支——但**不能**用 try/catch 兜。
+   *
+   * verifyTotp('', code) 会抛 DataError（零长度密钥），而这个异常发生在
+   * 失败计数与审计之前：handleApi 会把它兜成 500「服务器出错」，
+   * 这次失败既不计数也不留痕，等于给爆破者一条免计数的通道。
+   */
+  const hasTotp = !!acct && acct.totp_secret !== ''
+  const okTotp = okPw && (!hasTotp || (await verifyTotp(acct!.totp_secret, b.code ?? '')))
 
   if (!acct || !okPw || !okTotp) {
     const c = (rec?.count ?? 0) + 1
@@ -308,7 +346,14 @@ route('POST', '/api/auth/login', async ({ user, req, res, body, deps, ip }) => {
 
   // 「保持登录」是用户自己做的取舍：会话从 30 分钟变 30 天，且不再绑定 IP 段。
   // 不给这个选项的话，摩擦会大到让人想把凭证塞进通知链接里——那才是真正危险的。
-  const trusted = (body as { trust?: boolean })?.trust === true
+  /**
+   * 「保持登录 30 天」只给绑了两步验证的账号。
+   *
+   * 那个豁免的正当性本来就来自「TOTP 让登录很麻烦」——取消了 TOTP 还留着
+   * 30 天免验，是把代价拿走、把补偿留下，两头占。而且信任会话**不校验 IP 段**，
+   * 单因素 + 30 天 + 不绑网段 = 一个躺在 localStorage 里的长期令牌。
+   */
+  const trusted = (body as { trust?: boolean })?.trust === true && hasTotp
   const ttl = trusted ? TRUSTED_SESSION_TTL_MS : SESSION_TTL_MS
 
   const token = generateSessionToken()
@@ -401,7 +446,7 @@ route('GET', '/api/users', async ({ user, res, deps }) => {
 route('POST', '/api/users', async ({ user, res, body, deps, ip }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理用户' })
 
-  const b = body as { name?: string; role?: string }
+  const b = body as { name?: string; role?: string; days?: number }
   const name = (b?.name ?? '').trim()
   const check = validateUserName(name)
   if (!check.ok) return json(res, 400, { error: check.error })
@@ -416,7 +461,9 @@ route('POST', '/api/users', async ({ user, res, body, deps, ip }) => {
     totp_secret: secret,
     role: b?.role === 'admin' ? 'admin' : 'member',
     bot_token: generateSessionToken(),
-    disabled: false, created_at: now(),
+    disabled: false, expires_at: expiresAtFrom(b?.days),
+    // 管理员代建的账号，同意书由本人首次登录时补签
+    agreed_version: null, agreed_at: null, created_at: now(),
   })
   await deps.store.audit({ user_id: user.id, actor: user.name, action: 'user.create', detail: name, ip, created_at: now() })
 
@@ -895,7 +942,7 @@ route('POST', '/api/rules/test', async ({ user, res, body, deps }) => {
 
   const rows = await deps.store.listEvents({ user_id: user.id, limit: Math.min(b.limit ?? 50, 200), offset: 0 })
   const devNames = new Map((await deps.store.listDevices(user.id)).map((d) => [d.id, d.name]))
-  const tz = await timezone(deps.store)
+  const tz = await timezone(deps.store, user.id)
   const results = await Promise.all(rows.map(async (e) => {
     const ev = {
       device_id: e.device_id, kind: e.kind,
@@ -1035,7 +1082,7 @@ route('POST', '/api/bot/rotate-token', async ({ user, res, deps, ip }) => {
  * 保号只是其中一种用法；同一套机制也能做每日提醒、每周汇报之类的事。
  */
 route('GET', '/api/tasks', async ({ user, res, deps }) => {
-  const tz = await timezone(deps.store)
+  const tz = await timezone(deps.store, user.id)
   const rows = await deps.store.listTasks(user.id)
   const items = await Promise.all(rows.map(async (r) => {
     const text = await deps.cipher.decrypt(r.content_enc).catch(() => '')
@@ -1127,8 +1174,9 @@ export interface NotifyCaptureConfig {
 }
 export const DEFAULT_NOTIFY_CAPTURE: NotifyCaptureConfig = { enabled: false, scope: 'selected', packages: [] }
 
-export async function loadNotifyCapture(store: Store): Promise<NotifyCaptureConfig> {
-  const raw = await store.getSetting(S_NOTIFY_CAPTURE)
+/** 通知捕获范围按用户存：它同样随 hello_ack 下发到设备。 */
+export async function loadNotifyCapture(store: Store, userId: string): Promise<NotifyCaptureConfig> {
+  const raw = await store.getUserSetting(userId, S_NOTIFY_CAPTURE)
   if (!raw) return DEFAULT_NOTIFY_CAPTURE
   try {
     const p = JSON.parse(raw) as Partial<NotifyCaptureConfig>
@@ -1143,7 +1191,7 @@ export async function loadNotifyCapture(store: Store): Promise<NotifyCaptureConf
 }
 
 route('GET', '/api/notify-capture', async ({ user, res, deps }) => {
-  json(res, 200, await loadNotifyCapture(deps.store))
+  json(res, 200, await loadNotifyCapture(deps.store, user.id))
 })
 
 route('POST', '/api/notify-capture', async ({ user, res, body, deps, ip }) => {
@@ -1159,7 +1207,7 @@ route('POST', '/api/notify-capture', async ({ user, res, body, deps, ip }) => {
     // 选择模式下空白名单等于不捕获，直接拒绝比让用户以为开了却没反应好
     return json(res, 400, { error: '「仅选定应用」模式下至少要选一个，否则不会捕获任何通知' })
   }
-  await deps.store.setSetting(S_NOTIFY_CAPTURE, JSON.stringify(cfg))
+  await deps.store.setUserSetting(user.id, S_NOTIFY_CAPTURE, JSON.stringify(cfg))
   await deps.store.audit({
     actor: 'admin', action: 'notify_capture.set',
     detail: !cfg.enabled ? '已停用' : cfg.scope === 'all' ? '全部应用' : `${cfg.packages.length} 个应用`,
@@ -1301,8 +1349,15 @@ const DEFAULT_SMS_COMMAND: SmsCommandConfig = {
   enabled: false, secret: '', allow_numbers: [], reply: true,
 }
 
-export async function loadSmsCommand(store: Store): Promise<SmsCommandConfig> {
-  const raw = await store.getSetting(S_SMS_COMMAND)
+/**
+ * 短信指令配置。**按用户存**，不是全局的。
+ *
+ * 这份配置里有口令明文，而它会经 hello_ack 下发到每一台设备。
+ * 存成全局的话，任意一个登录用户都能读到口令、把自己的号码加进白名单，
+ * 再发一条短信查别人手机的定位——开放注册之后这是一条现成的提权路径。
+ */
+export async function loadSmsCommand(store: Store, userId: string): Promise<SmsCommandConfig> {
+  const raw = await store.getUserSetting(userId, S_SMS_COMMAND)
   if (!raw) return DEFAULT_SMS_COMMAND
   const p = SmsCommandConfig.safeParse(JSON.parse(raw))
   return p.success ? p.data : DEFAULT_SMS_COMMAND
@@ -1317,12 +1372,12 @@ const newSecret = (): string =>
 const SECRET_ALPHABET = 'abcdefghjkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789'
 
 route('GET', '/api/sms-command', async ({ user, res, deps }) => {
-  json(res, 200, await loadSmsCommand(deps.store))
+  json(res, 200, await loadSmsCommand(deps.store, user.id))
 })
 
 route('POST', '/api/sms-command', async ({ user, res, body, deps, ip }) => {
   const b = body as Partial<SmsCommandConfig> & { regenerate?: boolean }
-  const cur = await loadSmsCommand(deps.store)
+  const cur = await loadSmsCommand(deps.store, user.id)
   const cfg: SmsCommandConfig = {
     enabled: b.enabled === true,
     secret: b.regenerate || !cur.secret ? newSecret() : cur.secret,
@@ -1334,9 +1389,9 @@ route('POST', '/api/sms-command', async ({ user, res, body, deps, ip }) => {
       : cur.allow_numbers,
     reply: b.reply !== false,
   }
-  await deps.store.setSetting(S_SMS_COMMAND, JSON.stringify(cfg))
+  await deps.store.setUserSetting(user.id, S_SMS_COMMAND, JSON.stringify(cfg))
   await deps.store.audit({
-    actor: 'admin', action: 'sms_command.set',
+    user_id: user.id, actor: user.name, action: 'sms_command.set',
     // 口令本身不写进审计
     detail: `${cfg.enabled ? '启用' : '停用'}${b.regenerate ? '，已重置口令' : ''}，白名单 ${cfg.allow_numbers.length} 个`,
     ip, created_at: now(),
@@ -1348,7 +1403,7 @@ route('POST', '/api/sms-command', async ({ user, res, body, deps, ip }) => {
 // ── 电量告警 ────────────────────────────────────────────────
 
 route('GET', '/api/battery-alerts', async ({ user, res, deps }) => {
-  json(res, 200, await loadBatteryConfig(deps.store))
+  json(res, 200, await loadBatteryConfig(deps.store, user.id))
 })
 
 route('POST', '/api/battery-alerts', async ({ user, res, body, deps, ip }) => {
@@ -1365,7 +1420,7 @@ route('POST', '/api/battery-alerts', async ({ user, res, body, deps, ip }) => {
   if (cfg.full > 0 && cfg.low > 0 && cfg.full <= cfg.low) {
     return json(res, 400, { error: '满电阈值必须高于低电量阈值' })
   }
-  await deps.store.setSetting(BATTERY_SETTING_KEY, JSON.stringify(cfg))
+  await deps.store.setUserSetting(user.id, BATTERY_SETTING_KEY, JSON.stringify(cfg))
   await deps.store.audit({ actor: 'admin', action: 'battery_alerts.set', detail: JSON.stringify(cfg), ip, created_at: now() })
   json(res, 200, { ok: true })
 })
@@ -1376,12 +1431,13 @@ const S_TIMEZONE = 'timezone'
 /** 默认东京：这套系统的典型场景就是人在日本、卡在国内。 */
 const DEFAULT_TZ = DEFAULT_TIMEZONE
 
-export async function timezone(store: Store): Promise<string> {
-  return (await store.getSetting(S_TIMEZONE)) ?? DEFAULT_TZ
+/** 时区按用户存：两个人可能不在同一个国家，而规则时段与任务排期都按它算。 */
+export async function timezone(store: Store, userId: string): Promise<string> {
+  return (await store.getUserSetting(userId, S_TIMEZONE)) ?? DEFAULT_TZ
 }
 
 route('GET', '/api/timezone', async ({ user, res, deps }) => {
-  json(res, 200, { timezone: await timezone(deps.store) })
+  json(res, 200, { timezone: await timezone(deps.store, user.id) })
 })
 
 route('POST', '/api/timezone', async ({ user, res, body, deps, ip }) => {
@@ -1392,8 +1448,8 @@ route('POST', '/api/timezone', async ({ user, res, body, deps, ip }) => {
   } catch {
     return json(res, 400, { error: '无效的时区名称' })
   }
-  await deps.store.setSetting(S_TIMEZONE, tz)
-  await deps.store.audit({ actor: 'admin', action: 'timezone.set', detail: tz, ip, created_at: now() })
+  await deps.store.setUserSetting(user.id, S_TIMEZONE, tz)
+  await deps.store.audit({ user_id: user.id, actor: user.name, action: 'timezone.set', detail: tz, ip, created_at: now() })
   json(res, 200, { ok: true })
 })
 
@@ -1922,7 +1978,8 @@ async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string, scope:
   // 每个用户一个 token，据此定位主人——Bot 取到的只能是自己主人的数据
   if (scope === 'bot') {
     const owner = await deps.store.getUserByBotToken(presented)
-    if (owner && !owner.disabled) return owner
+    // 账号停用或到期，Bot 这条路也要断——它完全不走会话逻辑，是独立的一条
+    if (userActive(owner, now())) return owner
   }
 
   const sess = await deps.store.getSession(await hashToken(presented))
@@ -1940,8 +1997,10 @@ async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string, scope:
       return null
     }
     const owner = await deps.store.getUser(sess.user_id)
-    // 账号被删或被停用时，手里的会话立刻作废
-    if (!owner || owner.disabled) return null
+    // 账号被删、被停用、或到期时，手里的会话立刻作废。
+    // 只在登录处判是不够的：会话最长 30 天且每次访问滑动顺延，
+    // 到期那一刻用户手里多半正攥着一个有效会话
+    if (!userActive(owner, now())) return null
     await deps.store.touchSession(sess.token_hash, t + (sess.trusted ? TRUSTED_SESSION_TTL_MS : SESSION_TTL_MS))
     return owner
   }

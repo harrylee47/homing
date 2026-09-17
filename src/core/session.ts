@@ -8,6 +8,7 @@ import { hashToken, timingSafeEqual } from './crypto.js'
 import { makeFrame, parseUpstream } from './frames.js'
 import type { Hub } from './hub.js'
 import { log } from './logging.js'
+import { userActive } from './users.js'
 import {
   DEFAULT_AGENT_CONFIG,
   ErrorCode,
@@ -27,7 +28,8 @@ export interface SessionDeps {
   baseUrl?: string | null
   config?: AgentConfig
   /** 每次握手时动态生成配置。优先于静态 config。 */
-  loadConfig?: (() => Promise<AgentConfig>) | undefined
+  /** 按设备主人取配置。同一台网关上两个人的短信指令口令不是同一个 */
+  loadConfig?: ((userId: string) => Promise<AgentConfig>) | undefined
   /** 可注入，便于测试 */
   now?: () => number
   /** 查询类指令的结果回调（如 get_location）。 */
@@ -175,6 +177,19 @@ export class DeviceSession {
       return this.reject(ErrorCode.AUTH_INVALID_TOKEN, '凭证无效')
     }
 
+    /**
+     * 设备的主人还能不能用这个服务。
+     *
+     * 握手只校验设备凭证的话，账号到期后手机照常上报、pipeline 照常推送、
+     * 保号任务照常花钱——用户会发现自己登不进控制台但 Bark 还在响，
+     * 而你会发现自己还在替一个过期账号转发别人的银行验证码。
+     */
+    const owner = await this.deps.store.getUser(device.user_id)
+    if (!userActive(owner, this.now())) {
+      log.warn('设备主人的账号已停用或到期，拒绝握手', { device_id: device.id, user_id: device.user_id })
+      return this.reject(ErrorCode.AUTH_DEVICE_REVOKED, '账号已停用或已到期')
+    }
+
     this.state = 'authenticated'
     this.deviceId = device.id
     this.userId = device.user_id
@@ -199,7 +214,7 @@ export class DeviceSession {
 
     // 每次握手都取当前配置：Agent 不持久化业务配置，服务端改了设置
     // 只需让设备重连即可生效
-    const config = this.deps.loadConfig ? await this.deps.loadConfig() : this.config
+    const config = this.deps.loadConfig ? await this.deps.loadConfig(this.userId) : this.config
 
     return {
       send: [

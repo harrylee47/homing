@@ -21,8 +21,8 @@ export interface WsServerDeps {
   baseUrl: string | null
   /** 查询类指令的结果回调 */
   onQueryResult?: ((cmdId: string, ok: boolean, detail: Record<string, unknown> | null, error: string | null) => void) | undefined
-  /** 每次握手时生成下发给 Agent 的配置 */
-  agentConfig?: (() => Promise<AgentConfig>) | undefined
+  /** 每次握手时生成下发给 Agent 的配置。按**设备主人**取——口令与捕获范围都是他自己的 */
+  agentConfig?: ((userId: string) => Promise<AgentConfig>) | undefined
 }
 
 /**

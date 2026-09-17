@@ -251,6 +251,17 @@ export interface UserRecord {
   /** Bot 的 service token。每个用户一个，Bot 据此只能取到自己主人的数据 */
   bot_token: string
   disabled: boolean
+  /**
+   * 账号到期时刻。null = 永久。
+   *
+   * 到期后**所有服务都停**，不只是登不进控制台：手机断连、任务不跑、
+   * 推送不发。判定统一走 core/users.ts 的 userActive——四条鉴权路径
+   * 每一条都要问它，漏一条就等于没做。
+   */
+  expires_at: number | null
+  /** 同意隐私声明的版本与时刻。没同意过的老账号为 null */
+  agreed_version: string | null
+  agreed_at: number | null
   created_at: number
 }
 
@@ -336,9 +347,18 @@ export interface Store {
   /** 清理过期映射，保留期由调用方决定（计划 §11.4 建议 7 天） */
   cleanupMessageRefs(before: number): Promise<void>
 
-  // 设置（部署级的全局配置：初始化标记、预置规则版本、Bark 对外可达性）
+  // 设置分两层，别混用。
+  //
+  // 全局：部署级的东西——初始化标记、预置规则版本、Bark 对外可达性。
+  // 按用户：**每个人自己的配置**——时区、短信指令口令、通知捕获范围、电量告警。
+  //
+  // 这个分界不是洁癖。短信指令的配置会经 hello_ack 下发到**每一台设备**，
+  // 存成全局的话，任意一个登录用户都能读到口令明文、把自己的号码加进白名单，
+  // 然后发一条短信查别人手机的定位。开放注册之后这就不是理论路径了。
   getSetting(key: string): Promise<string | null>
   setSetting(key: string, value: string): Promise<void>
+  getUserSetting(userId: string, key: string): Promise<string | null>
+  setUserSetting(userId: string, key: string, value: string): Promise<void>
 
   // 会话
   createSession(s: SessionRecord): Promise<void>

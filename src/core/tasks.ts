@@ -8,13 +8,19 @@
  * 指定设备离线时**跳过并等它上线**，不换设备、不推进排期。
  */
 import { log } from './logging.js'
+import { userActive } from './users.js'
 import { describe, nextRun, Schedule } from './schedule.js'
 import type { Store, TaskRecord } from './store.js'
 
 export interface TaskDeps {
   store: Store
-  /** 用户时区，IANA 名称如 Asia/Tokyo */
-  timezone: string
+  /**
+   * 这个用户的时区，IANA 名称如 Asia/Tokyo。
+   *
+   * 按用户取而不是全局一个：两个人可能不在同一个国家，
+   * 而「每天早上 9 点」指的显然是他自己那儿的 9 点。
+   */
+  timezoneFor(userId: string): Promise<string>
   onlineDevices(): string[]
   send(userId: string, deviceId: string, to: string, text: string, simSlot: number | null): Promise<boolean>
   deviceName?(id: string): string
@@ -79,7 +85,7 @@ export async function runTask(deps: TaskDeps, task: ParsedTask, force = false): 
   if (!task.to) return { sent: false, reason: '未设置目标号码' }
   if (!force) {
     if (!task.enabled) return { sent: false, reason: '未启用' }
-    const due = taskNextRun(task, deps.timezone)
+    const due = taskNextRun(task, await deps.timezoneFor(task.user_id))
     if (due === null) return { sent: false, reason: '没有后续执行' }
     if (now < due) return { sent: false, reason: '未到执行时间' }
   }
@@ -144,8 +150,14 @@ export async function tick(
   deps: TaskDeps,
   decrypt: (enc: Uint8Array) => Promise<string>,
 ): Promise<void> {
-  // 调度器要跑所有人的任务，作用域在每条任务自己的 user_id 上
+  // 调度器要跑所有人的任务，作用域在每条任务自己的 user_id 上。
+  // 但「归属」不等于「还能用」——停用/到期用户的保号任务继续发是真花钱的
+  const active = new Map<string, boolean>()
   for (const row of await deps.store.listAllTasks()) {
+    if (!active.has(row.user_id)) {
+      active.set(row.user_id, userActive(await deps.store.getUser(row.user_id), deps.now?.() ?? Date.now()))
+    }
+    if (!active.get(row.user_id)) continue
     const text = await decrypt(row.content_enc).catch(() => null)
     if (text === null) {
       log.error('任务内容解密失败，已跳过', { task_id: row.id })

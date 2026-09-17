@@ -16,12 +16,13 @@ import { makeFrame, newCmdId } from '../../core/frames.js'
 import { AppListResult, FingerprintList, ImportResult, LocationResult, type DownstreamFrame } from '../../core/protocol.js'
 import { PROVIDERS } from '../../core/notifier.js'
 import { TelegramConfig } from '../../core/providers/telegram.js'
-import { barkAccess, botTokenFor, handleApi, isInitialized, loadNotifyCapture, loadSmsCommand, timezone } from './api.js'
+import { barkAccess, botTokenFor, handleApi, isInitialized, loadNotifyCapture, loadSmsCommand, PRIVACY_VERSION, timezone } from './api.js'
 import { TelegramBot } from './bot.js'
 import { isBarkAllowed, isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
 import { createWsServer, isAllowedAgentOrigin } from './wsserver.js'
 import { migratedTemplate, missingDirection, missingSeedRules, SEED_RULES_VERSION } from '../../core/seeds.js'
+import { userActive } from '../../core/users.js'
 
 /**
  * 强制优先使用 IPv4。
@@ -63,7 +64,9 @@ async function migrateSingleUser(): Promise<void> {
   await store.upsertUser({
     id, name: 'admin', password_hash: pw, totp_secret: totp,
     role: 'admin', bot_token: generateSessionToken(),
-    disabled: false, created_at: Date.now(),
+    // 老用户不设期限、视同已同意：这台机器本来就是他自己的
+    disabled: false, expires_at: null,
+    agreed_version: PRIVACY_VERSION, agreed_at: Date.now(), created_at: Date.now(),
   })
   const claimed = await store.claimOrphans(id)
   log.info('已升级为多用户：原有数据归入 admin', { claimed })
@@ -179,8 +182,9 @@ const wss = createWsServer({
   baseUrl: cfg.baseUrl,
   onQueryResult,
   // 每次握手都按当前设置生成配置，Agent 不持久化业务配置（计划 §2.3）
-  agentConfig: async () => {
-    const [n, c] = await Promise.all([loadNotifyCapture(store), loadSmsCommand(store)])
+  // 配置按设备主人取：短信指令的口令是他自己的，通知捕获范围也是他自己设的
+  agentConfig: async (userId: string) => {
+    const [n, c] = await Promise.all([loadNotifyCapture(store, userId), loadSmsCommand(store, userId)])
     return {
       ...DEFAULT_AGENT_CONFIG,
       sms_command: c,
@@ -441,8 +445,12 @@ async function syncBotsInner(): Promise<void> {
 
   // 跨用户：每个人可以有自己的 Bot，各自只能取到自己的数据（见下面的 service token）
   const wanted = new Map<string, { token: string; chat: string; owner: string }>()
+  const active = new Map<string, boolean>()
   for (const c of await store.listAllChannels()) {
     if (!c.enabled || c.type !== 'telegram') continue
+    // 停用/到期用户的 Bot 不再轮询：否则账号到期了他还能在 Telegram 里查自己的短信
+    if (!active.has(c.user_id)) active.set(c.user_id, userActive(await store.getUser(c.user_id), Date.now()))
+    if (!active.get(c.user_id)) continue
     try {
       const cfg = TelegramConfig.parse(JSON.parse(await cipher.decrypt(c.config_enc)))
       wanted.set(c.id, { token: cfg.bot_token, chat: cfg.chat_id, owner: c.user_id })
@@ -472,6 +480,27 @@ async function syncBotsInner(): Promise<void> {
 // 启动后先同步一次，之后每分钟跟随渠道变动
 setTimeout(() => void syncBots(), 2000)
 const botTimer = setInterval(() => void syncBots(), 60_000)
+
+/**
+ * 把已经连着的、但主人已停用或到期的设备踢下线。
+ *
+ * 握手时的判断挡不住它们：**握手一辈子只发生一次**。一台连着的手机
+ * 可以连着几个月不重连，只在握手处判等于对在线设备完全不生效——
+ * 而「到期停服」最需要生效的恰恰是那台还在线的手机。
+ */
+async function sweepInactiveDevices(): Promise<void> {
+  const online = new Set(hub.onlineDevices())
+  if (online.size === 0) return
+  const active = new Map<string, boolean>()
+  for (const d of await store.listAllDevices()) {
+    if (!online.has(d.id)) continue
+    if (!active.has(d.user_id)) active.set(d.user_id, userActive(await store.getUser(d.user_id), Date.now()))
+    if (active.get(d.user_id)) continue
+    log.warn('账号已停用或到期，断开设备连接', { device_id: d.id, user_id: d.user_id })
+    hub.get(d.id)?.close(4001, 'AUTH_DEVICE_REVOKED')
+  }
+}
+const sweepTimer = setInterval(() => void sweepInactiveDevices().catch(() => { /* 下一轮再来 */ }), 60_000)
 
 /**
  * 机器主人的渠道：登录失败、异地登录这类**与账号无关**的告警发给他。
@@ -525,7 +554,8 @@ void refreshDeviceNames()
  */
 const taskDeps = async () => ({
   store,
-  timezone: await timezone(store),
+  // 时区按用户存，调度器逐条任务现取（见 TaskDeps.timezoneFor）
+  timezoneFor: (userId: string) => timezone(store, userId),
   onlineDevices: () => hub.onlineDevices(),
   deviceName: (id: string) => deviceNameCache.get(id) ?? id,
   send: async (userId: string, deviceId: string, to: string, text: string, simSlot: number | null = null) => {
@@ -579,6 +609,7 @@ const cleanupTimer = setInterval(() => {
 const shutdown = async (sig: string) => {
   log.info('收到信号，正在退出', { sig })
   clearInterval(botTimer)
+  clearInterval(sweepTimer)
   clearInterval(cleanupTimer)
   clearInterval(monitorTimer)
   clearInterval(taskTimer)

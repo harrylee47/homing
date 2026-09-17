@@ -20,7 +20,17 @@ export class MemoryStore implements Store {
 
   async migrate(): Promise<void> {}
 
-  users = new Map<string, UserRecord>()
+  users = new Map<string, UserRecord>([
+    // 默认就有一个可用的 u1：绝大多数测试的数据都挂在它名下，
+    // 而巡检、调度、握手现在都要问「这个人还能用吗」——
+    // 没有这条记录的话它们会一致地判成「账号不存在」，
+    // 测的就不是被测的那件事了。要测停用/到期的用例自己改这条记录。
+    ['u1', {
+      id: 'u1', name: 'u1', password_hash: '', totp_secret: '',
+      role: 'admin', bot_token: '', disabled: false,
+      expires_at: null, agreed_version: null, agreed_at: null, created_at: 0,
+    }],
+  ])
 
   async listUsers() { return [...this.users.values()] }
   async getUser(id: string) { return this.users.get(id) ?? null }
@@ -180,6 +190,8 @@ export class MemoryStore implements Store {
 
   async getSetting(k: string) { return this.settings.get(k) ?? null }
   async setSetting(k: string, v: string) { this.settings.set(k, v) }
+  async getUserSetting(u: string, k: string) { return this.settings.get(`${u}:${k}`) ?? null }
+  async setUserSetting(u: string, k: string, v: string) { this.settings.set(`${u}:${k}`, v) }
 
   async createSession(s: SessionRecord) { this.sessions.set(s.token_hash, s) }
   async getSession(h: string) { return this.sessions.get(h) ?? null }

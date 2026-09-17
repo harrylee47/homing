@@ -104,6 +104,14 @@ const MIGRATIONS: string[] = [
      created_at  INTEGER NOT NULL,
      updated_at  INTEGER NOT NULL
    )`,
+  // 按用户的配置。与全局 settings 分开建表而不是给它加一列：
+  // 全局表的主键就是 key，SQLite 改不了主键，而这两类配置的语义本来就不同
+  `CREATE TABLE IF NOT EXISTS user_settings (
+     user_id TEXT NOT NULL,
+     key     TEXT NOT NULL,
+     value   TEXT NOT NULL,
+     PRIMARY KEY (user_id, key)
+   )`,
   `CREATE TABLE IF NOT EXISTS settings (
      key   TEXT PRIMARY KEY,
      value TEXT NOT NULL
@@ -168,10 +176,25 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE message_refs ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE pairing_codes ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE audit_log ADD COLUMN user_id TEXT`,
+  `ALTER TABLE users ADD COLUMN expires_at INTEGER`,
+  `ALTER TABLE users ADD COLUMN agreed_version TEXT`,
+  `ALTER TABLE users ADD COLUMN agreed_at INTEGER`,
   // 保号是按卡的事：双卡机上两张卡各自都要定期产生使用记录
   `ALTER TABLE tasks ADD COLUMN sim_slot INTEGER`,
 
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_name ON users(LOWER(name))`,
+  // 邀请码。语义等同配对码：在有效期内拿到码就能开一个能看银行验证码的账号，
+  // 所以同样只存哈希、同样用「取出即标记已用」保证并发下只能兑一次
+  `CREATE TABLE IF NOT EXISTS invites (
+     code_hash  TEXT PRIMARY KEY,
+     created_by TEXT NOT NULL,
+     note       TEXT,
+     valid_days INTEGER,
+     expires_at INTEGER NOT NULL,
+     used_at    INTEGER,
+     used_by    TEXT,
+     created_at INTEGER NOT NULL
+   )`,
   `CREATE INDEX IF NOT EXISTS idx_events_time ON events(occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_id, occurred_at DESC)`,
@@ -265,13 +288,18 @@ export class SqliteStore implements Store {
   async upsertUser(u: UserRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO users (id, name, password_hash, totp_secret, role, bot_token, disabled, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        // SET 是手写列清单：加了列忘了加进这里，表现是「停用再启用，有效期被重置」
+        // ——不报错，几天后才发现
+        `INSERT INTO users (id, name, password_hash, totp_secret, role, bot_token, disabled,
+                            expires_at, agreed_version, agreed_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, password_hash=excluded.password_hash,
            totp_secret=excluded.totp_secret, role=excluded.role, bot_token=excluded.bot_token,
-           disabled=excluded.disabled`,
+           disabled=excluded.disabled, expires_at=excluded.expires_at,
+           agreed_version=excluded.agreed_version, agreed_at=excluded.agreed_at`,
       )
-      .run(u.id, u.name, u.password_hash, u.totp_secret, u.role, u.bot_token, u.disabled ? 1 : 0, u.created_at)
+      .run(u.id, u.name, u.password_hash, u.totp_secret, u.role, u.bot_token, u.disabled ? 1 : 0,
+        u.expires_at, u.agreed_version, u.agreed_at, u.created_at)
   }
 
   /**
@@ -282,7 +310,7 @@ export class SqliteStore implements Store {
    */
   async deleteUser(id: string): Promise<Record<string, number>> {
     const n: Record<string, number> = {}
-    for (const t of ['events', 'outbound', 'message_refs', 'tasks', 'rules', 'channels', 'devices', 'pairing_codes', 'sessions']) {
+    for (const t of ['events', 'outbound', 'message_refs', 'tasks', 'rules', 'channels', 'devices', 'pairing_codes', 'sessions', 'user_settings']) {
       n[t] = Number(this.db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(id).changes)
     }
     this.db.prepare('DELETE FROM users WHERE id = ?').run(id)
@@ -616,6 +644,19 @@ export class SqliteStore implements Store {
 
   // ── 设置与会话 ────────────────────────────────────────
 
+  async getUserSetting(userId: string, key: string): Promise<string | null> {
+    const row = this.db.prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?')
+      .get(userId, key) as { value: string } | undefined
+    return row?.value ?? null
+  }
+
+  async setUserSetting(userId: string, key: string, value: string): Promise<void> {
+    this.db
+      .prepare(`INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)
+                ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`)
+      .run(userId, key, value)
+  }
+
   async getSetting(key: string): Promise<string | null> {
     const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value?: string } | undefined
     return row?.value ?? null
@@ -678,6 +719,16 @@ export class SqliteStore implements Store {
     for (const t of ['devices', 'events', 'channels', 'rules', 'tasks', 'outbound', 'message_refs', 'pairing_codes']) {
       n[t] = Number(this.db.prepare(`UPDATE ${t} SET user_id = ? WHERE user_id = '' OR user_id IS NULL`).run(userId).changes)
     }
+    // 老库里这几项是全局的，语义上本来就属于「那个人」，一并搬过去。
+    // 不搬的话升级后他的时区、短信指令口令、通知捕获范围会静默回到默认值
+    for (const k of ['timezone', 'sms_command', 'notification_capture', 'battery_alerts']) {
+      const v = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined
+      if (v) {
+        this.db.prepare(`INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)
+                         ON CONFLICT(user_id, key) DO NOTHING`).run(userId, k, v.value)
+        n[`setting:${k}`] = 1
+      }
+    }
     // 会话不认领：让升级后所有人重新登录一次，顺便把「谁是谁」重新确认一遍
     this.db.prepare(`DELETE FROM sessions WHERE user_id = '' OR user_id IS NULL`).run()
     return n
@@ -713,7 +764,14 @@ function buildWhere(f: EventFilter): { clause: string; args: (string | number)[]
 }
 
 interface RawUser extends Omit<UserRecord, 'disabled'> { disabled: number }
-const toUser = (r: RawUser): UserRecord => ({ ...r, disabled: r.disabled === 1 })
+const toUser = (r: RawUser): UserRecord => ({
+  ...r,
+  disabled: r.disabled === 1,
+  // 老库升级后这三列是 undefined 而不是 null，透传出去会让 `== null` 之外的判断出错
+  expires_at: r.expires_at ?? null,
+  agreed_version: r.agreed_version ?? null,
+  agreed_at: r.agreed_at ?? null,
+})
 
 interface RawDevice extends Omit<DeviceRecord, 'charging'> { charging: number | null }
 const toDevice = (r: RawDevice): DeviceRecord => ({

@@ -126,7 +126,8 @@ describe('电量告警', () => {
     } as never)
   }
   const run = () => checkDevices({ store, channels, online: () => ['dev_1'], now: () => NOW })
-  const setCfg = (c: Record<string, unknown>) => store.setSetting(BATTERY_SETTING_KEY, JSON.stringify(c))
+  // 阈值按用户存：设备的主人是谁，就读谁的阈值
+  const setCfg = (c: Record<string, unknown>) => store.setUserSetting('u1', BATTERY_SETTING_KEY, JSON.stringify(c))
 
   beforeEach(() => {
     store = new MemoryStore()

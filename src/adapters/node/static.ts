@@ -17,6 +17,9 @@ const TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  // APK 由网关自己发。GitHub release 现在匿名访问是 404（账号被标记），
+  // 而落地页的读者恰恰都是匿名的——指过去等于给一个打不开的链接
+  '.apk': 'application/vnd.android.package-archive',
 }
 
 export function serveStatic(root: string, req: IncomingMessage, res: ServerResponse): boolean {

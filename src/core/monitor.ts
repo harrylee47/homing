@@ -7,6 +7,7 @@
  * 运行时无关：定时器由适配层驱动，这里只做判定与发送。
  */
 import { log } from './logging.js'
+import { userActive } from './users.js'
 import { crossChannelAlert, dispatch, type ChannelConfig } from './notifier.js'
 import { OFFLINE_ALERT_SEC } from './protocol.js'
 import type { Store } from './store.js'
@@ -29,8 +30,9 @@ export interface BatteryConfig {
 export const DEFAULT_BATTERY: BatteryConfig = { low: 20, full: 0, notify_charging_change: false }
 export const BATTERY_SETTING_KEY = 'battery_alerts'
 
-export async function loadBatteryConfig(store: Store): Promise<BatteryConfig> {
-  const raw = await store.getSetting(BATTERY_SETTING_KEY)
+/** 电量告警阈值按用户存：他的手机他自己定，告警也只发给他。 */
+export async function loadBatteryConfig(store: Store, userId: string): Promise<BatteryConfig> {
+  const raw = await store.getUserSetting(userId, BATTERY_SETTING_KEY)
   if (!raw) return DEFAULT_BATTERY
   try {
     const p = JSON.parse(raw) as Partial<BatteryConfig>
@@ -85,10 +87,18 @@ export async function checkDevices(deps: MonitorDeps): Promise<void> {
   const online = new Set(deps.online())
   // 巡检是跨用户的：每台设备的告警只发给它自己的主人（见 notify）
   const devices = await deps.store.listAllDevices()
-  const battery = await loadBatteryConfig(deps.store)
+  // 阈值按设备主人取，逐人缓存一次，别对着同一个用户查 N 遍
+  const batteryOf = new Map<string, Awaited<ReturnType<typeof loadBatteryConfig>>>()
+
+  // 停用/到期用户的设备不再告警：他已经不该收到这台网关的任何推送了
+  const active = new Map<string, boolean>()
 
   for (const d of devices) {
     if (d.status === 'revoked') continue
+    if (!active.has(d.user_id)) active.set(d.user_id, userActive(await deps.store.getUser(d.user_id), now))
+    if (!active.get(d.user_id)) continue
+    if (!batteryOf.has(d.user_id)) batteryOf.set(d.user_id, await loadBatteryConfig(deps.store, d.user_id))
+    const battery = batteryOf.get(d.user_id)!
 
     if (online.has(d.id)) {
       await checkBattery(deps, d, battery)

@@ -30,3 +30,6 @@ agent/local.properties
 # 发布签名凭据（放在仓库外的 ~/.smsgateway-release.properties）
 release.properties
 *.apk
+# 落地页要发的那一个 APK 例外：GitHub release 现在匿名 404，
+# 而落地页的读者都是匿名的。2.7MB，随仓库和镜像一起走，装完就能下
+!web/app/homing.apk
