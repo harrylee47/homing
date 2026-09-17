@@ -521,12 +521,25 @@ SQL 没法 GROUP BY，做总表要把整库解密一遍。界面上要说清是�
 
 https://github.com/rikouu/homing（公开，AGPL-3.0）。
 
-发布 APK 的签名密钥**不在仓库里**，在 `~/.smsgateway-release.properties`（600 权限）。
-丢了就无法覆盖安装已发布的版本，用户只能卸载重装。构建发布包：
+发布 APK 的签名密钥**不在仓库里**：凭据在 `~/.homing-release.properties`，
+密钥库在 `~/.homing-release.jks`（都是 600 权限）。
+丢了就无法覆盖安装已发布的版本，用户只能卸载重装——而卸载意味着丢掉配对，
+得跑到手机跟前重新扫码。构建发布包：
 
 ```bash
-cd agent && set -a && . ~/.smsgateway-release.properties && set +a
-./gradlew :app:assembleRelease
+cd agent && set -a && . ~/.homing-release.properties && set +a
+./gradlew :app:verifyReleaseSigning :app:assembleRelease
+cp app/build/outputs/apk/release/app-release.apk ../web/download/homing.apk
+```
+
+**先跑 `verifyReleaseSigning`**。没有凭据时 Gradle 会**静默回落到 debug 签名**，
+`assembleRelease` 照样 BUILD SUCCESSFUL，产出一个证书完全不同的包——
+把它当正式包发出去，所有现有用户都装不上更新。这个任务就是专门拦这一下的。
+换机器或换包之后核一遍证书指纹：
+
+```bash
+apksigner verify --print-certs web/download/homing.apk | grep SHA-256
+# 应为 61bf6c5909771eada65e8aacbc125fe2cf657eb5cc358ef2a2b0531b69b68561
 ```
 
 提交到公开仓库前先扫一遍：网关域名、服务器别名、token 都不能进去。
