@@ -15,6 +15,7 @@ import { SqliteStore } from './store.js'
 import { dispatch } from '../../core/notifier.js'
 import { runTask as runOneTask, tick as tasksTick, type ParsedTask } from '../../core/tasks.js'
 import { checkDevices } from '../../core/monitor.js'
+import { runRetention } from '../../core/retention.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import { AppListResult, FingerprintList, ImportResult, LocationResult, LogResult, type DownstreamFrame } from '../../core/protocol.js'
 import { PROVIDERS } from '../../core/notifier.js'
@@ -757,10 +758,37 @@ const MESSAGE_REF_TTL_MS = 7 * 24 * 3600 * 1000
  * 而事件表是永不删除的，这张表不该跟着一起长。
  */
 const DEVICE_LOG_TTL_MS = 30 * 24 * 3600 * 1000
+/** 保留上限清理是否在飞。首轮可能要删几千行，不能让两轮叠在一起 */
+let retentionRunning = false
+
 const cleanupTimer = setInterval(() => {
   void store.cleanupMessageRefs(Date.now() - MESSAGE_REF_TTL_MS)
   void store.cleanupSessions(Date.now())
   void store.cleanupDeviceLogs(Date.now() - DEVICE_LOG_TTL_MS)
+  /**
+   * 消息保留上限。
+   *
+   * 放在这条既有的清理链上，而不是新起一个定时器：它和上面三条是同一类
+   * 工作（周期性收拾），而且**不能和自己并发**——首次生效时一轮要删几千行，
+   * 上一轮还没跑完就开下一轮，两边会在同一批行上打架。
+   * setInterval 的回调本身不会重入，但里面这几个是 void 出去的异步，
+   * 所以这里用一个在飞标记挡住。
+   */
+  if (!retentionRunning) {
+    retentionRunning = true
+    void runRetention({
+      listUsers: () => store.listUsers(),
+      getUserSetting: (u, k) => store.getUserSetting(u, k),
+      countEventsByKind: (u, k) => store.countEventsByKind(u, k),
+      trimEvents: (u, k, keep, batch) => store.trimEvents(u, k, keep, batch),
+    })
+      .then((r) => {
+        // 删数据要留痕。不打的话，用户某天发现历史少了一截，而日志里什么都没有
+        for (const x of r) log.warn('按保留上限清理消息', x)
+      })
+      .catch((e: unknown) => log.error('保留上限清理失败', { error: String(e) }))
+      .finally(() => { retentionRunning = false })
+  }
 }, 3600_000)
 
 const shutdown = async (sig: string) => {

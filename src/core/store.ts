@@ -495,6 +495,26 @@ export interface Store {
    */
   deleteEvents(filter: EventFilter): Promise<number>
 
+  /**
+   * 保留最新 `keep` 条，删掉这个账号这一类里更旧的，返回实际删除条数。
+   *
+   * 单独一个方法而不是拼 `deleteEvents` 的 filter：filter 表达的是
+   * 「哪些条」，这里表达的是「除了最新的若干条之外」，两者不是一回事。
+   * 硬要用 filter 表达就得先查出第 N 条的 occurred_at 再当 until 传进去，
+   * 而同一毫秒有多条时那个边界是不稳的（补传时同毫秒多条并不罕见）——
+   * 会多删或少删几条，且不报错。
+   *
+   * `user_id` 与 `kind` 都是**必填**：这是一个跨用户任务会调用的删除方法，
+   * 漏写一个就是把别人的历史删了。参数必填让漏写变成编译错误。
+   *
+   * `batch` 是单轮上限。首次生效可能要删十几万行，一条 SQL 干完会把库
+   * 锁住，而这期间正好有事件在写入。
+   */
+  trimEvents(userId: string, kind: EventKind, keep: number, batch: number): Promise<number>
+
+  /** 这个账号这一类有多少条。用于界面上「会删掉多少条」的预览。 */
+  countEventsByKind(userId: string, kind: EventKind): Promise<number>
+
   close(): Promise<void>
 }
 

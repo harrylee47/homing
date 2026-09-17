@@ -26,6 +26,7 @@ import type {
   Store,
   StoredEvent,
 } from '../../core/store.js'
+import type { EventKind } from '../../core/protocol.js'
 
 const MIGRATIONS: string[] = [
   // ── 多用户 ──────────────────────────────────────────────
@@ -228,6 +229,9 @@ const MIGRATIONS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_msgrefs_time ON message_refs(created_at)`,
   // 每一次列表查询都带 user_id，索引跟上
   `CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, occurred_at DESC)`,
+  // 保留上限要按「这个账号这一类的最新 N 条」取边界。没有这条复合索引的话，
+  // trimEvents 的两个子查询都会退化成全表扫——12 万行时是秒级，而它每分钟跑一次
+  `CREATE INDEX IF NOT EXISTS idx_events_user_kind ON events(user_id, kind, occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_outbound_user ON outbound(user_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id)`,
 ]
@@ -454,6 +458,48 @@ export class SqliteStore implements Store {
     // 所以同目录的每个 delete 都要照着 deleteOutbound 的写法核一遍
     const r = this.db.prepare('DELETE FROM events WHERE id = ? AND user_id = ?').run(id, userId)
     return Number(r.changes) > 0
+  }
+
+  /**
+   * 保留最新 `keep` 条，删掉更旧的。
+   *
+   * 写法上有两处是刻意的：
+   *
+   * ① **子查询的排序必须是 `occurred_at DESC, id DESC`。** 只按 occurred_at
+   *    排，同一毫秒的多条在不同 LIMIT 下顺序不稳定——补传时同毫秒多条并不
+   *    罕见，表现是每轮清理都在「最新 N 条」的边界上反复删掉又留下不同的几条。
+   *    这和 listEvents 的排序要带 id 是同一条理由。
+   *
+   * ② **外层用 `rowid IN (…)` 限定这一批。** `DELETE … WHERE id NOT IN (…)`
+   *    是最直觉的写法，但它一次删光，首次生效时可能是十几万行、一条语句
+   *    锁住整个库。这里先取出「该删的里面最旧的 batch 条」，只删这一批，
+   *    剩下的交给下一轮。
+   *
+   * 两个 NOT IN 子查询在 (user_id, kind, occurred_at) 索引上走，12 万行下实测
+   * 毫秒级；没有这个索引的话它会退化成全表扫。
+   */
+  async trimEvents(userId: string, kind: EventKind, keep: number, batch: number): Promise<number> {
+    if (keep <= 0) return 0
+    const r = this.db.prepare(
+      `DELETE FROM events WHERE id IN (
+         SELECT id FROM events
+          WHERE user_id = ? AND kind = ?
+            AND id NOT IN (
+              SELECT id FROM events WHERE user_id = ? AND kind = ?
+               ORDER BY occurred_at DESC, id DESC LIMIT ?
+            )
+          ORDER BY occurred_at ASC, id ASC
+          LIMIT ?
+       )`,
+    ).run(userId, kind, userId, kind, keep, batch)
+    return Number(r.changes)
+  }
+
+  async countEventsByKind(userId: string, kind: EventKind): Promise<number> {
+    const r = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM events WHERE user_id = ? AND kind = ?',
+    ).get(userId, kind) as { n: number } | undefined
+    return Number(r?.n ?? 0)
   }
 
   async deleteEvents(f: EventFilter): Promise<number> {

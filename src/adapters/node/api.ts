@@ -25,6 +25,10 @@ import type { Cipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
 import { dispatch, PROVIDERS, type ChannelConfig } from '../../core/notifier.js'
 import { createPairing, redeemPairing } from '../../core/pairing.js'
+import {
+  RETAINABLE_KINDS, RETENTION_CHOICES, RETENTION_SETTING, newAccountRetention,
+  parseRetention, sanitizeRetention, serializeRetention, trimUserNow,
+} from '../../core/retention.js'
 import { describeFetchError } from '../../core/neterror.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import { SmsCommandConfig, type DownstreamFrame } from '../../core/protocol.js'
@@ -136,7 +140,7 @@ const FIRST_USER_ID = 'usr_first'
  * 改了声明内容就 +1：已经同意过旧版的人下次登录要重新看一遍。
  * 不做版本管理的话，「他同意的是哪一版」这个问题永远答不上来。
  */
-export const PRIVACY_VERSION = '2026-09-17'
+export const PRIVACY_VERSION = '2026-09-18'
 
 /** 账号有效期的可选档位（天）。null = 永久。 */
 const VALIDITY_DAYS = [7, 30, 90, 180, 365] as const
@@ -287,6 +291,7 @@ route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
     disabled: false, expires_at: null,
     agreed_version: PRIVACY_VERSION, agreed_at: now(), created_at: now(),
   })
+  await seedRetention(deps.store, FIRST_USER_ID)
   await deps.store.audit({ user_id: FIRST_USER_ID, actor: 'setup', action: 'setup.password', detail: name, ip, created_at: now() })
 
   const uri = totpUri(secret, name)
@@ -576,6 +581,7 @@ route('POST', '/api/users', async ({ user, res, body, deps, ip }) => {
     // 管理员代建的账号，同意书由本人首次登录时补签
     agreed_version: null, agreed_at: null, created_at: now(),
   })
+  await seedRetention(deps.store, id)
   await deps.store.audit({ user_id: user.id, actor: user.name, action: 'user.create', detail: name, ip, created_at: now() })
 
   const uri = totpUri(secret, name)
@@ -935,6 +941,23 @@ export async function registrationMode(store: Store): Promise<'off' | 'invite'> 
   return (await store.getSetting(S_REGISTRATION)) === 'invite' ? 'invite' : 'off'
 }
 
+
+/**
+ * 给**新建**的账号写上默认保留上限。
+ *
+ * 只在建号时写，而且只在这三条路径上写：向导建第一个管理员、自助注册、
+ * 管理员代建。**绝不能在 `migrateSingleUser()` 里写**——那条路上的账号是
+ * 从单用户老库升级来的，它名下挂着几年的历史，写一个 999 上去就是一次
+ * 静默的批量删除，而且是在他完全不知情的情况下。
+ *
+ * 同理，「设置里读不到」永远意味着不限制（见 core/retention.ts 的 parseRetention），
+ * 而不是「取默认值」。默认值只在这里出现一次。
+ */
+async function seedRetention(store: Store, userId: string): Promise<void> {
+  await store.setUserSetting(userId, RETENTION_SETTING, serializeRetention(newAccountRetention()))
+    .catch(() => { /* 写不上就是不限制，属于安全方向，不必让建号失败 */ })
+}
+
 /** 管理员的联系方式。免鉴权那份在 /api/register/status 里，这里是给管理员改的 */
 route('GET', '/api/admin-contact', async ({ user, res, deps }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能改' })
@@ -1158,6 +1181,7 @@ route('POST', '/api/register', async ({ res, body, deps, ip }) => {
     agreed_version: PRIVACY_VERSION, agreed_at: t,
     created_at: t,
   })
+  await seedRetention(deps.store, id)
   await deps.store.audit({
     user_id: id, actor: name, action: 'user.register',
     detail: invite.note ? `邀请备注：${invite.note}` : null, ip, created_at: t,
@@ -2533,6 +2557,72 @@ route('POST', '/api/sms-command', async ({ user, res, body, deps, ip }) => {
 })
 
 // ── 电量告警 ────────────────────────────────────────────────
+
+/**
+ * 消息保留上限。
+ *
+ * GET 一并把**当前条数**给出来，好让界面在下调之前算出「会删掉多少条」——
+ * 这个数字是这个功能唯一的刹车。只给一个下拉让人选 999，他不会知道
+ * 那意味着当场少掉三万条。
+ */
+route('GET', '/api/retention', async ({ user, res, deps }) => {
+  const cfg = parseRetention(await deps.store.getUserSetting(user.id, RETENTION_SETTING))
+  const counts: Record<string, number> = {}
+  for (const k of RETAINABLE_KINDS) counts[k] = await deps.store.countEventsByKind(user.id, k)
+  json(res, 200, { retention: cfg, counts, choices: RETENTION_CHOICES })
+})
+
+route('POST', '/api/retention', async ({ user, res, body, deps, ip }) => {
+  const b = body as { retention?: unknown; confirm?: boolean }
+  const next = sanitizeRetention(b?.retention)
+  const prev = parseRetention(await deps.store.getUserSetting(user.id, RETENTION_SETTING))
+
+  /**
+   * 会删东西的改动要带 confirm。
+   *
+   * 「会不会删」不看上限有没有变小，看**当前条数有没有超过新上限**：
+   * 从不限制改成 5000，听起来是放宽，但只有 300 条的人一条都不会掉，
+   * 而有 8 万条的人当场掉 7.5 万。前端先 GET 拿到条数算一遍，
+   * 这里再独立算一遍——前端算的那次只是给人看的，不能当成授权。
+   */
+  const willDelete: Record<string, number> = {}
+  let total = 0
+  for (const k of RETAINABLE_KINDS) {
+    if (next[k] <= 0) continue
+    const n = await deps.store.countEventsByKind(user.id, k)
+    const over = Math.max(n - next[k], 0)
+    if (over > 0) { willDelete[k] = over; total += over }
+  }
+  if (total > 0 && b?.confirm !== true) {
+    return json(res, 409, { error: '这个设置会删除历史消息，需要确认', will_delete: willDelete, total })
+  }
+
+  await deps.store.setUserSetting(user.id, RETENTION_SETTING, serializeRetention(next))
+
+  /**
+   * 保存即执行，不等那个每小时一次的周期任务。
+   *
+   * 按钮上写的是「保存并删除 201 条」——保存完一小时内什么都不发生，
+   * 人会以为没生效，然后再点一次、再选一次，甚至怀疑设置没存上。
+   * 删不完的（十几万行那种）交给周期任务续，这里如实告诉他还在继续。
+   */
+  const trimmed = await trimUserNow({
+    listUsers: () => deps.store.listUsers(),
+    getUserSetting: (u, k) => deps.store.getUserSetting(u, k),
+    countEventsByKind: (u, k) => deps.store.countEventsByKind(u, k),
+    trimEvents: (u, k, keep, batch) => deps.store.trimEvents(u, k, keep, batch),
+  }, user.id)
+
+  const actually = RETAINABLE_KINDS.reduce((n, k) => n + trimmed.deleted[k], 0)
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'retention.set',
+    detail: RETAINABLE_KINDS.map((k) => `${k}=${next[k] || '不限'}`).join(' ')
+      + (actually > 0 ? ` 已删除 ${actually} 条` : ''),
+    ip, created_at: now(),
+  })
+  log.warn('保留上限已更改', { user: user.name, prev, next, deleted: trimmed.deleted, done: trimmed.done })
+  json(res, 200, { retention: next, will_delete: willDelete, total, deleted: actually, done: trimmed.done })
+})
 
 route('GET', '/api/battery-alerts', async ({ user, res, deps }) => {
   json(res, 200, await loadBatteryConfig(deps.store, user.id))

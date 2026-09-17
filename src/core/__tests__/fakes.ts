@@ -113,6 +113,21 @@ export class MemoryStore implements Store {
     const e = this.events.get(id)
     return e?.user_id === userId ? this.events.delete(id) : false
   }
+  async trimEvents(userId: string, kind: string, keep: number, batch: number): Promise<number> {
+    if (keep <= 0) return 0
+    const mine = [...this.events.values()]
+      .filter((e) => e.user_id === userId && e.kind === kind)
+      // 和真实现一样：同毫秒多条时靠 id 兜底，否则「最新 N 条」的边界是不稳的
+      .sort((a, b) => b.occurred_at - a.occurred_at || (a.id < b.id ? 1 : -1))
+    const doomed = mine.slice(keep).reverse().slice(0, batch)
+    for (const e of doomed) this.events.delete(e.id)
+    return doomed.length
+  }
+
+  async countEventsByKind(userId: string, kind: string): Promise<number> {
+    return [...this.events.values()].filter((e) => e.user_id === userId && e.kind === kind).length
+  }
+
   async deleteEvents(f: EventFilter) {
     const hit = this.filtered(f)
     for (const e of hit) this.events.delete(e.id)
