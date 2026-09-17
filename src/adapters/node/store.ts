@@ -9,6 +9,7 @@ import { chmodSync, existsSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import type {
   ChannelRecord,
+  DeviceLogRecord,
   DeviceRecord,
   EventQuery,
   InsertEventResult,
@@ -148,6 +149,26 @@ const MIGRATIONS: string[] = [
      fail_count    INTEGER NOT NULL DEFAULT 0,
      created_at    INTEGER NOT NULL
    )`,
+
+  /**
+   * 设备连接日志。
+   *
+   * 只存结构化字段（level / event / detail），不含任何用户内容——
+   * 它会经控制台展示给人看，脱敏标准与日志输出相同。
+   *
+   * 带 user_id 是为了让查询能按作用域过滤：device_id 虽然已经蕴含归属，
+   * 但按 CLAUDE.md 那条「作用域是类型强制的」，查询要能自己带上它。
+   */
+  `CREATE TABLE IF NOT EXISTS device_logs (
+     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+     device_id  TEXT NOT NULL,
+     user_id    TEXT NOT NULL,
+     level      TEXT NOT NULL,
+     event      TEXT NOT NULL,
+     detail     TEXT,
+     created_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_device_logs_dev ON device_logs(device_id, created_at DESC)`,
 
   // ── 增量迁移 ──────────────────────────────────────────
   // 全部放在建表之后：SQLite 没有 IF NOT EXISTS 形式的 ADD COLUMN，
@@ -699,6 +720,23 @@ export class SqliteStore implements Store {
     const rows = this.db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?')
       .all(userId) as unknown as { key: string; value: string }[]
     return Object.fromEntries(rows.map((r) => [r.key, r.value]))
+  }
+
+  async appendDeviceLog(r: DeviceLogRecord): Promise<void> {
+    this.db.prepare(
+      'INSERT INTO device_logs (device_id, user_id, level, event, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(r.device_id, r.user_id, r.level, r.event, r.detail, r.created_at)
+  }
+
+  async listDeviceLogs(deviceId: string, userId: string, limit: number): Promise<DeviceLogRecord[]> {
+    return this.db.prepare(
+      'SELECT device_id, user_id, level, event, detail, created_at FROM device_logs'
+      + ' WHERE device_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+    ).all(deviceId, userId, limit) as unknown as DeviceLogRecord[]
+  }
+
+  async cleanupDeviceLogs(before: number): Promise<void> {
+    this.db.prepare('DELETE FROM device_logs WHERE created_at < ?').run(before)
   }
 
   async getUserSetting(userId: string, key: string): Promise<string | null> {

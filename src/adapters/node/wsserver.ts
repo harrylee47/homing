@@ -37,7 +37,16 @@ export function isAllowedAgentOrigin(req: IncomingMessage): boolean {
 }
 
 export function createWsServer(deps: WsServerDeps): WebSocketServer {
-  const wss = new WebSocketServer({ noServer: true })
+  /**
+   * 单帧上限 2 MiB。
+   *
+   * ws 库默认 100 MiB——也就是说一台设备能一口气往这台小机器上灌 100 MB，
+   * 而握手之前就能灌。这跟具体功能无关，是个一直存在的洞。
+   *
+   * 2 MiB 对现有最大的那条回执仍有余量：指纹列表上限 20000 条、
+   * 每条约 50 字节，压满也就 1 MB 出头。
+   */
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 })
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const session = new DeviceSession({

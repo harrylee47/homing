@@ -132,7 +132,7 @@ export type EventKind = z.infer<typeof EventKind>
  *    离线兜底同样是短信指令的 RECONNECT。
  */
 export const CmdAction = z.enum([
-  'send_sms', 'get_location', 'list_apps', 'import_history', 'list_fingerprints',
+  'send_sms', 'get_location', 'list_apps', 'import_history', 'list_fingerprints', 'get_logs',
 ])
 export type CmdAction = z.infer<typeof CmdAction>
 
@@ -333,6 +333,29 @@ export const HelloAckPayload = z.object({
   known_event_ids: z.array(EventId).default([]),
 })
 
+/** action=get_logs 时 args 的结构。 */
+export const LogArgs = z.object({
+  limit: z.number().int().min(1).max(500).default(200),
+  min_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+})
+export type LogArgs = z.infer<typeof LogArgs>
+
+/**
+ * Agent 回传的日志。
+ *
+ * `dropped` 必须带：缓冲是有上限的，不说的话人会把「只有这些」
+ * 当成「只发生了这些」。
+ */
+export const LogResult = z.object({
+  lines: z.array(z.object({
+    at: z.number(),
+    level: z.string().max(8),
+    msg: z.string().max(600),
+  })).max(500),
+  dropped: z.number().int().min(0).default(0),
+})
+export type LogResult = z.infer<typeof LogResult>
+
 /** 服务端 → Agent：握手被拒。发送后立即关闭连接。 */
 export const HelloRejectPayload = z.object({
   // 取全集：漏一个就会出现「服务端真的发得出、schema 却判它非法」的帧
@@ -470,7 +493,16 @@ export const CmdResultPayload = z.object({
   /** status=failed 时的原因 */
   error: z.string().max(200).nullable().default(null),
   /** 可选补充信息，如运营商返回码 */
-  detail: z.record(z.string(), z.unknown()).nullable().default(null),
+  /**
+   * 查询类指令的结果。
+   *
+   * 传输层已经有 2 MiB 的帧上限（wsserver.ts 的 maxPayload），这里再限一道键数：
+   * 两道的职责不同——传输层挡的是「一口气灌爆内存」，
+   * 这里挡的是「结构上不合理的回执」，越过任何一道都该被拒而不是被处理。
+   */
+  detail: z.record(z.string(), z.unknown()).refine(
+    (d) => Object.keys(d).length <= 64, { message: 'detail 字段过多' },
+  ).nullable().default(null),
 })
 
 /** 心跳。seq 用于匹配 ping/pong，便于测量 RTT。 */

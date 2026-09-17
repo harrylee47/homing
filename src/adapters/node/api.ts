@@ -75,6 +75,8 @@ export interface ApiDeps {
   pingDevice?: ((deviceId: string) => boolean) | undefined
   /** 向设备请求一次定位 */
   locateDevice?: ((deviceId: string) => Promise<{ ok: boolean; location?: unknown; error?: string }>) | undefined
+  /** 向设备要一份它自己的日志。只在设备在线时可用 */
+  agentLogs?: ((deviceId: string, limit: number, minLevel: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>) | undefined
   /** 让设备列出已安装应用 */
   listApps?: ((deviceId: string) => Promise<{ ok: boolean; apps?: unknown; error?: string }>) | undefined
   /** 让设备导入本机已有的历史短信与通话 */
@@ -1289,6 +1291,46 @@ route('POST', '/api/devices/pairing-code', async ({ user, res, body, deps }) => 
     // 不如让用户手输——错的二维码比没有二维码更难排查
     qr: ws ? toSvg(pairPayload(ws, r.code), { cell: 4, label: '设备配对二维码' }) : null,
   })
+})
+
+/**
+ * 一台设备的连接日志。
+ *
+ * 「设备不在线」只有一个比特的信息量。这里给的是**在那之前发生了什么**——
+ * 上线、掉线、凭证被拒、账号到期。都是服务端这一侧看得见的事，
+ * 不需要设备配合，所以**设备离线时照样能看**（而那正是最需要看的时候）。
+ */
+route('GET', '/api/devices/:id/logs', async ({ user, res, params, url, deps }) => {
+  const d = await ownedDevice(deps, user.id, params.id!)
+  if (!d) return json(res, 404, { error: '设备不存在' })
+  const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 100), 1), 500)
+  json(res, 200, { logs: await deps.store.listDeviceLogs(d.id, user.id, limit) })
+}, true, false, 'bot')
+
+/**
+ * 向设备本身要它的日志。
+ *
+ * 与上面那条的分工：上面那条是**服务端看到的**（上下线、被拒原因），
+ * 离线照样能看；这一条是**手机内部的**（哪条采集链路没起来、为什么反复重连），
+ * 但要设备在线。两者互补，缺一不可。
+ */
+route('POST', '/api/devices/:id/agent-logs', async ({ user, res, params, body, deps, ip }) => {
+  if (!deps.agentLogs) return json(res, 500, { error: '未接入' })
+  const d = await ownedDevice(deps, user.id, params.id!)
+  if (!d) return json(res, 404, { error: '设备不存在' })
+  if (d.status !== 'online') return json(res, 409, { error: '设备当前不在线。离线时用短信指令问它，那条路不经过服务器' })
+
+  const b = body as { limit?: number; min_level?: string }
+  const r = await deps.agentLogs(
+    d.id,
+    Math.min(Math.max(Number(b?.limit) || 200, 1), 500),
+    ['debug', 'info', 'warn', 'error'].includes(b?.min_level ?? '') ? b!.min_level! : 'info',
+  )
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'device.agent_logs', detail: d.id, ip, created_at: now(),
+  })
+  if (!r.ok) return json(res, 502, { error: r.error })
+  json(res, 200, r.result)
 })
 
 /**

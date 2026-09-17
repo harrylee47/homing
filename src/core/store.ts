@@ -127,6 +127,19 @@ export interface PairingCodeRecord {
  * 每一步都落库，控制台上能看到完整过程——上游 SmsForwarder 在这块体验较糙，
  * 是明确的改进点（计划 §5.5）。
  */
+/** 一条设备连接日志。字段刻意都是枚举或短串，不承载任何用户内容 */
+export interface DeviceLogRecord {
+  device_id: string
+  user_id: string
+  /** info=正常生命周期，warn=可自愈的异常，error=需要人介入 */
+  level: 'info' | 'warn' | 'error'
+  /** 机器可读的事件类型，如 online / offline / auth_rejected / heartbeat_timeout */
+  event: string
+  /** 给人看的一句话。不得包含正文、号码、凭证 */
+  detail: string | null
+  created_at: number
+}
+
 export interface OutboundRecord {
   id: string
   /** 归属用户 */
@@ -443,6 +456,22 @@ export interface Store {
   // 审计
   /** 审计日志。user_id 可选——它是日志不是查询面，漏填只是少一个筛选维度 */
   audit(entry: { user_id?: string | null; actor: string | null; action: string; detail: string | null; ip: string | null; created_at: number }): Promise<void>
+
+  /**
+   * 设备连接日志：记下服务端这一侧看得见的每一件事。
+   *
+   * 「设备不在线」只有一个比特的信息量，排查时真正有用的是**在那之前发生了什么**——
+   * 是被吊销了、凭证不对、账号到期、心跳超时，还是它自己断开又连了十几次。
+   * 这些服务端本来就知道，只是从前只写进 stdout，翻不到、也没法按设备看。
+   *
+   * **只记结构化字段，绝不记短信正文、号码、验证码或凭证。**
+   * 这张表会经控制台展示给人看，它的脱敏标准与日志输出相同。
+   */
+  appendDeviceLog(r: DeviceLogRecord): Promise<void>
+  /** 某台设备的日志，新的在前。userId 必填——不属于自己的设备一个字都不该看到 */
+  listDeviceLogs(deviceId: string, userId: string, limit: number): Promise<DeviceLogRecord[]>
+  /** 清掉过老的连接日志。它是诊断数据，不是档案 */
+  cleanupDeviceLogs(before: number): Promise<void>
 
   // 事件
   /**

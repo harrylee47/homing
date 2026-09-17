@@ -259,6 +259,33 @@ data class ImportArgs(
     val limit: Int = 1000,
 )
 
+/**
+ * 取日志的参数。同样必须 decodeFromJsonElement，理由见上面 ImportArgs 的注释。
+ */
+@Serializable
+data class LogArgs(
+    val limit: Int = 200,
+    @SerialName("min_level") val minLevel: String = "info",
+)
+
+@Serializable
+data class LogLine(
+    val at: Long,
+    val level: String,
+    val msg: String,
+)
+
+/**
+ * 回传的日志。
+ *
+ * dropped 必须带上：缓冲有上限，不说的话人会把「只有这些」当成「只发生了这些」。
+ */
+@Serializable
+data class LogResult(
+    val lines: List<LogLine>,
+    val dropped: Int,
+)
+
 @Serializable
 data class SendSmsArgs(
     val to: String,

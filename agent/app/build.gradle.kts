@@ -48,8 +48,29 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            /**
+             * 没有发布密钥时**用 debug 签名，但要标记出来**。
+             *
+             * 这里曾经是静默回落：密钥文件不在（换了台机器、或者丢了），
+             * assembleRelease 照样 BUILD SUCCESSFUL，产出一个用 debug key 签的包。
+             * 把它当成正式包发出去，后果是**所有现有用户都无法覆盖安装**——
+             * 只能卸载重装，而卸载意味着丢掉配对，得跑到手机跟前重新扫码。
+             *
+             * 构建不失败（本地调试 release 行为时确实需要），但会打一条醒目的警告，
+             * 并且 verifyReleaseSigning 任务会直接失败——发布前跑它。
+             */
             val rel = signingConfigs.getByName("release")
-            signingConfig = if (rel.storeFile != null) rel else signingConfigs.getByName("debug")
+            signingConfig = if (rel.storeFile != null) rel else {
+                logger.warn(
+                    "\n========================================\n" +
+                    "警告：没有找到发布密钥，这个 release 包用的是 DEBUG 签名。\n" +
+                    "它无法覆盖安装已经发布的版本——用户只能卸载重装并重新配对。\n" +
+                    "**不要把它放进 web/download/**。\n" +
+                    "密钥位置见 CLAUDE.md：~/.smsgateway-release.properties\n" +
+                    "========================================\n",
+                )
+                signingConfigs.getByName("debug")
+            }
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -100,4 +121,23 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+}
+
+/**
+ * 发布前跑一下：确认这个 release 包真的是用发布密钥签的。
+ *
+ * 光看 BUILD SUCCESSFUL 是看不出来的——没有密钥时构建同样成功，
+ * 只是签名换成了 debug key，而那样的包覆盖安装不上。
+ */
+tasks.register("verifyReleaseSigning") {
+    group = "verification"
+    description = "确认 release 包用的是发布密钥而不是 debug key"
+    doLast {
+        val rel = android.signingConfigs.getByName("release")
+        check(rel.storeFile != null) {
+            "没有发布密钥（HOMING_KEYSTORE 未设置或文件不存在），" +
+                "构建出来的 release 包用的是 debug 签名，无法覆盖安装已发布的版本。" +
+                "密钥位置见 CLAUDE.md。"
+        }
+    }
 }

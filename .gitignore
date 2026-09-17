@@ -35,3 +35,6 @@ release.properties
 # 放 download/ 而不是 app/：app 这个前缀以后 SPA 可能要用，
 # 目录占住之后 /app 会命中目录再回落 index.html，能跑但排查时极易误判
 !web/download/homing.apk
+
+# Kotlin 2.x 的构建缓存目录，不进仓库
+agent/.kotlin/

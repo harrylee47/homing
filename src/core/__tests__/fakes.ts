@@ -1,6 +1,7 @@
 /** 测试用的内存 Store 与 Hub。行为要与 SQLite 实现保持一致，尤其是幂等语义。 */
 import type { Connection, Hub } from '../hub.js'
 import type {
+  DeviceLogRecord,
   ChannelRecord, DeviceRecord, EventFilter, EventQuery, InsertEventResult, OutboundFilter, OutboundRecord,
   InviteRecord, MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord, UserRecord,
 } from '../store.js'
@@ -211,6 +212,22 @@ export class MemoryStore implements Store {
 
   async getSetting(k: string) { return this.settings.get(k) ?? null }
   async setSetting(k: string, v: string) { this.settings.set(k, v) }
+  deviceLogs: DeviceLogRecord[] = []
+  async appendDeviceLog(r: DeviceLogRecord) { this.deviceLogs.push(r) }
+  async listDeviceLogs(deviceId: string, userId: string, limit: number) {
+    // 真实现排的是 created_at DESC, id DESC。同一毫秒多条并不罕见
+    // （握手成功紧接着断开就是），所以这里要用插入顺序当次序补充，
+    // 否则假 store 的顺序和线上不一致，测出来的东西不作数
+    return this.deviceLogs
+      .map((r, i) => ({ r, i }))
+      .filter((x) => x.r.device_id === deviceId && x.r.user_id === userId)
+      .sort((a, b) => (b.r.created_at - a.r.created_at) || (b.i - a.i))
+      .slice(0, limit)
+      .map((x) => x.r)
+  }
+  async cleanupDeviceLogs(before: number) {
+    this.deviceLogs = this.deviceLogs.filter((r) => r.created_at >= before)
+  }
   async getUserSetting(u: string, k: string) { return this.settings.get(`${u}:${k}`) ?? null }
   async listUserSettings(u: string) {
     const out: Record<string, string> = {}

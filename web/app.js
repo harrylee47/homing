@@ -459,6 +459,7 @@ const routes = [
   [/^\/rules$/, rules],
   [/^\/tasks$/, tasks],
   [/^\/channels$/, channels],
+  [/^\/devices\/(.+)\/logs$/, deviceLogs],
   [/^\/devices$/, devices],
   [/^\/settings$/, settings],
   [/^\/login$/, login],
@@ -2875,6 +2876,92 @@ function barkKeyFrom(text) {
 
 // ── 设备 ────────────────────────────────────────────────────
 
+/**
+ * 一台设备的连接日志。
+ *
+ * 「设备不在线」只有一个比特的信息量，排查时真正有用的是**在那之前发生了什么**。
+ * 这些全是服务端这一侧看得见的事，不需要设备配合——所以**设备离线时照样能看**，
+ * 而那正是最需要看的时候。
+ */
+async function deviceLogs(id) {
+  render('<div class="loading">加载中…</div>')
+  try {
+    const [{ logs }, { devices: ds }] = await Promise.all([
+      api(`/devices/${encodeURIComponent(id)}/logs?limit=200`),
+      api('/devices').catch(() => ({ devices: [] })),
+    ])
+    const dev = ds.find((d) => d.id === id)
+    const LABEL = {
+      online: '上线', offline: '掉线',
+      auth_failed: '凭证不匹配', auth_revoked: '凭证已吊销', account_inactive: '账号停用或到期',
+    }
+    const DOT = { info: 'ok', warn: 'plain', error: 'err' }
+
+    render(`
+      <div class="pagehead">
+        <a href="/devices" data-back="/devices" class="muted" style="flex:none">← 返回</a>
+        <b class="truncate">${esc(dev ? dev.name : id)} · 连接日志</b>
+      </div>
+      <p class="muted">服务端这一侧看到的事，<b>设备离线时照样能看</b>。保留 30 天。</p>
+      ${logs.length ? `<div class="card list">${logs.map((l) => `
+        <div class="item">
+          <div class="row">
+            <span class="badge ${DOT[l.level] ?? 'plain'}">${esc(LABEL[l.event] ?? l.event)}</span>
+            <span class="muted mono" style="font-size:12px;flex:none">${fmtFull(l.created_at)}</span>
+          </div>
+          ${l.detail ? `<div class="muted" style="margin-top:4px">${esc(l.detail)}</div>` : ''}
+        </div>`).join('')}</div>` : '<div class="card muted">还没有记录。设备连上来之后这里就会有东西。</div>'}
+      <h2>手机里的日志</h2>
+      <div class="card">
+        <p class="muted" style="margin:0">上面那些是<b>服务端看到的</b>。手机内部发生了什么
+        （哪条采集链路没起来、为什么反复重连）要问设备本身，<b>需要它在线</b>。</p>
+        ${dev && dev.status === 'online'
+          ? `<div class="btnrow" style="margin-top:10px">
+               <button class="sm" id="ag_get">取最近 200 行</button>
+               <select id="ag_level" style="width:auto">
+                 <option value="info">info 以上</option>
+                 <option value="debug">全部（含 debug）</option>
+                 <option value="warn">只看 warn 与 error</option>
+               </select>
+             </div>`
+          : `<div class="notice" style="margin-top:10px">设备当前不在线，取不到。
+             这时候用<b>短信指令</b>问它——那条路不经过服务器，正是为这种情况设计的。</div>`}
+        <div class="err-text" id="ag_err"></div>
+        <div id="ag_out" style="margin-top:10px"></div>
+      </div>`)
+
+    const get = $('#ag_get')
+    if (get) get.onclick = async () => {
+      get.disabled = true
+      $('#ag_err').textContent = ''
+      $('#ag_out').innerHTML = '<div class="loading">向设备要日志中…</div>'
+      try {
+        const r = await api(`/devices/${encodeURIComponent(id)}/agent-logs`, {
+          method: 'POST', body: { limit: 200, min_level: $('#ag_level').value },
+        })
+        const LV = { debug: 'plain', info: 'ok', warn: 'plain', error: 'err' }
+        $('#ag_out').innerHTML = r.lines.length
+          ? (r.dropped ? `<div class="muted" style="margin-bottom:8px">缓冲满了，更早的 ${r.dropped} 行已经被挤掉。</div>` : '')
+            + `<div class="card list">${r.lines.slice().reverse().map((l) => `
+              <div class="item">
+                <div class="row">
+                  <span class="badge ${LV[l.level] ?? 'plain'}">${esc(l.level)}</span>
+                  <span class="muted mono" style="font-size:12px;flex:none">${fmtFull(l.at)}</span>
+                </div>
+                <div class="mono wrap" style="font-size:12px;margin-top:4px">${esc(l.msg)}</div>
+              </div>`).join('')}</div>`
+            + '<div class="muted" style="margin-top:8px;font-size:12px">日志在内存里，'
+            + '<b>App 被系统杀掉重启后就清空了</b>。正文与验证码在写进日志时已经擦掉。</div>'
+          : '<div class="muted">设备上暂时没有日志。</div>'
+      } catch (e) {
+        $('#ag_out').innerHTML = ''
+        $('#ag_err').textContent = e.message
+      }
+      get.disabled = false
+    }
+  } catch (e) { fail(e) }
+}
+
 async function devices() {
   render('<div class="loading">加载中…</div>')
   try {
@@ -2892,6 +2979,7 @@ async function devices() {
               ${d.status === 'revoked' ? '' : statusBadges(d)}
             </div>
             <div style="display:flex;gap:6px;flex-direction:column;align-items:flex-end">
+              <a href="/devices/${esc(d.id)}/logs"><button class="ghost sm">连接日志</button></a>
               ${d.status === 'online' ? `<button class="ghost sm" data-refresh="${esc(d.id)}">刷新状态</button>` : ''}
               ${d.status === 'online' ? `<button class="ghost sm" data-locate="${esc(d.id)}">定位</button>` : ''}
               ${d.status !== 'revoked'

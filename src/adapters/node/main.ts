@@ -15,7 +15,7 @@ import { dispatch } from '../../core/notifier.js'
 import { runTask as runOneTask, tick as tasksTick, type ParsedTask } from '../../core/tasks.js'
 import { checkDevices } from '../../core/monitor.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
-import { AppListResult, FingerprintList, ImportResult, LocationResult, type DownstreamFrame } from '../../core/protocol.js'
+import { AppListResult, FingerprintList, ImportResult, LocationResult, LogResult, type DownstreamFrame } from '../../core/protocol.js'
 import { PROVIDERS } from '../../core/notifier.js'
 import { TelegramConfig } from '../../core/providers/telegram.js'
 import { barkAccess, botTokenFor, handleApi, isInitialized, loadNotifyCapture, loadSmsCommand, PRIVACY_VERSION, timezone } from './api.js'
@@ -271,6 +271,21 @@ function pingDevice(deviceId: string): boolean {
   return hub.send(deviceId, makeFrame('ping', { seq: Date.now() % 100000 }, Date.now()) as DownstreamFrame)
 }
 
+/**
+ * 向设备要一份它自己的日志。
+ *
+ * 只在设备在线时可用——这不是缺陷，是连接方向决定的：服务端从不主动连手机。
+ * 离线那一档由短信指令覆盖（整条链路不经过服务端，正是为此设计的），
+ * 以及服务端自己那份连接日志（device_logs 表，离线照样能看）。三者互补。
+ */
+async function agentLogs(deviceId: string, limit: number, minLevel: string): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+  const r = await queryDevice(deviceId, 'get_logs', 20_000, { limit, min_level: minLevel })
+  if (!r.ok) return { ok: false, error: r.error ?? '取日志失败' }
+  const parsed = LogResult.safeParse(r.detail)
+  if (!parsed.success) return { ok: false, error: '设备返回的日志格式不正确' }
+  return { ok: true, result: parsed.data }
+}
+
 async function locateDevice(deviceId: string): Promise<{ ok: boolean; location?: unknown; error?: string }> {
   // GPS 冷启动可能要十几秒，Agent 侧自己有 25 秒上限，这里留足余量
   const result = await queryDevice(deviceId, 'get_location', 40_000)
@@ -345,6 +360,7 @@ const apiDeps = {
   // apiDeps 在 taskDeps 之前定义，用函数包一层避免 TDZ
   runTask: (task: ParsedTask) => runTaskNow(task),
   pingDevice,
+  agentLogs,
   locateDevice,
   listApps,
   importHistory,
@@ -689,9 +705,17 @@ const taskTimer = setInterval(() => {
 
 /** 回复映射保留 7 天：超过这个窗口的推送，用户基本不会再去引用回复。 */
 const MESSAGE_REF_TTL_MS = 7 * 24 * 3600 * 1000
+/**
+ * 连接日志保留 30 天。
+ *
+ * 它是诊断数据不是档案——「上个月它掉过几次线」有用，「去年三月」没用，
+ * 而事件表是永不删除的，这张表不该跟着一起长。
+ */
+const DEVICE_LOG_TTL_MS = 30 * 24 * 3600 * 1000
 const cleanupTimer = setInterval(() => {
   void store.cleanupMessageRefs(Date.now() - MESSAGE_REF_TTL_MS)
   void store.cleanupSessions(Date.now())
+  void store.cleanupDeviceLogs(Date.now() - DEVICE_LOG_TTL_MS)
 }, 3600_000)
 
 const shutdown = async (sig: string) => {

@@ -325,6 +325,7 @@ class WsClient(
             "list_apps" -> onListApps(cmd)
             "import_history" -> onImportHistory(cmd)
             "list_fingerprints" -> onListFingerprints(cmd)
+            "get_logs" -> onGetLogs(cmd)
             else -> report(cmd.cmdId, "failed", "尚未实现：${cmd.action}")
         }
     }
@@ -416,6 +417,36 @@ class WsClient(
             socket.send(frame("cmd_result", CmdResultPayload(
                 cmd.cmdId, "done", null,
                 Protocol.json.encodeToJsonElement(AppListResult.serializer(), AppListResult(apps)),
+            )))
+        }
+    }
+
+    /**
+     * 把内存里的日志缓冲回传给服务端。
+     *
+     * 两件事在界面上必须说清，这里先保证数据带得到：
+     *  - `dropped` 是被挤掉的行数。不带的话人会把「只有这些」当成「只发生了这些」。
+     *  - 缓冲在内存里，**进程被 ROM 杀掉就没了**——而那恰恰是最想看日志的时候。
+     *    这是方案的固有边界，不是缺陷。
+     *
+     * args 必须 decodeFromJsonElement，理由见 ImportArgs 的注释：
+     * 对 JsonObject 直接下标取值永远返回 null，表现是界面上选的条数和级别
+     * 被静默忽略。
+     */
+    private fun onGetLogs(cmd: CmdPayload) {
+        report(cmd.cmdId, "accepted", null)
+        scope.launch {
+            val args = runCatching {
+                Protocol.json.decodeFromJsonElement(LogArgs.serializer(), cmd.args)
+            }.getOrDefault(LogArgs())
+            val snap = Log.ring.snapshot(args.limit.coerceIn(1, 500), args.minLevel)
+            val socket = ws ?: return@launch
+            socket.send(frame("cmd_result", CmdResultPayload(
+                cmd.cmdId, "done", null,
+                Protocol.json.encodeToJsonElement(
+                    LogResult.serializer(),
+                    LogResult(snap.map { LogLine(it.at, it.level, it.msg) }, Log.ring.dropped),
+                ),
             )))
         }
     }

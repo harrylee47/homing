@@ -146,7 +146,29 @@ export class DeviceSession {
     this.state = 'closed'
     if (!id) return
     await this.deps.store.touchDevice(id, { status: 'offline', last_seen_at: this.now() })
+    await this.logDevice(id, this.userId, 'warn', 'offline', null)
     log.info('设备断开', { device_id: id })
+  }
+
+  /**
+   * 记一条连接日志。
+   *
+   * 「设备不在线」只有一个比特的信息量，真正有用的是**在那之前发生了什么**。
+   * 这些服务端本来就知道，从前只写进 stdout——翻不到，也没法按设备看。
+   *
+   * **绝不写入短信正文、号码、验证码或凭证**：这张表会展示给人看，
+   * 脱敏标准与日志输出相同。写失败只吞掉——诊断数据不该阻断主链路。
+   */
+  private async logDevice(
+    deviceId: string | null, userId: string | null,
+    level: 'info' | 'warn' | 'error', event: string, detail: string | null,
+  ): Promise<void> {
+    // 设备 id 显式传：握手被拒的几处发生在 this.deviceId 赋值**之前**，
+    // 靠成员变量的话那几条——恰恰是最该记下来的几条——一条都记不上
+    if (!deviceId || !userId) return
+    await this.deps.store.appendDeviceLog({
+      device_id: deviceId, user_id: userId, level, event, detail, created_at: this.now(),
+    }).catch((e: unknown) => log.warn('连接日志写入失败', { error: String(e) }))
   }
 
   // ── 握手 ────────────────────────────────────────────────
@@ -169,11 +191,13 @@ export class DeviceSession {
       return this.reject(ErrorCode.AUTH_UNKNOWN_DEVICE, '设备未注册，请重新配对')
     }
     if (device.status === 'revoked') {
+      await this.logDevice(device.id, device.user_id, 'error', 'auth_revoked', '凭证已被吊销，连接被拒')
       return this.reject(ErrorCode.AUTH_DEVICE_REVOKED, '设备凭证已被吊销')
     }
 
     const incoming = await hashToken(p.token)
     if (!timingSafeEqual(incoming, device.token_hash)) {
+      await this.logDevice(device.id, device.user_id, 'error', 'auth_failed', '凭证不匹配。设备需要重新配对')
       log.warn('凭证校验失败', { device_id: p.device_id })
       return this.reject(ErrorCode.AUTH_INVALID_TOKEN, '凭证无效')
     }
@@ -187,6 +211,7 @@ export class DeviceSession {
      */
     const owner = await this.deps.store.getUser(device.user_id)
     if (!userActive(owner, this.now())) {
+      await this.logDevice(device.id, device.user_id, 'error', 'account_inactive', '账号已停用或到期，服务暂停')
       log.warn('设备主人的账号已停用或到期，拒绝握手', { device_id: device.id, user_id: device.user_id })
       return this.reject(ErrorCode.ACCOUNT_INACTIVE, '账号已停用或已到期')
     }
@@ -205,6 +230,9 @@ export class DeviceSession {
       app_version: p.app_version,
     })
 
+    await this.logDevice(device.id, device.user_id, 'info', 'online',
+      `v${p.app_version} · SDK ${p.android_sdk} · 电量 ${p.battery}%` +
+      (p.pending_count > 0 ? ` · 待补传 ${p.pending_count} 条` : ''))
     log.info('设备上线', {
       device_id: device.id,
       app_version: p.app_version,

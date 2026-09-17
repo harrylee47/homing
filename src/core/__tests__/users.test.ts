@@ -197,3 +197,79 @@ describe('到期后后台循环也停', () => {
     expect(alerts).toEqual([])
   })
 })
+
+/**
+ * 连接日志要记下**握手被拒**的那几次。
+ *
+ * 那几条恰恰是最该看到的：设备突然连不上了，日志里得说清是凭证被吊销、
+ * 凭证不对，还是账号到期。而它们发生在会话记下 device_id **之前**——
+ * 第一版靠成员变量取 id，于是这三条一条都没记上。
+ */
+describe('连接日志记下了被拒的原因', () => {
+  const TOKEN = 'tok_' + 'y'.repeat(28)
+  const hello = () => encodeFrame(makeFrame('hello', {
+    device_id: 'dev_1', token: TOKEN, app_version: '1.2.3', android_sdk: 34,
+    battery: 55, pending_count: 3,
+  }, NOW))
+
+  const fresh = async () => {
+    const store = new MemoryStore()
+    const cipher = await createCipher(generateDek())
+    store.devices.set('dev_1', {
+      id: 'dev_1', user_id: 'u1', name: 'd', token_hash: await hashToken(TOKEN),
+      status: 'offline', last_seen_at: null, battery: null, charging: null, net_json: null,
+      location_enc: null, location_at: null, app_version: null, created_at: 0,
+    })
+    store.users.set('u1', user({}))
+    const s = new DeviceSession({ store, cipher, hub: new MemoryHub(), now: () => NOW })
+    return { store, session: s }
+  }
+
+  it('上线记一条，带版本与电量，且不含任何凭证', async () => {
+    const { store, session } = await fresh()
+    await session.handle(hello())
+    const logs = await store.listDeviceLogs('dev_1', 'u1', 10)
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toMatchObject({ level: 'info', event: 'online' })
+    expect(logs[0]!.detail).toContain('1.2.3')
+    expect(logs[0]!.detail).toContain('待补传 3 条')
+    expect(JSON.stringify(logs[0])).not.toContain(TOKEN)
+  })
+
+  it('凭证不对记成 error，说清要重新配对', async () => {
+    const { store, session } = await fresh()
+    await session.handle(encodeFrame(makeFrame('hello', {
+      device_id: 'dev_1', token: 'W'.repeat(32), app_version: '1', android_sdk: 34,
+      battery: 50, pending_count: 0,
+    }, NOW)))
+    const logs = await store.listDeviceLogs('dev_1', 'u1', 10)
+    expect(logs[0]).toMatchObject({ level: 'error', event: 'auth_failed' })
+    expect(logs[0]!.detail).toContain('重新配对')
+  })
+
+  it('已吊销与账号到期各记各的原因，不混成一句「连不上」', async () => {
+    const a = await fresh()
+    await a.store.revokeDevice('dev_1', 'u1')
+    await a.session.handle(hello())
+    expect((await a.store.listDeviceLogs('dev_1', 'u1', 10))[0]).toMatchObject({ event: 'auth_revoked' })
+
+    const b = await fresh()
+    b.store.users.set('u1', user({ expires_at: NOW - 1 }))
+    await b.session.handle(hello())
+    expect((await b.store.listDeviceLogs('dev_1', 'u1', 10))[0]).toMatchObject({ event: 'account_inactive' })
+  })
+
+  it('断开记一条 offline', async () => {
+    const { store, session } = await fresh()
+    await session.handle(hello())
+    await session.onDisconnect()
+    const logs = await store.listDeviceLogs('dev_1', 'u1', 10)
+    expect(logs.map((l) => l.event)).toEqual(['offline', 'online'])
+  })
+
+  it('别人查不到这台设备的日志', async () => {
+    const { store, session } = await fresh()
+    await session.handle(hello())
+    expect(await store.listDeviceLogs('dev_1', '别的用户', 10)).toEqual([])
+  })
+})
