@@ -408,6 +408,8 @@ let curPath = location.pathname + location.search
 let navDepth = 0
 /** 视图自己滚过了（会话要停在最新一条），路由就别再把它拉回顶部 */
 let viewScrolled = false
+/** 这台网关初始化过没有。null = 还没问到，引导浮窗宁可不出也不要出错 */
+let initialized = null
 
 const rememberScroll = () => scrollMem.set(curPath, window.scrollY)
 
@@ -514,8 +516,19 @@ async function route(restore = false) {
   try {
     // 未初始化时一切导向向导——不存在「启动即裸奔」的窗口
     const st = await api('/setup/status', { allow404: true })
-    if (!st?.initialized) return setup()
+    initialized = !!st?.initialized
+    if (!initialized) { hideNudge(); return setup() }
   } catch { /* 网络异常时继续尝试渲染，由各视图报错 */ }
+
+  /*
+   * 引导浮窗在**这里**重算，不在各个视图里。
+   *
+   * 它是整站的一层，不属于哪一页：挂在 body 上、不随 render() 重画，
+   * 所以每次换页只要重算一次「还差什么」。放在这一行是因为要等
+   * /setup/status 回来——向导页上不该压着一条让你装 App 的浮窗。
+   * 它自己会判断未登录与公开页，所以这里不用再加条件。
+   */
+  void paintNudge()
 
   if (!token && !PUBLIC_PAGES.has(path)) {
     // 记下想去哪，登录完直接回去（Telegram 通知里的按钮就是这条路）
@@ -1223,53 +1236,8 @@ async function overview() {
       <div class="card tight row">
         <span class="muted">给某个号码发条短信</span>
         <a href="/compose"><button class="sm">去发送</button></a>
-      </div>
-      <div id="a2hs_tip"></div>`)
-    paintA2HSTip()
+      </div>`)
   } catch (e) { fail(e) }
-}
-
-/**
- * 总览底部那条「装到主屏幕」的提示。
- *
- * 默认推荐装成主屏 App——网页是这里唯一的全功能入口，而每次从浏览器里
- * 翻书签打开它，摩擦大到人就不看了。
- *
- * 三条自我约束，免得它变成一条烦人的横幅：
- * ① 已经装了（standalone）就不出现；② 桌面浏览器不出现——那儿本来就没这个必要；
- * ③ 关掉之后永久不再出现（记在 localStorage，不占服务端存储）。
- */
-const A2HS_TIP_KEY = 'gw_a2hs_tip'
-
-function paintA2HSTip() {
-  const box = $('#a2hs_tip')
-  if (!box) return
-  const standalone = matchMedia('(display-mode: standalone)').matches
-    || matchMedia('(display-mode: fullscreen)').matches
-    || navigator.standalone === true
-  // 触点数而不是 UA：iPadOS 的 Safari 默认报 Mac 的 UA
-  const mobile = navigator.maxTouchPoints > 1 || /Android|iPhone|iPad|iPod/.test(navigator.userAgent)
-  let dismissed = false
-  try { dismissed = localStorage.getItem(A2HS_TIP_KEY) === 'off' } catch { /* 隐私模式 */ }
-  if (standalone || !mobile || dismissed) return
-
-  box.innerHTML = `
-    <div class="card tight" style="background:var(--bg)">
-      <div class="row">
-        <div class="col grow">
-          <span><b>把它装到主屏幕</b></span>
-          <span class="muted">全屏打开，不用每次在浏览器里找。设置页里有对应你手机的步骤。</span>
-        </div>
-      </div>
-      <div class="btnrow" style="margin-top:8px">
-        <a href="/settings#a2hs"><button class="sm">怎么装</button></a>
-        <button class="ghost sm" id="a2hs_no">不用了</button>
-      </div>
-    </div>`
-  $('#a2hs_no').onclick = () => {
-    try { localStorage.setItem(A2HS_TIP_KEY, 'off') } catch { /* 隐私模式下就每次都提示，无妨 */ }
-    box.innerHTML = ''
-  }
 }
 
 // ── 消息 ────────────────────────────────────────────────────
@@ -2771,18 +2739,41 @@ async function channels() {
     const FORMS = {
       bark: {
         name: '主 Bark',
-        html: `<div class="card tight" style="background:var(--bg)">
+        /*
+         * 这张卡只在**这台网关自带 Bark** 时出。
+         *
+         * 它说的是「扫这个码把这台服务器加进 Bark App」，而没自带 Bark 的部署
+         * 上 /bark 是个 404——扫了加不上，还看不出为什么。那种部署上该出的是
+         * 另一句话：填你自己那台 Bark 的地址。
+         */
+        html: `${bark?.upstream ? `<div class="card tight" style="background:var(--bg)">
                  <b>第一步：把这台服务器加进 Bark App</b>
                  <div class="muted" style="margin:6px 0 4px">先把下方「开放档位」调成「完全开放」，
                  然后在 Bark App 的「服务器」页点右上角 <b>+</b> → 扫下面这个码：</div>
                  <div id="barkqr" class="qr"></div>
                  <div class="muted" style="text-align:center">扫不了就手动填这个地址：</div>
-                 <div class="mono wrap" style="font-size:13px;padding:6px 0;text-align:center"><b>${esc(bark?.public_url || `${location.origin}/bark`)}</b></div>
+                 <div class="mono wrap" style="font-size:13px;padding:6px 0;text-align:center"><b>${esc(bark.public_url || `${location.origin}/bark`)}</b></div>
                  <div style="text-align:center"><button class="ghost sm" id="copyurl" type="button">复制地址</button></div>
                  <div class="muted" style="margin-top:10px"><b>第二步：把设备 Key 填到下面</b>，然后把档位调回「允许推送」。</div>
-               </div>
-               <label>推送地址（网关内部使用，不走公网）</label>
-               <input id="f_server" class="mono" value="${esc(bark?.upstream || '')}" placeholder="http://bark:8080">
+               </div>` : ''}
+               ${bark?.upstream ? `
+               <!--
+                 这一栏默认折叠，理由见下面那段注释：一张表单上摆着两个地址，
+                 而它们一个给手机、一个给服务器，新手分不清该改哪个。
+               -->
+               <details class="adv">
+                 <summary>推送地址（已经填好了，一般不用改）</summary>
+                 <div class="muted" style="margin:2px 0 8px">这是<b>网关自己</b>在内部访问 Bark 用的地址，
+                 不走公网，和上面那个给 Bark App 扫的
+                 <span class="mono">${esc(bark.public_url || `${location.origin}/bark`)}</span>
+                 不是一回事——那个给你的手机用，这个给这台服务器自己用。<b>不懂就不要改。</b></div>
+                 <input id="f_server" class="mono" value="${esc(bark.upstream)}">
+                 ${defaultRow('f_server')}
+               </details>` : `
+               <label>推送地址（你自己那台 Bark 服务器）</label>
+               <input id="f_server" class="mono" value="" placeholder="https://api.day.app">
+               <div class="muted">这台网关没有自带 Bark，填你自己那台的地址，
+               或者官方的 <span class="mono">https://api.day.app</span>。</div>`}
                <label>设备 Key</label><input id="f_key" class="mono" placeholder="22 位左右的随机串">
                <div class="muted">Bark App 首页不会单独把 Key 列出来，它藏在示例地址里：
                <span class="mono">…/bark/<b>这一段就是 Key</b>/推送内容</span>。
@@ -2791,10 +2782,12 @@ async function channels() {
                <div class="muted" id="f_pastehint"></div>
                <label>通知图标（可选）</label>
                <input id="f_icon" class="mono" value="${esc(iconUrl())}" placeholder="留空则不显示图标">
+               ${defaultRow('f_icon')}
                <div class="muted">显示在通知左侧，让人一眼认出这条是网关发的。
+               预填的是这台网关自己的图标（<span class="mono">/icon-192.png</span>，
+               就是 web 目录里那张），换成别的图直接改这一行，想撤回点「恢复默认」。
                去图的是<b>你的 iPhone</b> 而不是服务器，所以地址必须公网可达；
-               而且只认 <b>PNG / JPEG</b>——填 .svg 的话图标位置会是空的，不报错。
-               上面预填的是本网关自己的图标。</div>
+               而且只认 <b>PNG / JPEG</b>——填 .svg 的话图标位置会是空的，不报错。</div>
 `,
         collect: () => ({
           server: $('#f_server').value.trim(),
@@ -3020,6 +3013,10 @@ async function channels() {
         $('#f_topic').value = 'homing-' + Array.from(r, (x) => A[x % A.length]).join('')
       }
 
+      // 「恢复默认」：默认值就是打开表单时填进去的那一个
+      bindDefault('f_server')
+      bindDefault('f_icon')
+
       // Bark 服务器二维码：内容就是服务器地址本身，Bark App 的「添加服务器」认这个
       const qrBox = $('#barkqr')
       if (qrBox) {
@@ -3092,15 +3089,19 @@ function channelEditor(c, bark) {
       { key: 'chat_id', label: 'Chat ID', secret: false },
     ],
     bark: [
-      { key: 'server', label: '推送地址（内部）', secret: false, placeholder: bark?.upstream || 'http://bark:8080' },
+      { key: 'server', label: '推送地址', secret: false, advanced: true,
+        placeholder: bark?.upstream || 'http://bark:8080', def: bark?.upstream || '',
+        hint: '网关自己在内部访问 Bark 用的，不走公网；和给 Bark App 扫的那个公网地址不是一回事。不懂就别动。' },
       { key: 'key', label: '设备 Key', secret: true },
-      { key: 'icon', label: '通知图标（PNG/JPEG 的公网地址）', secret: false, placeholder: iconUrl(), clearable: true },
+      { key: 'icon', label: '通知图标（PNG/JPEG 的公网地址）', secret: false,
+        placeholder: iconUrl(), clearable: true, def: iconUrl() },
     ],
     ntfy: [
       { key: 'server', label: '服务器地址', secret: false, placeholder: 'https://ntfy.sh' },
       { key: 'topic', label: '主题名（就是这条通道的口令）', secret: false },
       { key: 'token', label: '访问令牌', secret: true, clearable: true },
-      { key: 'icon', label: '通知图标（PNG/JPEG 的公网地址）', secret: false, placeholder: iconUrl(), clearable: true },
+      { key: 'icon', label: '通知图标（PNG/JPEG 的公网地址）', secret: false,
+        placeholder: iconUrl(), clearable: true, def: iconUrl() },
     ],
     webhook: [
       { key: 'url', label: '目标地址', secret: false },
@@ -3140,16 +3141,23 @@ function channelEditor(c, bark) {
     <h2>配置</h2>
     <div class="card">
       <p class="muted">留空表示不修改。密钥不会回显。</p>
-      ${fields.map((f) => `
-        <label>${esc(f.label)}</label>
+      ${fields.map((f) => {
+        const body = `
+        ${f.advanced ? '' : `<label>${esc(f.label)}</label>`}
+        ${f.hint ? `<div class="muted" style="margin-bottom:6px">${f.hint}</div>` : ''}
         ${f.parse
           ? `<textarea id="c_${esc(f.key)}" class="mono" rows="2"
                placeholder="${esc(f.placeholder || '留空则不变')}"></textarea>`
           : `<input id="c_${esc(f.key)}" class="mono" type="${f.secret ? 'password' : 'text'}"
                placeholder="${esc(f.placeholder || '留空则不变')}" autocomplete="off">`}
+        ${f.def ? defaultRow(`c_${esc(f.key)}`) : ''}
         ${f.clearable ? `<label style="text-transform:none;letter-spacing:0;font-size:13px;color:var(--fg)">
-          <input type="checkbox" id="c_${esc(f.key)}_clear" style="width:auto;margin-right:6px">清空这一项</label>` : ''}
-      `).join('')}
+          <input type="checkbox" id="c_${esc(f.key)}_clear" style="width:auto;margin-right:6px">清空这一项</label>` : ''}`
+        // 折起来的那几项：这里留空就是不改，所以藏起来没有「漏填」的风险
+        return f.advanced
+          ? `<details class="adv"><summary>${esc(f.label)}（一般不用改）</summary>${body}</details>`
+          : body
+      }).join('')}
     </div>
     <div class="btnrow">
       <button id="c_save">保存</button>
@@ -3159,6 +3167,10 @@ function channelEditor(c, bark) {
     </div>
     <div id="c_err" class="err-text"></div>
     <div id="c_result" class="muted" style="margin-top:8px"></div>`)
+
+  // 有默认值的那几项配「恢复默认」。这里框是空的（留空 = 不修改），
+  // 所以默认值得从字段定义里给进来，不能像新增表单那样取框里的当前值
+  for (const f of fields) if (f.def) bindDefault(`c_${f.key}`, f.def)
 
   $('#c_back').onclick = () => go('/channels')
 
@@ -3230,6 +3242,37 @@ function testResultHtml(r) {
 
 function iconUrl() {
   return `${location.origin}/icon-192.png`
+}
+
+/*
+ * 「恢复默认」：给那些**打开表单时就已经填好**的字段配一颗回退键。
+ *
+ * Bark 的内部推送地址、通知图标都属于这一类：它们不是等你去填的空框，
+ * 而是已经对了的值。人去动它们多半是误改（两个都长得像「地址」，
+ * 见 .adv 那段注释），而改坏之后**原值在界面上再也没有第二处写着**——
+ * 唯一的出路是去翻文档或者干脆重建一条渠道。
+ *
+ * 新增表单里默认值不另外传，就取渲染那一刻框里的值——那本来就是预填进去的
+ * 那一个。另写一份的话，哪天预填逻辑改了，回退键会把人退到一个早就不对的老值上。
+ * 编辑表单里框是空的（留空 = 不修改），那里才需要从外面把默认值给进来。
+ */
+function defaultRow(id) {
+  return `<div class="btnrow" style="margin-top:6px">
+    <button class="ghost sm" type="button" id="${id}_def">恢复默认</button>
+  </div>`
+}
+
+function bindDefault(id, def) {
+  const input = $('#' + id)
+  const btn = $('#' + id + '_def')
+  if (!input || !btn) return
+  // 传了就用传的（编辑表单里框是空的，默认值得从外面给），否则取当前值
+  const d = def === undefined ? input.value : def
+  // 已经是默认值时按钮置灰：亮着却点了没反应，比没有这颗按钮更让人犯嘀咕
+  const sync = () => { btn.disabled = input.value.trim() === String(d).trim() }
+  input.addEventListener('input', sync)
+  btn.onclick = () => { input.value = d; sync(); input.focus() }
+  sync()
 }
 
 function barkKeyFrom(text) {
@@ -3975,35 +4018,44 @@ async function paintWebPush() {
     btn.disabled = true
     $('#wp_err').textContent = ''
     try {
-      // 权限弹窗必须由真实的用户手势触发，不能在页面加载时自动调
-      const p = await Notification.requestPermission()
-      if (p !== 'granted') throw new Error('没有拿到通知权限')
-
-      const registration = await navigator.serviceWorker.register('/sw.js')
-      await navigator.serviceWorker.ready
-      const { key } = await api('/push/key')
-      const s = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: b64uToBytes(key),
-      })
-      const j = s.toJSON()
-      await api('/push/subscribe', {
-        method: 'POST',
-        body: {
-          endpoint: j.endpoint,
-          p256dh: j.keys.p256dh,
-          auth: j.keys.auth,
-          label: browserLabel(),
-        },
-      })
+      await subscribePush()
       toast('已订阅，去渠道页点一下测试')
       void paintWebPush()
-  paintBackup()
+      void paintNudge()
+      paintBackup()
     } catch (e) {
       $('#wp_err').textContent = e.message
       btn.disabled = false
     }
   }
+}
+
+/**
+ * 在这个浏览器上订阅推送。**设置页与引导浮窗共用这一份。**
+ *
+ * 两处各抄一份的代价不是重复，是不一致：登记字段哪天改了只会改到一处，
+ * 而另一处的失败恰恰是静默的——订阅在浏览器里成了、服务端没登记上，
+ * 界面显示「已订阅」，实际一条都不会到（见 paintWebPush 里那段注释）。
+ *
+ * 必须由**真实的用户手势**调用：requestPermission() 在非手势上下文里
+ * 会被浏览器直接拒掉，而那个拒绝和「用户点了不允许」长得一模一样。
+ */
+async function subscribePush() {
+  const p = await Notification.requestPermission()
+  if (p !== 'granted') throw new Error('没有拿到通知权限')
+
+  const registration = await navigator.serviceWorker.register('/sw.js')
+  await navigator.serviceWorker.ready
+  const { key } = await api('/push/key')
+  const sub = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: b64uToBytes(key),
+  })
+  const j = sub.toJSON()
+  await api('/push/subscribe', {
+    method: 'POST',
+    body: { endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, label: browserLabel() },
+  })
 }
 
 /** applicationServerKey 只收 Uint8Array，不认 base64url 字符串 */
@@ -4013,6 +4065,32 @@ function b64uToBytes(s) {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0))
 }
 
+/*
+ * 三个平台判断，**只此一份**。
+ *
+ * 它们原来散在 paintA2HS、总览那条提示、browserLabel 三处，
+ * 各自写了一遍 display-mode 的 matchMedia。这类判断一旦漂移，
+ * 症状是「设置页说已安装、浮窗还在劝你安装」，而两处都没报错。
+ */
+
+/** iPadOS 13+ 的 Safari 默认报 Mac 的 UA，只能靠触点数区分 */
+function isIOS() {
+  const ua = navigator.userAgent
+  return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+}
+
+/** 从主屏图标（或桌面 App）打开的吗 */
+function isStandalone() {
+  return matchMedia('(display-mode: standalone)').matches
+    || matchMedia('(display-mode: fullscreen)').matches
+    || navigator.standalone === true
+}
+
+/** 触点数而不是 UA：同上，iPadOS 报的是 Mac */
+function isMobile() {
+  return navigator.maxTouchPoints > 1 || /Android|iPhone|iPad|iPod/.test(navigator.userAgent)
+}
+
 /** 给这条订阅起个人认得出的名字——一个人可能在好几个浏览器上订阅 */
 function browserLabel() {
   const ua = navigator.userAgent
@@ -4020,21 +4098,15 @@ function browserLabel() {
     : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : ''
   const br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome'
     : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : '浏览器'
-  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
-  return [os, br, standalone ? '主屏' : ''].filter(Boolean).join(' ')
+  return [os, br, isStandalone() ? '主屏' : ''].filter(Boolean).join(' ')
 }
 
 function paintA2HS() {
   const box = $('#a2hs')
   if (!box) return
 
-  const standalone = matchMedia('(display-mode: standalone)').matches
-    || matchMedia('(display-mode: fullscreen)').matches
-    || navigator.standalone === true
-  const ua = navigator.userAgent
-  const iOS = /iPhone|iPad|iPod/.test(ua)
-    // iPadOS 13+ 的 Safari 默认报 Mac 的 UA，靠触点数区分
-    || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+  const standalone = isStandalone()
+  const iOS = isIOS()
 
   if (standalone) {
     box.innerHTML = `<div class="row">
@@ -4106,7 +4178,223 @@ let deferredInstall = null
 addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault()
   deferredInstall = e
+  // 这个事件多半在首屏画完之后才到。到了才知道「这个浏览器真能装」，
+  // 浮窗上那颗按钮也才从「怎么装」变成一点就装。
+  nudgeSig = ''
+  void paintNudge()
 })
+
+/**
+ * 装完了。
+ *
+ * 安卓上装完**当前这个标签页仍然是标签页**——display-mode 还是 browser，
+ * 而 beforeinstallprompt 已经用掉了不会再发。只看这两样的话，
+ * 浮窗会在人刚装完的那一秒改口劝他「去菜单里装一下」。
+ */
+let installedNow = false
+addEventListener('appinstalled', () => {
+  installedNow = true
+  deferredInstall = null
+  toast('装好了，之后从主屏图标打开')
+  nudgeSig = ''
+  void paintNudge()
+})
+
+/* ── 引导浮窗：装成 App + 开通推送 ───────────────────────────
+ *
+ * 这两件事**默认就该做**，不该等人自己去设置页第四屏里翻。
+ * 网页是这里唯一的全功能入口：不装成 App，每次都得在浏览器里找书签；
+ * 不开通推送，验证码到了还得自己想起来打开这一页看——
+ * 而这个产品存在的全部意义就是「不用惦记」。
+ *
+ * 顺序是写死的：**先装，再订阅**。在 iOS 上这不是排版偏好而是硬约束——
+ * Safari 标签页里 window.PushManager 根本不存在，只有装成主屏 App
+ * 从图标打开才有。反着引导会让 iPhone 用户去点一颗必然失败的按钮。
+ *
+ * 关掉分两档，差别要在按钮上写明白：
+ *
+ * ① **今天先不提醒**——记下今天的**本地日期**，明天再出现。
+ *    记日期而不是「24 小时后」：用户说的是「今天别烦我」，
+ *    晚上十一点点一下，不该把明天一整天也赔进去。
+ * ② **不再提醒**——永久。沿用旧键 `gw_a2hs_tip`：早先在总览底部
+ *    点过「不用了」的人，不该被这个新浮窗重新烦一遍。
+ *
+ * 权限被拒（`denied`）时一声不吭。那扇门在浏览器的站点设置里，
+ * 这里给不出任何一点就能生效的按钮，提了只是在复读一件他已经决定过的事。
+ */
+
+const NUDGE_OFF_KEY = 'gw_a2hs_tip'
+const NUDGE_SNOOZE_KEY = 'gw_tip_snooze'
+
+/**
+ * 「今天」按**本地日期**切。
+ * 用 UTC 的话，东八区的人在早上八点之前都还算昨天——
+ * 恰恰是他起床看验证码、最该被提醒的那段时间。
+ */
+function todayKey() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/**
+ * 这个浏览器现在收不收得到推送。
+ *
+ * `after-install` 与 `unsupported` 必须分开：iOS 在 Safari 标签页里
+ * serviceWorker / PushManager / Notification 三样全都不存在，
+ * 长得和「这个浏览器不支持」一模一样，但它其实是「还没到时候」。
+ * 混成一类的结果是 iPhone 用户永远不知道有推送这回事。
+ */
+async function pushState() {
+  const has = 'serviceWorker' in navigator && 'PushManager' in window
+    && typeof Notification !== 'undefined'
+  if (!has) return isIOS() && !isStandalone() ? 'after-install' : 'unsupported'
+  if (Notification.permission === 'denied') return 'blocked'
+  const reg = await navigator.serviceWorker.getRegistration().catch(() => null)
+  const sub = reg ? await reg.pushManager.getSubscription().catch(() => null) : null
+  return sub ? 'on' : 'off'
+}
+
+/**
+ * 当前浮窗画的是哪一种状态。相同就不重画——
+ * 换一次页重建一次 DOM 的话，那条进场动画会在每次导航时再演一遍。
+ */
+let nudgeSig = ''
+
+function hideNudge() {
+  nudgeSig = ''
+  document.getElementById('nudge')?.remove()
+  document.body.classList.remove('has-nudge')
+  document.documentElement.style.removeProperty('--nudge-h')
+}
+
+async function paintNudge() {
+  if (!token || initialized === false || PUBLIC_PAGES.has(location.pathname)) return hideNudge()
+  // 设置页上不出：要装、要订阅的入口本来就摆在这一页上，
+  // 再压一条浮窗在上面是在复读，还会挡住它引导人去点的那颗按钮
+  if (location.pathname === '/settings') return hideNudge()
+
+  let off = false, snoozed = false
+  try {
+    off = localStorage.getItem(NUDGE_OFF_KEY) === 'off'
+    snoozed = localStorage.getItem(NUDGE_SNOOZE_KEY) === todayKey()
+  } catch { /* 隐私模式下读不到，那就每次都提示，无妨 */ }
+  if (off || snoozed) return hideNudge()
+
+  /*
+   * 桌面上只在浏览器真的给了安装入口（deferredInstall 到手）时才提。
+   * Firefox 和桌面版 Safari 没有「安装」这回事，提了是一句做不到的话。
+   * 手机上一律提：安卓在 ⋮ 菜单里、iOS 在分享键里，都装得上。
+   */
+  const needInstall = !isStandalone() && !installedNow && (isMobile() || !!deferredInstall)
+  const ps = await pushState()
+  const needPush = ps === 'off' || (ps === 'after-install' && needInstall)
+  if (!needInstall && !needPush) return hideNudge()
+
+  const sig = `${needInstall}|${!!deferredInstall && !isIOS()}|${ps}`
+  if (sig === nudgeSig) return
+
+  const both = needInstall && needPush
+  const step = (i) => (both ? `<b class="nudge-n">${i}</b>` : '')
+
+  let rows = ''
+  if (needInstall) {
+    rows += `<div class="nudge-row">${step(1)}
+      <div class="col grow">
+        <span><b>装到${isMobile() ? '主屏幕' : '桌面'}</b></span>
+        <span class="muted">${isIOS()
+          ? '点 Safari 底部的<b>分享</b>键，往下找「添加到主屏幕」。'
+          : '全屏打开，不用每次在浏览器里翻书签。'}</span>
+      </div>
+      ${deferredInstall && !isIOS()
+        ? '<button class="sm" id="nudge_install">安装</button>'
+        : '<a href="/settings#a2hs"><button class="ghost sm">怎么装</button></a>'}
+    </div>`
+  }
+  if (needPush) {
+    rows += ps === 'after-install'
+      /*
+       * 这一行没有按钮，而且要说清它为什么没有。
+       * 空着的话读者只会以为是坏了；而「装好之后再来」把第 ① 步的理由
+       * 也一并交代了——那才是他现在该做的事。
+       */
+      ? `<div class="nudge-row">${step(2)}
+          <div class="col grow">
+            <span><b>开通推送通知</b></span>
+            <span class="muted">iPhone 上要先装成 App。装好之后从主屏图标打开，这里就能开通。</span>
+          </div>
+        </div>`
+      : `<div class="nudge-row">${step(2)}
+          <div class="col grow">
+            <span><b>开通推送通知</b></span>
+            <span class="muted">短信一到就弹在${isMobile() ? '锁屏' : '桌面'}上，不用自己想起来打开这一页。</span>
+          </div>
+          <button class="sm" id="nudge_push">开通</button>
+        </div>`
+  }
+
+  hideNudge()          // 换状态时先拆掉旧的；它顺手把 nudgeSig 清空，所以下一行重新记
+  nudgeSig = sig
+  const el = document.createElement('div')
+  el.className = 'nudge'
+  el.id = 'nudge'
+  el.innerHTML = `
+    ${both ? '<div class="nudge-head">还差两步，验证码就能自己找上你</div>' : ''}
+    ${rows}
+    <div class="err-text" id="nudge_err"></div>
+    <div class="nudge-foot">
+      <button id="nudge_today">今天先不提醒</button>
+      <button id="nudge_never">不再提醒</button>
+    </div>`
+  document.body.appendChild(el)
+  document.body.classList.add('has-nudge')
+  /*
+   * 量一遍高度写成 --nudge-h：正文底部要留出这一块，否则最后一张卡
+   * 永远被压在浮窗底下——而列表最底下那条往往正是刚到的那条验证码。
+   * 写死一个够大的值也行，代价是每一页底下都空出两百来像素。
+   * transform 不影响 offsetHeight，这时候量是准的。
+   */
+  document.documentElement.style.setProperty('--nudge-h', el.offsetHeight + 'px')
+  // 先挂上再加 class，否则起始态和终止态在同一帧里，transition 不会跑
+  requestAnimationFrame(() => el.classList.add('in'))
+
+  $('#nudge_today').onclick = () => {
+    try { localStorage.setItem(NUDGE_SNOOZE_KEY, todayKey()) } catch { /* 隐私模式 */ }
+    hideNudge()
+  }
+  $('#nudge_never').onclick = () => {
+    try { localStorage.setItem(NUDGE_OFF_KEY, 'off') } catch { /* 隐私模式 */ }
+    hideNudge()
+    toast('不再提醒。设置页里随时可以装 / 开通')
+  }
+
+  const ib = $('#nudge_install')
+  if (ib) ib.onclick = async () => {
+    ib.disabled = true
+    deferredInstall.prompt()
+    const r = await deferredInstall.userChoice.catch(() => null)
+    // 用掉就没了，不会再发第二次
+    deferredInstall = null
+    nudgeSig = ''
+    // 装成了就等 appinstalled 收尾；取消了要重画——那颗按钮已经按不动了，
+    // 得退化成「怎么装」，否则人再点一下是彻底没反应
+    if (r?.outcome !== 'accepted') void paintNudge()
+  }
+
+  const pb = $('#nudge_push')
+  if (pb) pb.onclick = async () => {
+    pb.disabled = true
+    $('#nudge_err').textContent = ''
+    try {
+      await subscribePush()
+      toast('已开通，去渠道页点一下测试')
+      nudgeSig = ''
+      void paintNudge()
+    } catch (e) {
+      $('#nudge_err').textContent = e.message
+      pb.disabled = false
+    }
+  }
+}
 
 async function paintTotp() {
   const box = $('#totpbox')

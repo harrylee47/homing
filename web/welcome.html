@@ -332,9 +332,14 @@
     content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px;
     background: repeating-linear-gradient(var(--line) 0 5px, transparent 5px 15px); opacity: .32;
   }
+  /* 长度用 scaleY 而不是 height：height 每帧都要重排一次，
+     scaleY 交给合成器。这是一条 4px 宽的线，两端 2px 的圆角被纵向压扁
+     看不出来。它没有子元素，所以缩放不会连累别的东西（.rail-tail 就不行——
+     那只鸟挂在它里面，一缩放整只鸟会跟着变形，所以那一条仍然用 height）。 */
   .rail-done {
     position: absolute; top: 0; left: 50%; width: 4px; margin-left: -2px; border-radius: 2px;
-    background: var(--cyan); height: clamp(0%, calc(var(--mid, 1) * 100%), 100%);
+    background: var(--cyan); height: 100%;
+    transform-origin: top; transform: scaleY(clamp(0, var(--mid, 1), 1));
   }
   /* 沿线走的是我们自己那只鸟，不是一颗抽象的蓝点。
      鸟身朝右，整体压 34° 让它顺着这条竖线往下滑翔；翅膀单独扇。 */
@@ -342,6 +347,18 @@
     position: absolute; left: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px;
     top: clamp(0%, calc(var(--mid, 1) * 100%), 100%);
     opacity: calc(min(var(--mid, 1) / .012, (.06 - var(--land, 0)) / .05));
+  }
+  /*
+   * 跑 JS 时改用 transform 走位：百分比的 top 每帧都要重排。
+   *
+   * 换不成纯 CSS 是因为 translateY 的百分比按**元素自己**的尺寸算（52px），
+   * 而这里要的是导线的长度，只能由 JS 量出来写进 --railpx（和 --landy 同一个办法）。
+   * 所以这条规则必须挂在 data-motion 下：没跑 JS 时 --railpx 是 0，
+   * 鸟会停在线的顶端，而那时候正确的样子是「已经走完」——上面那条 top 才是。
+   */
+  html[data-motion="on"] .packet {
+    top: 0;
+    transform: translateY(calc(clamp(0, var(--mid, 1), 1) * var(--railpx, 0px)));
   }
   .packet .load {
     position: absolute; left: 52px; top: 50%; transform: translateY(-50%);

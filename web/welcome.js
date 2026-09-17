@@ -92,6 +92,12 @@
     var el = document.getElementById('stage')
     if (!el || !motion) return
     var inner = el.querySelector('.stage-in')
+    var film = el.querySelector('.v2film')
+    var scA = el.querySelector('.sc-a')
+    // --mid / --land 的读者全在 .rail 里（导线、鸟、两个站牌），
+    // 写在 .rail 上而不是整幕上，一帧少脏 17 个元素
+    var rail = el.querySelector('.sc-mid .rail')
+    var scC = el.querySelector('.sc-c')
     var cue = document.getElementById('stage_cue_t')
     var where = document.getElementById('v2_where')
 
@@ -103,16 +109,96 @@
     var WHERE = [[0.35, '在路上'], [0.58, '地铁上'], [0.80, '咖啡馆'], [1.01, '机场']]
     var lastWhere = '', lastCue = '', swapTimer = 0, ticking = false
 
+    /*
+     * 幕顶在文档里的位置与可走的行程，**量一次存着**。
+     *
+     * 原来每帧读三次 offsetHeight / getBoundingClientRect。滚动本身不改样式，
+     * 所以这几下多数时候并不触发强制重排，但它们完全是白花的——
+     * 同样的答案用 scrollY 减一个常数就得到，而 scrollY 不碰布局。
+     * 两个数都用 svh 算（svh 是「小视口高度」，不随地址栏收放变），
+     * 所以只在 resize 时才需要重量。
+     */
+    var filmTop = 0, span = 0
+    function measure() {
+      span = el.offsetHeight - inner.offsetHeight
+      filmTop = el.getBoundingClientRect().top + window.scrollY
+      /*
+       * 导线长度，给 .packet 的 transform 用（理由见 welcome.html 里那条规则）。
+       * 必须用 getBoundingClientRect().height 而不是 offsetHeight：后者取整，
+       * 而原来那条 `top: 百分比` 是按子像素解析的——差的那半个像素，
+       * 会让鸟在整条线上从头到尾偏一个像素。
+       */
+      if (rail) rail.style.setProperty('--railpx', rail.getBoundingClientRect().height + 'px')
+    }
+
+    /*
+     * 每帧写谁：**按幕分开写，而且只在真的变了的时候写。**
+     *
+     * 这一版之前四个变量全挂在 :root 上。自定义属性是继承的，所以改一次
+     * 等于让**整个文档**（557 个元素）重算样式——实测滚一趟 1414ms 的主线程
+     * 时间里，光 UpdateLayoutTree 就占 530ms，Paint 才 123ms、Layout 才 50ms。
+     * 卡顿的来源不是画得慢，是每帧把全站的样式重算了一遍。
+     *
+     * 三个变量的读者其实是**各自分开的**（查过，一个都不越界）：
+     *   --p / --wake → 只有第一幕那五个元素
+     *   --mid        → 只有第二幕（导线、鸟、两个站牌）
+     *   --land       → 第二幕的鸟（要淡出）+ 第三幕
+     * 于是写到各自那一幕上，一帧最多脏 83 + 53 个元素，而不是 557 个。
+     * 再加上「值没变就不写」：--mid 在第一幕里恒为 0、--land 在前 80% 恒为 0，
+     * 那两幕在大半程里根本不会被碰。
+     *
+     * 胶片自己的位移**不走自定义属性，直接写行内 transform**。
+     * transform 不继承、不影响布局，写它只脏它自己一个元素——
+     * 而这恰恰是每帧都必然要改的那一个。
+     *
+     * CSS 里 .v2film 那条 `translateY(calc(var(--p, 1) * -182svh))` 要留着：
+     * 行内样式只在脚本跑起来之后才有，而「不跑 JS 就是走完的样子」是这一版的
+     * 默认态，那条规则就是它。
+     */
+    var lp = '', lw = '', lm = '', ll = ''
+
+    /*
+     * 两个数就是 CSS 里那两个：.v2film 的位移（-182svh）和 .sc-a 的高度（90svh）。
+     * 改了那边要一起改这里——这一版的取景位置本来就是「算出来」的，
+     * 三段高度全用 svh 写死正是为了能算（见 CLAUDE.md 落地页那一节）。
+     */
+    var TRAVEL = 182, SC_A = 90
+    /*
+     * 第一幕**整幕被推出取景框上沿**之后的进度。过了这条线再写 --p，
+     * 那 83 个元素只是白重算一遍样式——它们一个像素都不在屏幕上了
+     * （.stage-in 是 overflow: hidden，而第一幕是从上沿离开的，
+     * 所以取景框有多高不影响这个判断）。
+     */
+    var A_GONE = SC_A / TRAVEL
+
     function frame() {
       ticking = false
-      var span = el.offsetHeight - inner.offsetHeight
       if (span <= 0) return
-      var p = clamp01(-el.getBoundingClientRect().top / span)
+      var p = clamp01((window.scrollY - filmTop) / span)
 
-      root.style.setProperty('--p', p.toFixed(4))
-      root.style.setProperty('--wake', clamp01((p - 0.005) / 0.022).toFixed(3))
-      root.style.setProperty('--mid', clamp01((p - 0.10) / 0.70).toFixed(4))
-      root.style.setProperty('--land', clamp01((p - 0.80) / 0.11).toFixed(4))
+      /*
+       * 写成 calc(<数> * -182svh) 而不是先在 JS 里乘好——
+       * 这样浏览器算出来的像素和原来 CSS 里那条 `calc(var(--p) * -182svh)`
+       * **逐位相同**。自己先乘再 toFixed 会有半个像素的舍入差，
+       * 整幕的边缘都会挪一点点，改动前后的截图就对不上了。
+       */
+      var pv = p.toFixed(4)
+      film.style.transform = 'translateY(calc(' + pv + ' * -' + TRAVEL + 'svh))'
+
+      var v = (p < A_GONE ? p : A_GONE).toFixed(4)
+      if (v !== lp) { lp = v; scA.style.setProperty('--p', v) }
+      v = clamp01((p - 0.005) / 0.022).toFixed(3)
+      if (v !== lw) { lw = v; scA.style.setProperty('--wake', v) }
+      v = clamp01((p - 0.10) / 0.70).toFixed(4)
+      if (v !== lm) { lm = v; rail.style.setProperty('--mid', v) }
+      v = clamp01((p - 0.80) / 0.11).toFixed(4)
+      if (v !== ll) {
+        ll = v
+        // 两处都要：第二幕那只鸟靠它淡出，第三幕那截实线靠它生长。
+        // 交接处一个淡出一个淡入，从头到尾只有一只鸟在动
+        rail.style.setProperty('--land', v)
+        scC.style.setProperty('--land', v)
+      }
 
       if (where) {
         var w = ''
@@ -145,7 +231,10 @@
       requestAnimationFrame(frame)
     }
     window.addEventListener('scroll', onScroll, { passive: true })
-    window.addEventListener('resize', onScroll)
+    window.addEventListener('resize', function () { measure(); onScroll() })
+    // 字体回来、图片解码完都会改变高度，量早了就偏——和 landing() 同一个道理
+    addEventListener('load', function () { measure(); frame() })
+    measure()
     frame()
   }
 

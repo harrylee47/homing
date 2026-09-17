@@ -677,3 +677,100 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 3px; 
   font-size: 13px; line-height: 1.7; color: var(--muted); margin: 10px 0 0;
 }
 .warn-line b { color: var(--fg) }
+
+/* ── 引导浮窗：装成 App / 开通推送 ─────────────────────────────
+ *
+ * 压在底部导航栏上面，不插进页面流里：它要在哪一页都看得见，
+ * 而不是只有翻到总览最底下的人才碰得到——这两件事藏在设置页第四屏
+ * 正是它要解决的问题（逻辑见 app.js 的 paintNudge）。
+ *
+ * z-index 夹在导航（10）与 toast（100）之间：它该盖住导航，
+ * 而「已开通」那句提示该盖住它。
+ */
+.nudge {
+  position: fixed; z-index: 20;
+  left: 12px; right: 12px;
+  bottom: calc(52px + env(safe-area-inset-bottom));
+  max-width: 420px; margin: 0 auto;
+  background: var(--card);
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 13px 9px;
+  /* 起始态推到屏幕外（+60px 把投影也一起带出去） */
+  transform: translateY(calc(100% + 60px));
+  transition: transform 0.36s var(--ease);
+}
+.nudge.in { transform: translateY(0); }
+/* 要求减少动画的人：直接就位，不是动得慢一点 */
+@media (prefers-reduced-motion: reduce) {
+  .nudge { transition: none; }
+}
+
+/* style.css 给所有 button 写了 width: 100%（表单按钮都是满宽的），
+   浮窗里的行内按钮必须显式关掉，否则每颗都撑满一行 */
+.nudge button { width: auto; }
+.nudge .err-text { margin-top: 8px; }
+/* 空的时候连那 8px 也不要：它就在脚注上面，平时是一条无缘无故的缝 */
+.nudge .err-text:empty { display: none; }
+
+.nudge-head { font-weight: 800; font-size: 14px; margin-bottom: 9px; }
+
+.nudge-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 0;
+  border-top: var(--bw) dashed color-mix(in srgb, var(--line) 30%, transparent);
+}
+.nudge-row:first-child { border-top: none; padding-top: 0; }
+.nudge-row a { text-decoration: none; }
+
+/* 序号只在两步都缺的时候出现——只缺一步时标个「①」等于在暗示还有个「②」 */
+.nudge-n {
+  flex: none;
+  width: 21px; height: 21px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--cyan); color: var(--on-bright);
+  border: var(--bw) solid var(--line);
+  font-size: 12px; font-weight: 800; font-family: var(--mono);
+}
+
+/*
+ * 两档关闭并排放，都是文字按钮：做成实心按钮的话，
+ * 「今天先不提醒」会和「安装」一样抢眼，而它不该。
+ */
+.nudge-foot {
+  display: flex; gap: 16px; justify-content: flex-end;
+  margin-top: 9px; padding-top: 8px;
+  border-top: var(--bw) dashed color-mix(in srgb, var(--line) 30%, transparent);
+}
+.nudge-foot button {
+  background: none; border: none; box-shadow: none;
+  padding: 3px 0;
+  color: var(--muted); font-size: 12px; font-weight: 700;
+  text-decoration: underline;
+}
+.nudge-foot button:hover:not(:disabled),
+.nudge-foot button:active:not(:disabled) { transform: none; box-shadow: none; color: var(--fg); }
+
+/* 正文与 toast 都给它让位。--nudge-h 由 paintNudge 量出来写上 */
+body.has-nudge #app { padding-bottom: calc(108px + var(--nudge-h, 0px)); }
+body.has-nudge .toast { bottom: calc(96px + var(--nudge-h, 0px)); }
+
+/*
+ * 表单里折起来的「一般不用改」那一项。
+ *
+ * 渠道表单上同时摆着两个地址：一个给 Bark App 扫（公网、要你自己去 App 里加），
+ * 一个给网关自己用（容器内部、已经填好了）。两个都叫「地址」、上下挨着，
+ * 分不清的人会去改那个本来就对的——而改坏了的表现只是「测试不通过」，
+ * 看不出错在哪一步。所以内部那个默认折起来，展开时第一句话先说它是什么。
+ */
+.adv {
+  border: var(--bw) dashed color-mix(in srgb, var(--line) 35%, transparent);
+  border-radius: 8px;
+  padding: 7px 10px 11px;
+  margin-top: 14px;
+}
+.adv > summary { color: var(--muted); }
+.adv[open] > summary { color: var(--fg); margin-bottom: 4px; }
+/* 折起来的那一栏里，第一个 label 上方不再需要 14px 的外边距 */
+.adv > label:first-of-type { margin-top: 4px; }
