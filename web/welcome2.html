@@ -303,46 +303,147 @@
     background: var(--card); box-shadow: var(--shadow);
   }
   .vhop svg { width: 15px; height: 15px; flex: none; display: block; color: var(--fg) }
-  .vhop::before {
-    content: ''; position: absolute; inset: -5px; border-radius: 999px; border: 2px solid var(--cyan);
-    opacity: calc(min((var(--mid, 1) - var(--at)) / .05, (var(--at) + .16 - var(--mid, 1)) / .08));
+
+  /*
+   * 两个节点各有两件事：**经过那一下**的动效，和**办完之后**留下的变化。
+   * 只有前者的话，滑过去之后这一站看起来像什么都没发生；只有后者的话，
+   * 又看不出是「刚刚」发生的。
+   *
+   * 两个值都从 --mid 算，不写 JS：
+   *   --pulse 是一个三角窗（经过前后各 .025），用来做那一下的放大与闪色；
+   *   --done  是 0→1 的斜坡，用来做留下的变化（锁扣上、云上出现对勾）。
+   * 默认值都取「已经办完」，所以不跑 JS 时这两站是完成态，而不是等一个
+   * 永远不来的信号。
+   */
+  .vhop {
+    --pulse: clamp(0, min((var(--mid, 1) - var(--at)) / .025, (var(--at) + .05 - var(--mid, 1)) / .025), 1);
+    --done: clamp(0, calc((var(--mid, 1) - var(--at)) / .03), 1);
+    transform: translate(-50%, -50%) scale(calc(1 + var(--pulse) * .16));
   }
+  /* 涟漪：经过之后往外扩一圈并淡掉。扩与淡是同一个 --done 驱动的，
+     所以它只会发生一次，不会跟着来回滚动反复闪 */
+  .vhop::before {
+    content: ''; position: absolute; border-radius: 999px; border: 2px solid var(--cyan);
+    inset: calc(-4px - var(--done) * 16px);
+    opacity: calc(1.05 - var(--done) * 1.05);
+  }
+  /* 经过那一下整颗胶囊被点亮。颜色没法 calc，所以叠一层青色按 --pulse 淡入淡出 */
+  .vhop::after {
+    content: ''; position: absolute; inset: 0; border-radius: 999px;
+    background: var(--cyan); opacity: var(--pulse);
+  }
+  .vhop > * { position: relative; z-index: 1 }
+  /* 底层与亮起那层交叉淡。两层同时可见的话，两套字叠在一起会发糊 */
+  .vhop .base { display: flex; align-items: center; gap: 7px; opacity: calc(1 - var(--pulse)) }
+  /* 亮起来的那一瞬字要跟着变深色——青是亮色块，压在上面的字一律 --on-bright */
+  .vhop .lit { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+               gap: 7px; color: var(--on-bright); opacity: var(--pulse); z-index: 2; border-radius: 999px }
+
+  /* 锁：经过之前是开的，之后扣上。这是这一站**留下的**那个变化 */
+  .lk-open { opacity: calc(1 - var(--done)) }
+  .lk-shut { position: absolute; left: 0; top: 0; opacity: var(--done) }
+  .vhop .lock-ic { position: relative; width: 15px; height: 15px; flex: none; display: block }
+  .vhop .lock-ic svg { position: absolute; left: 0; top: 0; width: 15px; height: 15px }
+  /* 云那一站办完之后挂一枚对勾 */
+  .cloud-ok {
+    position: absolute; right: -7px; top: -7px; width: 17px; height: 17px; border-radius: 50%;
+    background: var(--mint); border: var(--bw) solid var(--line); color: var(--on-bright);
+    display: grid; place-items: center; z-index: 3;
+    opacity: var(--done); transform: scale(calc(.4 + var(--done) * .6));
+  }
+  .cloud-ok svg { width: 9px; height: 9px }
   .hop-lock  { top: 28%; --at: .28 }
   .hop-cloud { top: 72%; --at: .72 }
 
   /* ── 场景三：边走边看的人 ──────────────────────────────── */
   /* 导线再往下探一截，末端就是包落下来的地方——不接这一截的话，
      镜头一进这一幕，上面那条线就凭空断在屏幕外 */
+  /* 落点是放大镜的圆周。圆心 (275,150)、半径 130，导线在 x=210，
+     两者相交于 y≈37.4，也就是插画高度的 10.4%——鸟正好蹲在圆的边上。
+     这一截必须量**插画自己**而不是 .sc-c：.vsub 在 .sc-c 里居中，
+     它离顶多远随视口高度变（720 高时 124px、820 高时 111px、900 高时 203px），
+     按 .sc-c 的百分比算，换个视口高度鸟就掉到画面外去了。
+     往上那 100vh 是把线接回上一幕：那一段和第二幕的导线同一个 x，叠上去看不出来。
+     z-index 要压过放大镜（2），否则鸟有一半落在圆里，被圆的底色盖掉。 */
   .rail-tail {
-    position: absolute; top: 0; left: 50%; margin-left: -2px; z-index: 2;
-    width: 4px; height: calc(24% * var(--land, 1)); border-radius: 2px; background: var(--cyan);
+    position: absolute; left: 50%; margin-left: -2px; z-index: 4; width: 4px;
+    top: -100vh; height: calc(100vh + 10.4% * var(--land, 1));
+    border-radius: 2px; background: var(--cyan);
   }
-  /* 最后一段的那只鸟：和上面是同一只，交接处一个淡出一个淡入 */
+  /* 最后一段的那只鸟：和上面是同一只，交接处一个淡出一个淡入。
+     .packet 在 --land 到 .14 时淡完，这一只从 .14 才开始出现——
+     两个窗口不重叠，是因为它俩在屏幕上不在同一个位置，
+     同时可见的话就是两只鸟。（上一版重叠了 0…14，改过一次。）
+     这一只落下之后**不再淡出**：它停在放大镜的圆边上，
+     那就是「送到了」这句话本身。 */
   .rail-tail .bird {
     position: absolute; left: 50%; bottom: 0; width: 52px; height: 52px; margin: 0 0 -26px -26px;
-    opacity: calc(min(var(--land, 1) / .04, (1.02 - var(--land, 1)) / .06));
+    opacity: calc((var(--land, 1) - .14) / .05);
   }
-  .walkset { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; width: 100% }
-  .walker { width: clamp(158px, 39vw, 224px); height: auto; flex: none }
-  /* 手机接在抬起来那只手上：卡片的左边缘对着手，再往上提一点对齐手的高度 */
-  .handphone {
-    width: min(220px, 49vw); margin: 0 0 24px -42px; flex: none;
-    opacity: calc((var(--land, 1) - .66) / .22);
-    transform: translateY(calc((1 - var(--land, 1)) * 10px));
+  /* ── 收到的那一眼：人 + 放大镜 ────────────────────────────
+     这一幕前后画了三版，前两版败在同一件事上：想让读者**站到人物的位置上**
+     看那块屏幕。第一版是从侧面看一个人走路、手机贴在他手边；第二版是
+     从他肩后看过去。越肩那一版在构图上其实是对的，但落到 402 宽的手机上，
+     后脑勺占掉右边三分之一，读者认不出那是个人，只看见一团色块。
+
+     这一版换成参考图那个办法：人**正面朝着你**、手里举着手机，
+     屏幕内容另开一个**圆形放大镜**放在旁边。两个好处——人可以画得小而
+     完整（认得出是个人就够了，不必逼真），而验证码拿到了一整块干净的
+     圆形区域，字号给得足，这一幕要传达的东西本来就只有那六个字符。
+
+     四层，坐标系统一是 420×360：
+       ① .vsub-bg  街景，压到很淡，只为了说明「他在外面」
+       ② .vsub-mid 人（头、帽衫、背包带、举着手机的那只手）
+       ③ .vlens    放大镜，里面是活的 HTML
+     放大镜的圆周直接压在他手里那台手机上，所以不需要另画连接线——
+     试过在中间摆两颗小圆（放大镜的老办法），它们只会落在屏幕上像两个白点。 */
+  .vsub {
+    position: relative; align-self: stretch; margin: 0 -16px; aspect-ratio: 420 / 360;
   }
-  .handphone .vdev-bar { gap: 8px }
-  .handphone .vdev-bar img { display: block }
-  .handphone .vdev-bar strong { color: var(--fg); font-size: 12px; letter-spacing: .04em }
-  .handphone .vdev-scr { min-height: 0; padding: 10px }
-  .handphone .vdev-bar { padding: 6px 9px; font-size: 10px }
-  .hp-msg {
-    border: var(--bw) solid var(--line); border-radius: 12px; background: var(--mint);
-    color: var(--on-bright); padding: 8px 10px; font-size: 12px; line-height: 1.5;
+  @media (min-width: 620px) {
+    .vsub { align-self: center; width: 560px; margin: 0 auto }
   }
-  .hp-msg em { font-style: normal; font-weight: 800; letter-spacing: .1em }
-  .hp-from { display: block; font-size: 10px; font-weight: 700; opacity: .7; margin-bottom: 3px }
+  .vsub-bg, .vsub-mid {
+    position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none;
+  }
+  .vsub-bg { z-index: 0 }
+  .vsub-mid { z-index: 1 }
+
+  /* 放大镜：圆心 (275,150)、半径 130，换算成 .vsub 的百分比就是下面这几个数。
+     aspect-ratio: 1 是必须的——.vsub 本身不是方的，写 height: 100% 会压成椭圆。
+     里面的字号挂在 .vlens 自己身上、内部一律用 em：圆有多大随视口变，
+     写死 px 的话手机上塞不下、桌面上又小得可笑。 */
+  .vlens {
+    position: absolute; left: 34.52%; top: 5.56%; width: 61.9%; aspect-ratio: 1; z-index: 2;
+    border-radius: 50%; overflow: hidden; border: var(--bw) solid var(--line);
+    background: var(--card); box-shadow: var(--shadow);
+    display: grid; place-items: center; text-align: center;
+    font-size: clamp(11px, 3.1vw, 15px);
+    opacity: calc((var(--land, 1) - .48) / .3);
+    transform: scale(calc(.9 + min(var(--land, 1), 1) * .1));
+  }
+  .lens-in { width: 76% }
+  .lens-top {
+    margin: 0; display: flex; align-items: center; justify-content: center; gap: .36em;
+    font-size: .74em; font-weight: 800;
+  }
+  .lens-top img { display: block; flex: none; width: 1.5em; height: 1.5em }
+  .lens-src { margin: .22em 0 .9em; font-size: .68em; font-weight: 700; color: var(--muted) }
+  .lens-txt { margin: 0; font-size: .82em; font-weight: 700; line-height: 1.45 }
+  .lens-code {
+    margin: .1em 0 0; font-size: 2.1em; font-weight: 800; letter-spacing: .16em; line-height: 1.15;
+  }
+  .lens-ok {
+    margin: .5em 0 0; font-size: .66em; font-weight: 700; color: var(--muted);
+    display: flex; align-items: center; justify-content: center; gap: .4em;
+  }
+  .lens-ok i {
+    width: 1.25em; height: 1.25em; border-radius: 50%; background: var(--mint);
+    border: 1.5px solid var(--line); display: grid; place-items: center;
+    font-style: normal; font-size: .82em; line-height: 1; color: var(--on-bright); flex: none;
+  }
   .bn-copy {
-    margin-top: 8px; width: auto; font-size: 12px; padding: 7px 12px; border-radius: 999px;
+    margin: .7em 0 0; width: auto; font-size: .78em; padding: .45em 1em; border-radius: 999px;
     background: var(--cyan); color: var(--on-bright); box-shadow: 2px 2px 0 var(--line);
   }
   .bn-copy[data-done] { background: var(--mint) }
@@ -372,9 +473,14 @@
   }
 
   /* ── 常驻：下滑提示 ── */
+  /* 底部压暗带。它不只是为了好看——胶片是**从下往上**滑过取景框的，
+     每一格的图注（.vtag）都必然要穿过下滑提示所在的那一条。74% 的时候
+     图注在提示后面还有四成可见度，两行字叠在一起谁都读不清。
+     渐变在 46% 就到实色，也就是提示条那一带是**不透明**的，
+     穿过去的东西彻底看不见；静止时图注远在这条带子上面，不受影响。 */
   .stage-in::after {
-    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 160px; z-index: 3;
-    background: linear-gradient(to bottom, transparent, var(--bg) 74%); pointer-events: none;
+    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 168px; z-index: 3;
+    background: linear-gradient(to bottom, transparent, var(--bg) 46%); pointer-events: none;
   }
   html:not([data-motion="on"]) .stage-in::after { display: none }
   .stage-cue {
@@ -398,7 +504,7 @@
   html:not([data-motion="on"]) .sc-a { height: auto; padding: 28px 16px 0 }
   html:not([data-motion="on"]) .sc-mid { height: 190px; padding: 18px 16px }
   html:not([data-motion="on"]) .sc-c { height: auto; padding: 24px 16px 8px }
-  html:not([data-motion="on"]) .rail-tail { height: 42px }
+  html:not([data-motion="on"]) .rail-tail { top: 0; height: 42px }
   html:not([data-motion="on"]) .scr-idle { display: none }
   /* 静态连环画：三格各是一个瞬间，所以三只鸟都在 */
   html:not([data-motion="on"]) .vhomi,
@@ -874,14 +980,40 @@
         <div class="rail">
           <i class="rail-done"></i>
           <div class="vhop hop-lock">
-            <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8">
-              <path d="M4.5 7.2V5.3a3.5 3.5 0 0 1 7 0v1.9"/><rect x="2.7" y="7.2" width="10.6" height="6.8" rx="2"/>
-            </svg>加密
+            <span class="base">
+            <span class="lock-ic">
+              <!-- 开着的锁：锁梁歪在一边。鸟经过之前一直是这个样子 -->
+              <svg class="lk-open" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+                   stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <path d="M4.5 7.2V5.3a3.5 3.5 0 0 1 6.6-1.6"/><rect x="2.7" y="7.2" width="10.6" height="6.8" rx="2"/>
+              </svg>
+              <!-- 扣上的锁：经过之后就一直是这个样子。这是这一站**留下的**那个变化 -->
+              <svg class="lk-shut" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+                   stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <path d="M4.5 7.2V5.3a3.5 3.5 0 0 1 7 0v1.9"/><rect x="2.7" y="7.2" width="10.6" height="6.8" rx="2"/>
+              </svg>
+            </span>加密</span>
+            <span class="lit" aria-hidden="true">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="width:15px;height:15px">
+                <path d="M4.5 7.2V5.3a3.5 3.5 0 0 1 7 0v1.9"/><rect x="2.7" y="7.2" width="10.6" height="6.8" rx="2"/>
+              </svg>加密
+            </span>
           </div>
           <div class="vhop hop-cloud">
+            <span class="base">
             <svg viewBox="0 0 18 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
               <path d="M4.7 12.4C2.5 12.4 1 10.8 1 9c0-1.8 1.4-3.3 3.2-3.4C4.6 3.1 6.8 1.3 9.4 1.3c2.6 0 4.7 1.8 5.1 4.3C15.9 6 17 7.3 17 8.8c0 1.9-1.5 3.6-3.7 3.6Z"/>
-            </svg>托管服务器
+            </svg>托管服务器</span>
+            <span class="lit" aria-hidden="true">
+              <svg viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" style="width:15px;height:15px">
+                <path d="M4.7 12.4C2.5 12.4 1 10.8 1 9c0-1.8 1.4-3.3 3.2-3.4C4.6 3.1 6.8 1.3 9.4 1.3c2.6 0 4.7 1.8 5.1 4.3C15.9 6 17 7.3 17 8.8c0 1.9-1.5 3.6-3.7 3.6Z"/>
+              </svg>托管服务器
+            </span>
+            <span class="cloud-ok" aria-hidden="true">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2 6.4 L4.8 9 L10 3.2"/>
+              </svg>
+            </span>
           </div>
           <div class="packet">
             <svg viewBox="0 0 64 64" aria-hidden="true" style="transform:rotate(34deg)">
@@ -900,7 +1032,8 @@
 
       <!-- ③ 边走边看的人：会动的那一端 -->
       <section class="sc sc-c">
-        <i class="rail-tail"><span class="bird"><svg viewBox="0 0 64 64" aria-hidden="true" style="transform:rotate(34deg)">
+        <div class="vsub">
+          <i class="rail-tail"><span class="bird"><svg viewBox="0 0 64 64" aria-hidden="true" style="transform:rotate(34deg)">
               <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
                 <path fill="var(--cyan)" d="M44 26 C49 30 48 39 40 43 C32 47 21 45 17 40 L5 43 L12 32 C15 25 24 20 31 20 C37 20 42 22 44 26 Z"/>
                 <path class="wing" fill="var(--yellow)" d="M17 37 C19 27 28 23 36 29 C31 37 24 41 17 37 Z"/>
@@ -909,150 +1042,127 @@
               </g>
               <circle cx="46" cy="18" r="2.4" fill="var(--line)"/>
             </svg></span></i>
-        <div class="walkset">
-          <svg class="walker" viewBox="0 0 160 250" aria-hidden="true">
-            <path d="M2 232 L158 232" fill="none" stroke="var(--muted)" stroke-width="3"
-                  stroke-linecap="round" stroke-dasharray="3 12"/>
 
-            <!-- 速度线：不画它，这个人就是站着的 -->
-            <g class="wsideprofile-speed" fill="none" stroke="var(--muted)" stroke-width="3.2" stroke-linecap="round">
-              <path fill="none" d="M3 46 L27 46"/>
-              <path fill="none" d="M2 62 L22 62"/>
-              <path fill="none" d="M5 78 L25 78"/>
+          <!-- ① 街景。只是一排楼和一盏路灯，压到几乎看不见——
+               它要说的只有一句「他人在外面」，抢一点戏这一幕就散了。 -->
+          <svg class="vsub-bg" viewBox="0 0 420 360" aria-hidden="true">
+            <g fill="var(--line)" opacity=".085">
+              <rect x="4" y="118" width="62" height="228" rx="4"/>
+              <rect x="78" y="74" width="56" height="272" rx="4"/>
+              <rect x="146" y="140" width="50" height="206" rx="4"/>
+              <rect x="208" y="92" width="64" height="254" rx="4"/>
+              <rect x="284" y="130" width="56" height="216" rx="4"/>
+              <rect x="352" y="66" width="52" height="280" rx="4"/>
             </g>
+            <g fill="var(--line)" opacity=".13">
+              <rect x="14" y="134" width="12" height="14" rx="2"/><rect x="34" y="134" width="12" height="14" rx="2"/>
+              <rect x="14" y="166" width="12" height="14" rx="2"/><rect x="44" y="166" width="12" height="14" rx="2"/>
+              <rect x="88" y="92" width="12" height="14" rx="2"/><rect x="110" y="92" width="12" height="14" rx="2"/>
+              <rect x="88" y="126" width="12" height="14" rx="2"/><rect x="110" y="158" width="12" height="14" rx="2"/>
+              <rect x="362" y="84" width="12" height="14" rx="2"/><rect x="384" y="84" width="12" height="14" rx="2"/>
+              <rect x="362" y="118" width="12" height="14" rx="2"/><rect x="384" y="150" width="12" height="14" rx="2"/>
+              <rect x="294" y="148" width="12" height="14" rx="2"/><rect x="316" y="180" width="12" height="14" rx="2"/>
+            </g>
+            <!-- 路灯与地平线 -->
+            <g fill="none" stroke="var(--line)" opacity=".22" stroke-linecap="round" stroke-linejoin="round">
+              <path stroke-width="4" d="M392 346 V196 C392 184 380 178 372 182"/>
+              <path stroke-width="4" d="M4 346 H416"/>
+            </g>
+            <ellipse cx="368" cy="186" rx="11" ry="8" fill="var(--yellow)" opacity=".5"/>
+          </svg>
 
-            <g stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round">
+          <!-- ② 人。正面朝着你、把手机举到胸前。
+               每个 path 都显式写 fill——不写就是浏览器默认的黑色实心。
+               头发不用 fill="var(--line)"：深色主题下它是薄荷绿，一大片会亮瞎。
+               做法和后脑那一版一样，--card 打底再压一层低透明度的 --line。 -->
+          <svg class="vsub-mid" viewBox="0 0 420 360" aria-hidden="true">
+            <g stroke="var(--line)" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round">
+              <!-- 身体：帽衫。先画，头和手压在它上面 -->
+              <path fill="var(--violet)" d="M4 360 C4 264 30 210 72 188 C80 206 106 206 114 188 C156 210 182 264 182 360 Z"/>
+              <!-- 帽子的领口 + 两根抽绳 -->
+              <path fill="none" stroke-width="3.2" d="M66 182 C76 210 110 210 120 182"/>
+              <path fill="none" stroke-width="3" d="M84 208 V246 M102 208 V242"/>
+              <circle cx="84" cy="250" r="4" fill="var(--card)"/>
+              <circle cx="102" cy="246" r="4" fill="var(--card)"/>
+              <!-- 背包带 -->
+              <path fill="none" stroke-width="15" d="M40 204 C50 264 52 322 50 360"/>
+              <path fill="none" stroke-width="9" stroke="var(--mint)" d="M40 204 C50 264 52 322 50 360"/>
+              <!-- 脖子 -->
+              <path fill="var(--card)" stroke="none" d="M79 152 H107 V190 H79 Z"/>
+              <path fill="none" stroke-width="3.4" d="M79 158 V186 M107 158 V186"/>
+              <!-- 耳朵先画，脸压上去只露外缘 -->
+              <circle cx="49" cy="126" r="9" fill="var(--card)"/>
+              <circle cx="135" cy="126" r="9" fill="var(--card)"/>
+              <!-- 脸 -->
+              <path fill="var(--card)" d="M50 116 C50 86 68 70 92 70 C116 70 134 86 134 116 C134 148 117 168 92 168 C67 168 50 148 50 116 Z"/>
+            </g>
+            <!-- 头发：先照着脸的轮廓铺满上半边，再挖出额前那道刘海 -->
+            <g stroke="var(--line)" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round">
+              <path fill="var(--card)"
+                    d="M46 122 C40 84 62 58 92 58 C123 58 145 82 138 122 C134 112 130 102 126 96
+                       C116 108 88 114 68 104 C60 108 50 112 46 122 Z"/>
+              <path fill="var(--line)" stroke="none" opacity=".24"
+                    d="M46 122 C40 84 62 58 92 58 C123 58 145 82 138 122 C134 112 130 102 126 96
+                       C116 108 88 114 68 104 C60 108 50 112 46 122 Z"/>
+            </g>
+            <!-- 五官。眼睛是两颗豆子加一点高光，笑是一条弧——
+                 再多一笔，缩到手机上就糊成一团 -->
+            <g fill="var(--line)">
+              <ellipse cx="76" cy="128" rx="5.4" ry="6.6"/>
+              <ellipse cx="108" cy="128" rx="5.4" ry="6.6"/>
+            </g>
+            <g fill="var(--card)">
+              <circle cx="78" cy="125" r="1.9"/>
+              <circle cx="110" cy="125" r="1.9"/>
+            </g>
+            <g fill="var(--pink)" opacity=".55">
+              <ellipse cx="63" cy="140" rx="8" ry="5"/>
+              <ellipse cx="121" cy="140" rx="8" ry="5"/>
+            </g>
+            <path fill="none" stroke="var(--line)" stroke-width="3.2" stroke-linecap="round"
+                  d="M84 146 C89 152 95 152 100 146"/>
 
-              <!-- 远端手臂：向后甩。两端都收进躯干轮廓里面，肩口才不会豁一个黑楔子 -->
-              <path fill="var(--violet)" d="
-                M58 77
-                C48 84, 39 90, 35 95.8
-                C31 101, 27 105, 23.1 109.8
-                C20 113.5, 28 120.5, 32.9 118.2
-                C37 112, 41 108, 44.9 104.2
-                C49 99, 57 92, 66 88 Z"/>
-              <path fill="var(--card)" d="
-                M32 111 C35.5 113.5, 36 120, 32.5 123.5
-                C29 127, 22.5 126, 20.5 121.5
-                C18.8 117.5, 21 112.5, 25 111 C27.8 110, 30 109.5, 32 111 Z"/>
-
-              <!-- 后腿：蹬地，脚跟抬起、脚尖点地 -->
-              <path fill="var(--card)" d="
-                M71 134 C67 152, 62 168, 57 182
-                C54 190, 51 196, 48 202
-                C45 208, 36 206, 36 199
-                C38 190, 40 182, 42 174
-                C45 160, 47 146, 48 134 Z"/>
-              <path fill="var(--yellow)" d="
-                M37 196 C32 200, 32 209, 38 212 L52 220
-                C58 223, 64 218, 60 212 L51 197
-                C47 191, 40 192, 37 196 Z"/>
-
-              <!-- 前腿：迈出去，整只脚落地 -->
-              <path fill="var(--card)" d="
-                M81 132 C87 148, 94 166, 100 184
-                C103 192, 105 198, 106 204
-                C108 211, 97 213, 94 206
-                C90 196, 84 183, 78 170
-                C72 157, 68 144, 66 132 Z"/>
-              <path fill="var(--yellow)" d="
-                M93 206 C89 211, 90 219, 96 221 L117 221
-                C124 221, 126 214, 121 210 L109 202
-                C103 198, 96 200, 93 206 Z"/>
-
-              <!-- 脖子：后缘要够宽，否则头发和衣领之间会漏出一条背景 -->
-              <path fill="var(--card)" d="M55 54 L75 54 C74 66, 73.5 73, 73 81 L52 81 C54 72, 55 63, 55 54 Z"/>
-
-              <!-- 外套 -->
-              <path fill="var(--violet)" d="
-                M52 79
-                C54 73, 60 70, 67 70.5
-                C73 71, 77 74, 78.5 79
-                C82 90, 84 103, 82 116
-                C80.5 126, 80 136, 81 146
-                C71 150, 57 150, 49 146
-                C47 133, 46 117, 46.5 101
-                C47 90, 49.5 84, 52 79 Z"/>
-
-              <!-- 挎包 + 背带：说明这人是在外面，不是在家里 -->
-              <path fill="none" stroke-width="4.2" d="M72 71 C68 92, 64 110, 61.5 126"/>
-              <path fill="var(--cyan)" d="
-                M39 124 L61 124 C64 124, 66 126, 66 129
-                L66 148 C66 151, 64 153, 61 153
-                L39 153 C36 153, 34 151, 34 148
-                L34 129 C34 126, 36 124, 39 124 Z"/>
-              <path fill="none" stroke-width="3" d="M34 133 L66 133"/>
-
-              <!-- 近端手臂：插肩缝从衣领下面走到腋下，腕在 (114,108)，手心正好压在 (127,112) -->
-              <path fill="var(--violet)" d="
-                M68 71.5
-                C82 72.5, 93 85, 99 99.5
-                C104 101, 109 101.2, 113.5 101.5
-                C117.5 102, 117.5 114, 112.6 114.5
-                C105 115, 97 114.5, 92 112.5
-                C87.5 111, 85 105.5, 83 98
-                C81 92, 76 80, 68 71.5 Z"/>
-
-              <!-- 手：拇指和四指之间留一道口子，卡片的左边缘正好卡进去 -->
-              <path fill="var(--card)" d="
-                M110 105
-                C110.5 99.5, 116 96.5, 122 98
-                C125.5 99, 127.5 100.5, 129.5 101
-                C134.5 100, 138.5 103.5, 136.5 108
-                C134.5 111.5, 129.5 111.5, 126.5 110
-                C128.5 115, 127.5 121.5, 122.5 123.5
-                C116.5 126, 109.5 123, 107.5 117
-                C106 113, 106.5 107.5, 110 105 Z"/>
-
-              <!-- 头：严格正侧面——额头 → 鼻梁 → 鼻尖 → 人中 → 下巴 → 下颌线是一条连续轮廓，
-                   耳朵和后脑的发块各自成形。微微低头 6°，是在看手里那条通知 -->
-              <g transform="translate(0 2) rotate(6 64 74)">
-                <path fill="var(--card)" d="
-                  M64 19
-                  C73 19, 79 26, 79.5 36
-                  C79.6 39, 78.5 41, 77 42.5
-                  C79.5 45, 83 47.5, 85.5 50
-                  C87 51.5, 86 53.5, 84 53.5
-                  L78.5 53.5
-                  C77.2 53.5, 76.9 54.5, 77.1 56
-                  C78.5 58, 78 62, 74.5 64.5
-                  C67 67, 56 65, 49 58
-                  C43 52, 41 45, 41.5 38
-                  C42 27, 54 19, 64 19 Z"/>
-                <path fill="var(--yellow)" d="
-                  M80 32
-                  C78.5 22, 70 15, 58 15.5
-                  C45 16, 33 26, 34 41
-                  C35 50, 38 60, 42 68
-                  C47 74, 55 77, 61 74
-                  C58 65, 54.5 57, 52 50
-                  C51 43, 51 37, 55 32.5
-                  C61 27, 73.5 27.5, 80 32 Z"/>
-                <path fill="var(--card)" d="
-                  M52 43.5 C57.5 41.5, 61 45.5, 59.5 50
-                  C58 54.5, 54 56, 52 54
-                  C50 52, 50 45, 52 43.5 Z"/>
-                <path fill="none" stroke-width="2.4" d="M54.6 47 C56.4 47.7, 56.3 51, 54.7 51.6"/>
-                <path fill="none" stroke-width="3" d="M67.5 38.8 C71 36.5, 74.5 36.6, 76.6 38.2"/>
-                <circle cx="73.4" cy="44" r="2.7" fill="var(--line)" stroke="none"/>
-                <path fill="none" stroke-width="2.8" d="M70.8 56 C72.9 57.6, 74.8 57.4, 75.8 56.4"/>
-              </g>
+            <!-- 举起手机的那条手臂。粗描边当轮廓、细描边当填色 -->
+            <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <path stroke="var(--line)" stroke-width="32" d="M40 330 C46 300 62 276 84 264"/>
+              <path stroke="var(--violet)" stroke-width="24" d="M40 330 C46 300 62 276 84 264"/>
+            </g>
+            <!-- 手掌 -->
+            <path fill="var(--card)" stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round"
+                  d="M80 238 C66 248 64 278 78 292 C92 306 120 302 128 288 C136 272 130 246 116 238 Z"/>
+            <!-- 手机。机身用 --card + 粗描边，屏幕给一块青色——
+                 直接 fill="var(--line)" 的话深色主题下会是一台薄荷绿的手机 -->
+            <g stroke="var(--line)" stroke-width="3.5" stroke-linejoin="round">
+              <rect x="96" y="186" width="52" height="82" rx="10" fill="var(--card)"/>
+              <rect x="103" y="194" width="38" height="60" rx="5" fill="var(--cyan)" stroke-width="0"/>
+            </g>
+            <g fill="var(--on-bright)" opacity=".75">
+              <rect x="109" y="204" width="26" height="4" rx="2"/>
+              <rect x="109" y="214" width="18" height="4" rx="2"/>
+              <rect x="109" y="230" width="22" height="7" rx="3.5"/>
+            </g>
+            <!-- 压在机身上的那几根手指 -->
+            <g fill="var(--card)" stroke="var(--line)" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+              <rect x="80" y="206" width="36" height="15" rx="7.5"/>
+              <rect x="78" y="226" width="38" height="15" rx="7.5"/>
+              <rect x="80" y="246" width="36" height="14" rx="7"/>
             </g>
           </svg>
-          <div class="vdev handphone">
-            <div class="vdev-bar">
-              <img src="/logo.svg" alt="" width="18" height="18"><strong>Homing</strong><b>刚刚</b>
-            </div>
-            <div class="vdev-scr">
-              <div class="hp-msg">
-                <em class="hp-from">来自家里 · 安卓备用机</em>
-                【招商银行】您的验证码是 <em id="v2_code">1357</em>
-              </div>
-              <button type="button" class="bn-copy" id="v2_copy">复制</button>
+
+          <!-- ③ 放大镜：里面是活的 HTML，字是真的、能选中、复制按钮真能用 -->
+          <div class="vlens">
+            <div class="lens-in">
+              <p class="lens-top"><img src="/logo.svg" alt="" width="17" height="17">Homing 转发 · 刚刚</p>
+              <p class="lens-src">来自「家里 · 安卓备用机」</p>
+              <p class="lens-txt">【招商银行】您的验证码是</p>
+              <p class="lens-code" id="v2_code">1357</p>
+              <p class="lens-ok"><i>✓</i>已送到你手上这台</p>
+              <button type="button" class="bn-copy" id="v2_copy">复制验证码</button>
             </div>
           </div>
+
         </div>
-        <p class="vtag">你 · <span id="v2_where">在路上</span></p>
+        <p class="vtag">你 · <span id="v2_where">地铁上</span></p>
       </section>
 
     </div>

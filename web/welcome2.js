@@ -168,13 +168,16 @@
     var code = document.getElementById('v2_code')
     if (!btn || !code) return
     var back = 0
+    // 原文案从 DOM 里取，不要写死。按钮上写的是「复制验证码」，
+    // 写死成「复制」的话，复制过一次之后那三个字就永远回不来了。
+    var label = btn.textContent
 
     function ok() {
       clearTimeout(back)
       btn.textContent = '已复制'
       btn.setAttribute('data-done', '')
       back = setTimeout(function () {
-        btn.textContent = '复制'
+        btn.textContent = label
         btn.removeAttribute('data-done')
       }, 1800)
     }
@@ -193,7 +196,7 @@
       btn.textContent = '已选中'
       btn.setAttribute('data-done', '')
       back = setTimeout(function () {
-        btn.textContent = '复制'
+        btn.textContent = label
         btn.removeAttribute('data-done')
       }, 1800)
     }
