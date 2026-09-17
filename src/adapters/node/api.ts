@@ -1209,11 +1209,18 @@ route('POST', '/api/invites/self', async ({ user, res, deps, ip }) => {
     valid_days: null,
     expires_at: expiresAt,
     used_at: null, used_by: null, created_at: t,
-    public: true, code_plain: code, self_made: true,
+    /**
+     * **自助码是私有的**：只存哈希、只在生成那一次给出明文，不上「通知」页。
+     *
+     * 「公开」是运营者的一个决定——把一个注册名额挂到谁都能打开的页面上，
+     * 由他承担后果。用户点一下按钮拿到的码，是给他想邀请的那个人的，
+     * 不该替他公开。两件事只是碰巧都产出一个邀请码而已。
+     */
+    public: false, code_plain: null, self_made: true,
   })
   await deps.store.audit({
     user_id: user.id, actor: user.name, action: 'invite.self',
-    detail: '自助生成公开邀请码（24 小时）', ip, created_at: t,
+    detail: '自助生成邀请码（24 小时）', ip, created_at: t,
   })
   const url = deps.baseUrl ? `${deps.baseUrl.replace(/\/$/, '')}/register#${code}` : null
   json(res, 200, { code, url, expires_at: expiresAt })

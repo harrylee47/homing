@@ -1,0 +1,13 @@
+<meta charset="utf-8"><body><pre id="o">…</pre><iframe id="f" src="/_dock_test.html" style="width:402px;height:800px;border:0"></iframe>
+<script>
+f.onload=()=>{const d=f.contentDocument,w=f.contentWindow;
+ const ds=d.querySelector('.deskset'),c=d.querySelector('.ddock-rig .vdev'),a=d.querySelector('.ddock-art'),wr=d.querySelector('.ddock-rig .vdev-wrap');
+ const cb=c.getBoundingClientRect(),ab=a.getBoundingClientRect();
+ o.textContent=JSON.stringify({scene:+ds.getBoundingClientRect().height.toFixed(1),card:[+cb.width.toFixed(1),+cb.height.toFixed(1)],
+  svgH:+ab.height.toFixed(1),overlapPx:+(cb.bottom-ab.top).toFixed(2),
+  overlapUnits:+(((cb.bottom-ab.top)/(ab.width/400))).toFixed(2),
+  hOverflow:d.documentElement.scrollWidth-d.documentElement.clientWidth,
+  scrH:d.querySelector('.vdev-scr').getBoundingClientRect().height,
+  msgBottom:+d.querySelector('.vmsg').getBoundingClientRect().bottom.toFixed(1),
+  scrBottom:+d.querySelector('.vdev-scr').getBoundingClientRect().bottom.toFixed(1)},null,1)}
+</script></body>

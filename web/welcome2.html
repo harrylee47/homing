@@ -162,6 +162,8 @@
   .vhomi {
     position: absolute; right: -4px; top: -40px; width: 50px; height: 50px;
     transform: rotate(calc(var(--wake, 1) * -8deg)); transform-origin: 46% 88%;
+    /* 它在 --mid 起步（p=0.10）之前离开：从那一刻起，飞的那只就是它 */
+    opacity: calc((.106 - var(--p, 1)) / .028);
   }
   .vding {
     position: absolute; right: 44px; top: -40px; font-size: 13px; font-weight: 800; color: var(--cyan);
@@ -201,7 +203,7 @@
   .packet {
     position: absolute; left: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px;
     top: clamp(0%, calc(var(--mid, 1) * 100%), 100%);
-    opacity: calc(min(var(--mid, 1) / .03, (.14 - var(--land, 0)) / .1));
+    opacity: calc(min(var(--mid, 1) / .012, (.14 - var(--land, 0)) / .1));
   }
   .packet .load {
     position: absolute; left: 52px; top: 50%; transform: translateY(-50%);
@@ -292,7 +294,11 @@
   html:not([data-motion="on"]) .sc-a { height: auto; padding: 28px 16px 0 }
   html:not([data-motion="on"]) .sc-mid { height: 190px; padding: 18px 16px }
   html:not([data-motion="on"]) .sc-c { height: auto; padding: 24px 16px 8px }
+  html:not([data-motion="on"]) .rail-tail { height: 42px }
   html:not([data-motion="on"]) .scr-idle { display: none }
+  /* 静态连环画：三格各是一个瞬间，所以三只鸟都在 */
+  html:not([data-motion="on"]) .vhomi,
+  html:not([data-motion="on"]) .packet { opacity: 1 }
   html:not([data-motion="on"]) .stage-cue { display: none }
 
   @media (max-width: 860px) {

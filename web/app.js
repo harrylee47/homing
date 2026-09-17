@@ -4102,8 +4102,10 @@ async function paintSelfInvite() {
   try {
     const g = await api('/invites/self')
     box.innerHTML = `
-      <p class="muted">今天有消息进过这台网关，就可以生成一个<b>公开邀请码</b>。
-      它会出现在 <a href="/notice">通知页</a> 上，有效期固定 ${g.ttl_hours} 小时，每天 ${g.per_day} 个。</p>
+      <p class="muted">今天有消息进过这台网关，就可以生成一个邀请码，发给你想邀请的人。
+      有效期固定 ${g.ttl_hours} 小时，每天 ${g.per_day} 个。</p>
+      <p class="muted"><b>它是你私有的</b>——不会出现在<a href="/notice">通知页</a>上，
+      而且和管理员发的码一样<b>只显示这一次</b>，库里只留哈希。</p>
       ${g.can
         ? '<div class="btnrow"><button id="si_go" class="sm">生成邀请码</button></div>'
         : `<div class="notice">${esc(g.why)}</div>`}
@@ -4116,7 +4118,7 @@ async function paintSelfInvite() {
         $('#si_out').innerHTML = `<div class="card tight" style="margin-top:10px">
           <div class="mono" style="user-select:all;font-size:18px;letter-spacing:3px">${esc(r.code)}</div>
           ${r.url ? `<div class="mono wrap muted" style="font-size:12px;margin-top:6px;user-select:all">${esc(r.url)}</div>` : ''}
-          <div class="muted" style="margin-top:6px">${fmt(r.expires_at)} 前有效，已经贴在通知页上了。</div>
+          <div class="muted" style="margin-top:6px">${fmt(r.expires_at)} 前有效。<b>现在就把它发出去</b>——这串码只显示这一次。</div>
         </div>`
         paintSelfInvite()
       } catch (e) { toast(e.message); b.disabled = false }
