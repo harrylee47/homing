@@ -2777,7 +2777,39 @@ async function channels() {
                <input id="f_icon" class="mono" value="${esc(iconUrl())}" placeholder="留空则不显示图标">
                <div class="muted">和 Bark 一样：去取图的是<b>你的手机</b>，地址要公网可达，且只认 PNG / JPEG。</div>
                <div class="muted"><b>手机上怎么收：</b>应用商店装 ntfy → 点 <b>+</b> 订阅主题 →
-               服务器填上面那个地址、主题填上面那个名字。装完回来点「测试」。</div>`,
+               服务器填上面那个地址、主题填上面那个名字。装完回来点「测试」。</div>
+               <details style="margin-top:10px">
+                 <summary><b>iPhone 上收不到推送？先看这里</b></summary>
+                 <div class="muted" style="margin-top:8px">
+                 iOS 不允许 App 常驻长连接，所以 ntfy 的推送必须走苹果的 APNs，由 ntfy 官方的服务器代发。
+                 这条路和「消息有没有到服务器」是<b>两件独立的事</b>。
+
+                 <p><b>一眼分辨是哪一种故障：</b>打开 ntfy App，如果列表是旧的、
+                 <b>下拉刷新才出现新消息</b>，那就是 APNs 没到你手机——
+                 和正文、图标、优先级、动作按钮统统无关，改那些是白改。</p>
+
+                 <p><b>自建 ntfy 的必答题：</b>自建服务器<b>没有</b>苹果推送证书，
+                 必须在 <span class="mono">server.yml</span> 里写
+                 <span class="mono">upstream-base-url: "https://ntfy.sh"</span> 再重启。
+                 之后你的服务器会把一条「有新消息」的空壳转给 ntfy.sh，由它触发 APNs，
+                 App 醒来再回你的服务器取正文——正文始终不经过 ntfy.sh。
+                 不配这一项，iOS 端一条推送都收不到。</p>
+
+                 <p><b>用公共实例还是收不到：</b>订阅是 App 在服务端登记的，登记失败就再也不会补。
+                 按顺序试：① App 里<b>取消订阅这个主题、再重新订阅</b>；② 强制退出 App 再打开；
+                 ③ 还不行就卸载重装 App 后重新订阅。</p>
+
+                 <p><b>确认不是手机自己拦掉的：</b>设置 → 通知 → ntfy，
+                 「横幅样式」不能是<b>无</b>，「锁定屏幕」「通知中心」都要勾上；
+                 再看「定时推送摘要」里有没有把 ntfy 收进去；
+                 最后确认<b>专注模式</b>（勿扰／睡眠）没把它滤掉。</p>
+
+                 <p><b>但说到底：iPhone 上验证码该用 Bark。</b>ntfy 是为了补安卓才加的——
+                 它那个「复制验证码」按钮官方只保证安卓 App 与网页版有，iOS 上本来就没有。
+                 而 Bark 是这台网关自己托管的，没有中间人、没有封禁风险，
+                 通知栏里长按即复制。两个都留着也行，iPhone 主力走 Bark。</p>
+                 </div>
+               </details>`,
         collect: () => ({
           server: $('#f_server').value.trim() || 'https://ntfy.sh',
           topic: $('#f_topic').value.trim(),
