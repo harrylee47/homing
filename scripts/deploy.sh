@@ -23,6 +23,7 @@ node scripts/check-core-purity.mjs
 # 改了源忘了改安卓那几份，表现是图标悄悄变成两个样子——桌面上一个、
 # 通知栏一个，而谁都不会去比对。
 node scripts/check-logo-sync.mjs
+node scripts/check-rich-text.mjs
 pnpm exec vitest run --reporter=dot 2>&1 | tail -3
 
 echo "── 同步 ──"

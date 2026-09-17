@@ -402,6 +402,47 @@ textarea { min-height: 96px; resize: vertical; }
  * 窄到放不下时（`auto-fit` + 150px 下限）自动堆成一栏——两个日期框挤成半屏宽时
  * 本来就点不准。
  */
+/*
+ * 正文里被解析出来的东西（见 app.js 的 richText）。
+ *
+ * 两者都要**一眼看出可以点**，但不能喧宾夺主——正文本身才是主角。
+ * 所以用下划线和细边框，不用色块：一条短信里可能有两三个码，
+ * 做成色块整段会花得读不下去。
+ */
+.rt-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--cyan);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.rt-link:hover { text-decoration-color: var(--fg); }
+
+/* 验证码做成可点的小片。button 而不是 a：它不导航，只复制 */
+.rt-code {
+  font: inherit;
+  font-family: var(--mono);
+  width: auto;
+  display: inline;
+  padding: 1px 5px;
+  margin: 0 1px;
+  border: 2px solid var(--line);
+  border-radius: 6px;
+  background: var(--cyan);
+  color: var(--on-bright);
+  cursor: pointer;
+  box-shadow: none;
+  /*
+   * 复制失败时的退路是「把它选中，让人自己按一下复制」，
+   * 而 button 默认是不可选中的——不写这一行，那条退路就是空的
+   * （提示说「已选中」，屏幕上却什么都没选中）。
+   */
+  user-select: all;
+  -webkit-user-select: all;
+}
+.rt-code:active { transform: none; box-shadow: none; opacity: .7; }
+
 .daterange { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .daterange > div { min-width: 0; }
 input[type="date"] { min-width: 0; max-width: 100%; }

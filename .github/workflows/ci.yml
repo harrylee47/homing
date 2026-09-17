@@ -22,6 +22,8 @@ jobs:
       - run: node scripts/check-core-purity.mjs
       # 同一只鸟有四份手工副本，改了源忘了改安卓那几份是静默的
       - run: node scripts/check-logo-sync.mjs
+      # 正文解析：验证码关键词两边一致 + 链接解析不被短信正文骗到
+      - run: node scripts/check-rich-text.mjs
       - run: pnpm exec vitest run
 
   agent:

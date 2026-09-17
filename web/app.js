@@ -590,7 +590,14 @@ async function route(restore = false) {
   return route()
 }
 
-const render = (html) => { app.innerHTML = html }
+/**
+ * 画一页。
+ *
+ * `paintRich` 挂在这里而不是各个调用点上：正文解析要覆盖的是「凡是标了 `.rt`
+ * 的地方」，而这个项目反复吃过的亏就是「新加了一处，忘了在那里也调一次」。
+ * 挂在唯一的渲染入口上，就不存在忘记这回事。
+ */
+const render = (html) => { app.innerHTML = html; paintRich(app) }
 const fail = (e) => render(`<div class="card"><div class="err-text">${esc(e.message)}</div></div>`)
 
 // ── 首次配置向导（计划 §12.1①）──────────────────────────────
@@ -1559,7 +1566,7 @@ async function eventDetail(id) {
         ${e.sim ? `<span class="badge plain">${esc(e.sim)}</span>` : ''}
       </div>
       <div class="card">
-        <div class="wrap" style="font-size:16px">${esc(e.content)}</div>
+        <div class="wrap rt" style="font-size:16px">${esc(e.content)}</div>
       </div>
       <div class="card tight">
         <div class="row"><span class="muted">发生时间</span><span class="mono">${new Date(e.occurred_at).toLocaleString('zh-CN', { hour12: false })}</span></div>
@@ -1765,7 +1772,7 @@ async function thread(key) {
         failed && x.error ? esc(x.error) : '',
       ].filter(Boolean).join(' · ')
       return `${sep}<div class="bub ${x.direction === 'out' ? 'out' : 'in'}${failed ? ' fail' : ''}"
-        data-id="${esc(x.id)}" data-src="${esc(x.source)}">${esc(x.text)}<span class="stamp">${meta}</span></div>`
+        data-id="${esc(x.id)}" data-src="${esc(x.source)}"><span class="rt">${esc(x.text)}</span><span class="stamp">${meta}</span></div>`
     }).join('')
 
     render(`
@@ -4916,6 +4923,191 @@ function bindPager(id, offset, limit, go) {
  * 区分大小写的随机码是整个流程里最容易出错的一步（配对码那边同理）。
  * 回落到选中：`navigator.clipboard` 要安全上下文，http 的自建部署上没有。
  */
+/**
+ * 把一段**别人发来的**正文渲染成可交互的内容：链接可点、验证码可复制。
+ *
+ * ── 为什么返回 DocumentFragment 而不是 HTML 字符串 ──────────────
+ *
+ * 这段文字是短信正文，**发信人完全可控**。拼 HTML 就是一条从任意陌生号码
+ * 直通这个控制台的注入路径，而这个控制台里是你全部的银行验证码——
+ * 和 CLAUDE.md 里「公告正文绝不能当 HTML 用」是同一条红线，只是这次的
+ * 作者不是管理员而是随便谁。全程 createElement + textContent。
+ *
+ * 顺序也有讲究：**先认链接，再在剩下的片段里认验证码**。反过来的话，
+ * 短链里的数字会被当成验证码切开，链接就废了。
+ */
+function richText(text) {
+  const frag = document.createDocumentFragment()
+  const src = String(text ?? '')
+  let at = 0
+
+  const plain = (t) => { if (t) frag.appendChild(document.createTextNode(t)) }
+
+  for (const seg of splitLinks(src)) {
+    if (seg.href) {
+      const a = document.createElement('a')
+      a.className = 'rt-link'
+      a.href = seg.href
+      // 新标签页打开，并且切断 window.opener——短信里的链接默认就该当成不可信的
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer nofollow'
+      a.textContent = seg.text
+      frag.appendChild(a)
+    } else {
+      // 非链接的片段里找验证码
+      let i = 0
+      for (const c of findCodes(seg.text)) {
+        plain(seg.text.slice(i, c.start))
+        const b = document.createElement('button')
+        b.type = 'button'
+        b.className = 'rt-code'
+        b.textContent = seg.text.slice(c.start, c.end)
+        b.title = '点一下复制'
+        frag.appendChild(b)
+        i = c.end
+      }
+      plain(seg.text.slice(i))
+    }
+    at = seg.end
+  }
+  plain(src.slice(at))
+  return frag
+}
+
+/**
+ * 按 http(s) 链接把正文切开。
+ *
+ * **只认带协议头的**。`t.cn/abc` 这种没协议的也很常见，但把它认成链接意味着
+ * 要猜「哪一段像域名」，而猜错的代价是把正文切碎；更要紧的是没有协议头就没法
+ * 断言它是 http，而我们绝不能把 `javascript:` 这类东西放进 href。
+ *
+ * 尾部标点要吐回去：中文短信里链接后面常跟着「。」「，」「）」，
+ * 连着进 href 会让链接 404，而人根本看不出多了个字。
+ */
+function splitLinks(s) {
+  const out = []
+  // **字符类要用白名单，不能用「排除空白」**。中文短信里链接后面紧跟着
+  // 「。」「，」「）」是常态，用排除法的话它们会被吞进 href（而人根本看不出
+  // 多了个字，只看到链接 404）。这里只收 RFC 3986 允许出现在 URL 里的字符。
+  const re = /https?:\/\/[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+/gi
+  let m
+  while ((m = re.exec(s)) !== null) {
+    let raw = m[0]
+    const trimmed = raw.replace(/[.,;:!?)\]}>，。；：！？、）】」』]+$/u, '')
+    if (trimmed) raw = trimmed
+    let href = null
+    try {
+      const u = new URL(raw)
+      // 协议白名单。`new URL` 认得 javascript: / data:，正则也可能被绕，
+      // 所以最后这一道必须按解析结果判断，而不是按原文长什么样
+      if (u.protocol === 'http:' || u.protocol === 'https:') href = u.href
+    } catch { /* 解析不了就当普通文字 */ }
+    if (m.index > (out.length ? out[out.length - 1].end : 0)) {
+      out.push({ text: s.slice(out.length ? out[out.length - 1].end : 0, m.index), end: m.index })
+    }
+    out.push({ text: raw, href, start: m.index, end: m.index + raw.length })
+    re.lastIndex = m.index + raw.length
+  }
+  if (!out.length) return [{ text: s, end: s.length }]
+  return out
+}
+
+/**
+ * 验证码关键词。**必须和 src/core/rules.ts 的 CODE_KEYWORDS 保持一致**——
+ * 不一致的表现是「Bark 通知标题里高亮的码，和网页上高亮的不是同一个」，
+ * 而人会以为其中一处是错的。`core/__tests__/rules.test.ts` 里有一条用例守着这个。
+ */
+const CODE_KEYWORDS = [
+  '验证码', '校验码', '动态码', '动态密码', '识别码', '確認コード', '認証番号',
+  'code', 'otp', 'pin', 'password', 'passcode',
+]
+
+/**
+ * 找出正文里**所有**长得像验证码的数字段，返回 [{start, end}]。
+ *
+ * 判据抄的是 core/rules.ts 的 extractCode：只认关键词邻近的 4–8 位数字，
+ * 且要求数字边界——否则 13 位的订单号会被截成 8 位，而界面上高亮一个
+ * 错的验证码比不高亮更糟。差别只有一处：那边只要第一个（要往通知标题里放一个），
+ * 这里要全部（一条短信里可能有两个码，都该能点）。
+ */
+function findCodes(s) {
+  const lower = s.toLowerCase()
+  const hits = []
+  const isWord = (ch) => !!ch && /[a-z0-9]/.test(ch)
+
+  for (const kw of CODE_KEYWORDS) {
+    const needle = kw.toLowerCase()
+    const ascii = /^[a-z]+$/.test(needle)
+    let idx = lower.indexOf(needle)
+    while (idx !== -1) {
+      // 纯字母的关键词要求词边界：「passcode」里不该匹配出「code」
+      const bounded = !ascii
+        || (!isWord(lower[idx - 1]) && !isWord(lower[idx + needle.length]))
+      if (bounded) {
+        const from = idx + needle.length
+        const win = s.slice(from, from + 30)
+        const m = win.match(/(?<!\d)\d{4,8}(?!\d)/)
+        if (m) hits.push({ start: from + m.index, end: from + m.index + m[0].length })
+        else {
+          // 少数模板把数字放在关键词前面，如「123456 是您的验证码」
+          const bs = Math.max(0, idx - 20)
+          const before = s.slice(bs, idx)
+          const mb = before.match(/(?<!\d)\d{4,8}(?!\d)(?!.*(?<!\d)\d{4,8}(?!\d))/)
+          if (mb) hits.push({ start: bs + mb.index, end: bs + mb.index + mb[0].length })
+        }
+      }
+      idx = lower.indexOf(needle, idx + 1)
+    }
+  }
+  // 去重并按位置排序；重叠的只留先出现的那个
+  hits.sort((a, b) => a.start - b.start || b.end - a.end)
+  const out = []
+  for (const h of hits) if (!out.length || h.start >= out[out.length - 1].end) out.push(h)
+  return out
+}
+
+/** 复制到剪贴板，不支持时退回「把它选中」——至少人能自己按一下复制。 */
+async function copyToClipboard(text, node) {
+  try {
+    await navigator.clipboard.writeText(text)
+    toast('已复制')
+  } catch {
+    if (node) {
+      const r = document.createRange()
+      r.selectNodeContents(node)
+      const sel = getSelection()
+      sel.removeAllRanges()
+      sel.addRange(r)
+    }
+    toast('复制失败，已选中，请手动复制')
+  }
+}
+
+/**
+ * 把页面上标了 `.rt` 的那些元素的正文渲染成可交互内容。
+ *
+ * 读回 `textContent` 再重建，所以调用方照旧用 `esc()` 把正文放进 HTML——
+ * 那一步已经把注入挡住了，这里拿到的是干干净净的原文。
+ */
+function paintRich(root = document) {
+  for (const el of root.querySelectorAll('.rt')) {
+    if (el.dataset.rt) continue
+    el.dataset.rt = '1'
+    el.replaceChildren(richText(el.textContent))
+  }
+  for (const b of root.querySelectorAll('.rt-code')) {
+    b.onclick = (e) => {
+      // 气泡整块是可点的（点进详情页），码和链接不能连带触发它
+      e.stopPropagation()
+      e.preventDefault()
+      copyToClipboard(b.textContent, b)
+    }
+  }
+  for (const a of root.querySelectorAll('.rt-link')) {
+    a.onclick = (e) => { e.stopPropagation() }
+  }
+}
+
 function copyRow(label, text, opts = {}) {
   if (!text) return ''
   const id = `cp_${Math.random().toString(36).slice(2, 9)}`
