@@ -695,6 +695,12 @@ export class SqliteStore implements Store {
 
   // ── 设置与会话 ────────────────────────────────────────
 
+  async listUserSettings(userId: string): Promise<Record<string, string>> {
+    const rows = this.db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?')
+      .all(userId) as unknown as { key: string; value: string }[]
+    return Object.fromEntries(rows.map((r) => [r.key, r.value]))
+  }
+
   async getUserSetting(userId: string, key: string): Promise<string | null> {
     const row = this.db.prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?')
       .get(userId, key) as { value: string } | undefined

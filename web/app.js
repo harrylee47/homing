@@ -3256,6 +3256,110 @@ async function paintUsers() {
  *
  * 订阅本身是一条渠道，所以规则、测试按钮、按用户隔离全都直接复用。
  */
+/**
+ * 备份。
+ *
+ * 界面上这两个按钮**不能画得一样重**：
+ * 配置 JSON 是明文的，不需要任何钥匙就能读，里面是规则、号码、任务正文；
+ * 消息导出更甚，那是全部短信正文。而数据库文件加上 GW_DEK 才是真正的
+ * 「整机备份」，那条路是运维动作，不在浏览器里做。
+ */
+function paintBackup() {
+  const box = $('#backup')
+  if (!box) return
+  box.innerHTML = `
+    <p class="muted" style="margin:0 0 10px">导出规则、计划任务、渠道设置。
+    <b>渠道密钥不在里面</b>（Bot Token、Bark Key、ntfy 主题、Webhook 地址），
+    恢复后要重新填一次。</p>
+    <div class="btnrow">
+      <button class="sm" id="bk_export">导出配置</button>
+      <button class="ghost sm" id="bk_import">从文件恢复</button>
+    </div>
+    <div class="notice" style="margin-top:10px">导出的是<b>明文文件</b>：没有密钥，
+    但规则、号码、任务正文都能直接读。别放进会自动同步的目录。</div>
+
+    <label style="margin-top:14px">导出消息</label>
+    <div class="muted">全部短信、通话、通知的正文，NDJSON 一行一条。
+    这个文件<b>是你全部短信的明文</b>。</div>
+    <div class="btnrow" style="margin-top:8px">
+      <button class="ghost sm" id="bk_sms">短信</button>
+      <button class="ghost sm" id="bk_call">通话</button>
+      <button class="ghost sm" id="bk_all">全部</button>
+    </div>
+    <div class="muted" style="margin-top:14px;font-size:12px">
+      <b>真正的整机备份</b>是服务器上的 <span class="mono">data/</span> 目录加上
+      <span class="mono">GW_DEK</span>，两者<b>要分开存</b>——放在一起等于没加密。
+      那是运维动作，控制台里做不了，也不该做。</div>
+    <div class="err-text" id="bk_err"></div>
+    <div class="muted" id="bk_out" style="margin-top:8px"></div>`
+
+  const save = (blob, name) => {
+    // 鉴权走 Bearer 不是 Cookie，所以 <a href> 直接下载会 404，只能 fetch 成 Blob。
+    // 也别用 window.open(blobUrl)——那是导航，各浏览器行为不一致
+    const u = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = u
+    a.download = name
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(u), 1000)
+  }
+  const stamp = () => new Date().toISOString().slice(0, 10)
+
+  $('#bk_export').onclick = async () => {
+    $('#bk_err').textContent = ''
+    try {
+      const r = await api('/backup/config')
+      save(new Blob([JSON.stringify(r, null, 2)], { type: 'application/json' }), `homing-config-${stamp()}.json`)
+      const missing = r.channels.flatMap((c) => c.missing)
+      $('#bk_out').textContent = `已导出：规则 ${r.rules.length}、任务 ${r.tasks.length}、渠道 ${r.channels.length}`
+        + (missing.length ? `。渠道密钥没有导出，恢复后要重填。` : '')
+    } catch (e) { $('#bk_err').textContent = e.message }
+  }
+
+  $('#bk_import').onclick = () => {
+    const f = document.createElement('input')
+    f.type = 'file'
+    f.accept = 'application/json,.json'
+    f.onchange = async () => {
+      const file = f.files && f.files[0]
+      if (!file) return
+      $('#bk_err').textContent = ''
+      $('#bk_out').textContent = '恢复中…'
+      try {
+        const r = await api('/backup/config', { method: 'POST', body: JSON.parse(await file.text()) })
+        $('#bk_out').innerHTML = `已恢复：规则 +${r.rules}、任务 +${r.tasks}、渠道 +${r.channels}、设置 +${r.settings}`
+          + (r.skipped ? `，同名的跳过 ${r.skipped} 条` : '')
+          + (r.failed.length ? `<br><span class="badge err">${r.failed.length} 条没导进来</span> ${esc(r.failed.join('、'))}` : '')
+          + '<br>恢复出来的<b>渠道和任务都是停用的</b>：渠道缺密钥，任务缺设备，'
+          + '填好之后再自己打开。'
+      } catch (e) {
+        $('#bk_out').textContent = ''
+        $('#bk_err').textContent = e.message
+      }
+    }
+    f.click()
+  }
+
+  for (const [id, kind, label] of [['#bk_sms', 'sms', '短信'], ['#bk_call', 'call', '通话'], ['#bk_all', '', '全部']]) {
+    $(id).onclick = async () => {
+      const b = $(id)
+      b.disabled = true
+      $('#bk_err').textContent = ''
+      $('#bk_out').textContent = '导出中，消息多的话要等一会儿…'
+      try {
+        const r = await fetch(`/api/backup/events${kind ? `?kind=${kind}` : ''}`, {
+          headers: { authorization: `Bearer ${token}` },
+        })
+        if (!r.ok) throw new Error(`导出失败（${r.status}）`)
+        const blob = await r.blob()
+        save(blob, `homing-${kind || 'all'}-${stamp()}.ndjson`)
+        $('#bk_out').textContent = `已导出${label}，${(blob.size / 1024).toFixed(0)} KB`
+      } catch (e) { $('#bk_err').textContent = e.message }
+      b.disabled = false
+    }
+  }
+}
+
 async function paintWebPush() {
   const box = $('#webpush')
   if (!box) return
@@ -3310,6 +3414,7 @@ async function paintWebPush() {
       $('#wp_off').onclick = async () => {
         try { await sub.unsubscribe() } catch { /* 已经没了也算成功 */ }
         void paintWebPush()
+  paintBackup()
       }
       return
     }
@@ -3331,6 +3436,7 @@ async function paintWebPush() {
       try { await sub.unsubscribe() } catch { /* 已经没了也算成功 */ }
       toast('已退订')
       void paintWebPush()
+  paintBackup()
     }
     return
   }
@@ -3368,6 +3474,7 @@ async function paintWebPush() {
       })
       toast('已订阅，去渠道页点一下测试')
       void paintWebPush()
+  paintBackup()
     } catch (e) {
       $('#wp_err').textContent = e.message
       btn.disabled = false
@@ -3758,6 +3865,9 @@ async function settings() {
     <div id="battery"></div>
     <div id="smscmd"></div>
 
+    <h2>备份</h2>
+    <div class="card" id="backup"></div>
+
     <h2>浏览器通知</h2>
     <div class="card" id="webpush"></div>
 
@@ -3801,6 +3911,7 @@ async function settings() {
   void paintTotp()
   paintA2HS()
   void paintWebPush()
+  paintBackup()
 
   if (me?.role === 'admin') {
     void paintUsers()

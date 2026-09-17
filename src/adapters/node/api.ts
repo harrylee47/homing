@@ -15,6 +15,11 @@ import {
 } from '../../core/auth.js'
 import { fromHex, hashToken, timingSafeEqual, toHex } from '../../core/crypto.js'
 import { generateVapidKeys, type VapidKeys } from '../../core/webpush.js'
+import {
+  BACKUP_NOTICE, BACKUP_VERSION, EXPORTABLE_USER_SETTINGS,
+  redactChannelConfig, redactUserSetting, validateBackup, type BackupFile,
+} from '../../core/backup.js'
+import { once } from 'node:events'
 import { WebPushConfig } from '../../core/providers/webpush.js'
 import type { Cipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
@@ -1741,6 +1746,207 @@ route('POST', '/api/channels/:id/test', async ({ user, res, params, deps }) => {
   })
 })
 
+// ── 备份 ────────────────────────────────────────────────────
+
+/**
+ * 导出配置。
+ *
+ * 只导「重建时需要、且丢了会心疼」的东西：规则、任务、渠道的壳、
+ * 几项设置。**不导消息**（见下面的 /api/backup/events），
+ * **不导设备**（一台设备是一次配对出来的长期凭证，文件里恢复不出来，
+ * 只能重新扫码），**不导密钥**。
+ */
+route('GET', '/api/backup/config', async ({ user, res, deps }) => {
+  const [rules, tasks, channels, settings] = await Promise.all([
+    deps.store.listRules(user.id),
+    deps.store.listTasks(user.id),
+    deps.store.listChannels(user.id),
+    deps.store.listUserSettings(user.id),
+  ])
+
+  const out: BackupFile = {
+    version: BACKUP_VERSION,
+    exported_at: now(),
+    notice: BACKUP_NOTICE,
+    rules: rules.map((r) => ({
+      name: r.name, priority: r.priority, enabled: r.enabled,
+      match: JSON.parse(r.match_json) as unknown,
+      action: JSON.parse(r.action_json) as unknown,
+    })),
+    tasks: await Promise.all(tasks.map(async (t) => ({
+      name: t.name, enabled: t.enabled, to: t.to_number,
+      text: await deps.cipher.decrypt(t.content_enc).catch(() => ''),
+      sim_slot: t.sim_slot,
+      schedule: JSON.parse(t.schedule_json) as unknown,
+    }))),
+    channels: await Promise.all(channels.map(async (c) => {
+      const raw = JSON.parse(await deps.cipher.decrypt(c.config_enc)) as Record<string, unknown>
+      const { config, removed } = redactChannelConfig(c.type, raw)
+      return { type: c.type, name: c.name, enabled: c.enabled, config, missing: removed }
+    })),
+    settings: Object.fromEntries(
+      Object.entries(settings)
+        .filter(([k]) => EXPORTABLE_USER_SETTINGS.includes(k))
+        .map(([k, v]) => [k, redactUserSetting(k, v)])
+        .filter(([, v]) => v !== ''),
+    ),
+  }
+
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'backup.export',
+    detail: `规则 ${out.rules.length} 任务 ${out.tasks.length} 渠道 ${out.channels.length}`,
+    ip: null, created_at: now(),
+  })
+  json(res, 200, out)
+})
+
+/**
+ * 导入配置。
+ *
+ * **只增不改**：按名字判断，已经存在的原样跳过。合并策略越聪明，
+ * 出错时越难解释——而这是一个「我以为恢复好了」代价很高的场景。
+ * 导完如实回报每一类各加了几条、跳过了几条。
+ *
+ * 渠道只恢复出一个壳（密钥不在文件里），而且**一律建成停用**：
+ * 一条配置不全的渠道被规则选中，表现是推送静默失败。
+ */
+route('POST', '/api/backup/config', async ({ user, res, body, deps, ip }) => {
+  const v = validateBackup(body)
+  if (!v.ok) return json(res, 400, { error: v.error })
+  const f = v.file
+  const t = now()
+
+  const [haveRules, haveTasks, haveChannels] = await Promise.all([
+    deps.store.listRules(user.id), deps.store.listTasks(user.id), deps.store.listChannels(user.id),
+  ])
+  const nameOf = (xs: { name: string }[]) => new Set(xs.map((x) => x.name))
+  const rn = nameOf(haveRules); const tn = nameOf(haveTasks); const cn = nameOf(haveChannels)
+
+  const stat = { rules: 0, tasks: 0, channels: 0, settings: 0, skipped: 0, failed: [] as string[] }
+
+  for (const r of f.rules) {
+    if (rn.has(r.name)) { stat.skipped++; continue }
+    const m = RuleMatch.safeParse(r.match); const a = RuleAction.safeParse(r.action)
+    // 一条坏规则不该让整份文件导不进来，但要说出是哪一条
+    if (!m.success || !a.success) { stat.failed.push(`规则「${r.name}」`); continue }
+    await deps.store.upsertRule({
+      id: newId('rule'), user_id: user.id, name: r.name,
+      priority: Number(r.priority) || 100, enabled: !!r.enabled,
+      match_json: JSON.stringify(m.data), action_json: JSON.stringify(a.data), created_at: t,
+    })
+    stat.rules++
+  }
+
+  for (const k of f.tasks) {
+    if (tn.has(k.name)) { stat.skipped++; continue }
+    const sc = Schedule.safeParse(k.schedule)
+    if (!sc.success) { stat.failed.push(`任务「${k.name}」`); continue }
+    await deps.store.upsertTask({
+      id: newId('task'), user_id: user.id, name: k.name,
+      // 任务绑定的设备恢复不出来（设备要重新配对），**一律建成停用**并留空设备，
+      // 否则一个指向不存在设备的保号任务会永远静默跳过
+      enabled: false, device_id: '', to_number: String(k.to ?? ''),
+      content_enc: await deps.cipher.encrypt(String(k.text ?? '')),
+      sim_slot: k.sim_slot ?? null,
+      schedule_json: JSON.stringify(sc.data),
+      last_run_at: null, last_status: null, fail_count: 0, created_at: t,
+    })
+    stat.tasks++
+  }
+
+  for (const c of f.channels) {
+    if (cn.has(c.name)) { stat.skipped++; continue }
+    if (!PROVIDERS[c.type]) { stat.failed.push(`渠道「${c.name}」类型未知`); continue }
+    await deps.store.upsertChannel({
+      id: newId('ch'), user_id: user.id, type: c.type, name: c.name,
+      config_enc: await deps.cipher.encrypt(JSON.stringify(c.config ?? {})),
+      // 密钥不在备份文件里，所以这是个配置不全的壳。建成停用的，
+      // 免得它被规则选中之后静默发不出去
+      enabled: false, created_at: t,
+    })
+    stat.channels++
+  }
+
+  for (const [k, val] of Object.entries(f.settings)) {
+    if (!EXPORTABLE_USER_SETTINGS.includes(k)) continue
+    await deps.store.setUserSetting(user.id, k, val)
+    stat.settings++
+  }
+
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'backup.import',
+    detail: `规则 +${stat.rules} 任务 +${stat.tasks} 渠道 +${stat.channels} 跳过 ${stat.skipped}`,
+    ip, created_at: t,
+  })
+  json(res, 200, stat)
+})
+
+/**
+ * 导出消息，NDJSON 流式。
+ *
+ * **绝不能把全部事件 stringify 成一个数组**：十几万条解密后的正文是
+ * 几十 MB 明文外加一次字符串复制。分批取、逐条解、逐行写，内存恒定。
+ *
+ * 翻页用「时间游标」而不是 OFFSET：补传会往中间插入 occurred_at 很老的事件，
+ * OFFSET 窗口会因此错位，漏掉或重复。
+ */
+route('GET', '/api/backup/events', async ({ user, res, url, deps }) => {
+  const p = url.searchParams
+  const kindParam = p.get('kind')
+  const kind: 'sms' | 'call' | 'notification' | undefined =
+    kindParam === 'sms' || kindParam === 'call' || kindParam === 'notification' ? kindParam : undefined
+  const since = p.get('since') ? Number(p.get('since')) : undefined
+  let until = p.get('until') ? Number(p.get('until')) : now()
+
+  res.writeHead(200, {
+    'content-type': 'application/x-ndjson; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  })
+
+  const seen = new Set<string>()
+  let total = 0
+  for (;;) {
+    const rows = await deps.store.listEvents({
+      user_id: user.id, limit: 500, offset: 0,
+      ...(kind ? { kind } : {}), ...(since !== undefined ? { since } : {}), until,
+    })
+    if (rows.length === 0) break
+
+    let wrote = 0
+    for (const e of rows) {
+      // 同一毫秒可能有多条（补传时不罕见），游标只能退到毫秒，
+      // 所以要记住这一毫秒里已经输出过哪些 id
+      if (seen.has(e.id)) continue
+      seen.add(e.id)
+      const line = JSON.stringify({
+        id: e.id, kind: e.kind, direction: e.direction, sim_slot: e.sim_slot,
+        from: await deps.cipher.decrypt(e.sender_enc).catch(() => ''),
+        content: await deps.cipher.decrypt(e.content_enc).catch(() => ''),
+        occurred_at: e.occurred_at, received_at: e.received_at,
+      })
+      if (!res.write(`${line}\n`)) await once(res, 'drain')
+      wrote++
+      total++
+    }
+
+    const last = rows[rows.length - 1]!
+    // 这一批全是已经输出过的，说明卡在同一毫秒上了，再取也是这些
+    if (wrote === 0 && last.occurred_at === until) break
+    until = last.occurred_at
+    // seen 只需要覆盖游标那一毫秒，不然十几万条会把内存吃光
+    if (wrote > 0) {
+      for (const id of [...seen]) {
+        const still = rows.find((r) => r.id === id && r.occurred_at === until)
+        if (!still) seen.delete(id)
+      }
+    }
+    if (rows.length < 500) break
+  }
+  log.info('导出消息完成', { user_id: user.id, count: total })
+  res.end()
+})
+
 // ── 规则 ────────────────────────────────────────────────────
 
 route('GET', '/api/rules', async ({ user, res, deps }) => {
@@ -2816,9 +3022,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
   let body: unknown = null
   if (req.method === 'POST' || req.method === 'PUT') {
     try {
-      body = await readJson(req)
-    } catch {
-      json(res, 400, { error: '请求体不是合法 JSON' })
+      body = await readJson(req, BIG_BODY_PATHS.includes(url.pathname) ? MAX_BODY_IMPORT : MAX_BODY)
+    } catch (e) {
+      // 「太大」和「写坏了」必须分开说：两者的下一步完全不同
+      const tooBig = e instanceof BodyTooLarge
+      json(res, tooBig ? 413 : 400, {
+        error: tooBig
+          ? `请求体超过 ${Math.round((e as BodyTooLarge).limit / 1024)} KB 上限`
+          : '请求体不是合法 JSON',
+      })
       return true
     }
   }
@@ -2885,21 +3097,51 @@ async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string, scope:
 }
 
 const MAX_BODY = 256 * 1024
+/**
+ * 配置导入要放宽。
+ *
+ * 规则编辑器鼓励人多填关键词（tagInput），一份规则多、关键词长的配置
+ * 很容易越过 256KB。而超限和 JSON 语法错误如果报成同一句话，
+ * 用户看到的是「你的文件格式不对」——**而那个文件是这台机器自己导出的**。
+ */
+const MAX_BODY_IMPORT = 4 * 1024 * 1024
+const BIG_BODY_PATHS = ['/api/backup/config']
 
-function readJson(req: IncomingMessage): Promise<unknown> {
+/** 超限单独成一个错误类型，好让调用方把它和「JSON 写坏了」分开报 */
+class BodyTooLarge extends Error {
+  constructor(readonly limit: number) { super('body too large') }
+}
+
+function readJson(req: IncomingMessage, limit = MAX_BODY): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let size = 0
+    let over = false
     const chunks: Buffer[] = []
     req.on('data', (c: Buffer) => {
       size += c.length
-      if (size > MAX_BODY) { reject(new Error('body too large')); req.destroy(); return }
+      if (over) {
+        /**
+         * 已经超限了，但**要把剩下的读完再回**，只是不再往内存里放。
+         *
+         * 直接 destroy 的话，还在上传的客户端会先撞上写失败（ECONNRESET），
+         * 而那个错误会盖掉我们已经发出去的 413——用户看到「连接断了」，
+         * 比看到「文件太大」难排查得多。
+         *
+         * 但也不能无限读下去：超过上限十倍就认定对面不怀好意，直接断。
+         */
+        if (size > limit * 10) req.destroy()
+        return
+      }
+      if (size > limit) { over = true; reject(new BodyTooLarge(limit)); return }
       chunks.push(c)
     })
     req.on('end', () => {
+      if (over) return
       const raw = Buffer.concat(chunks).toString('utf8')
       if (!raw.trim()) return resolve(null)
       try { resolve(JSON.parse(raw)) } catch (e) { reject(e as Error) }
     })
-    req.on('error', reject)
+    // 超限之后我们自己 destroy 会触发 error，那时 promise 早已 reject 过，忽略即可
+    req.on('error', (e) => { if (!over) reject(e) })
   })
 }

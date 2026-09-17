@@ -212,6 +212,11 @@ export class MemoryStore implements Store {
   async getSetting(k: string) { return this.settings.get(k) ?? null }
   async setSetting(k: string, v: string) { this.settings.set(k, v) }
   async getUserSetting(u: string, k: string) { return this.settings.get(`${u}:${k}`) ?? null }
+  async listUserSettings(u: string) {
+    const out: Record<string, string> = {}
+    for (const [k, v] of this.settings) if (k.startsWith(`${u}:`)) out[k.slice(u.length + 1)] = v
+    return out
+  }
   async setUserSetting(u: string, k: string, v: string) { this.settings.set(`${u}:${k}`, v) }
 
   async createSession(s: SessionRecord) { this.sessions.set(s.token_hash, s) }

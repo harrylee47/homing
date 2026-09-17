@@ -403,6 +403,11 @@ export interface Store {
   getSetting(key: string): Promise<string | null>
   setSetting(key: string, value: string): Promise<void>
   getUserSetting(userId: string, key: string): Promise<string | null>
+  /**
+   * 某个用户的全部设置。**只给配置导出用，且导出方必须按白名单过一遍**——
+   * 这张表里还住着待绑的 TOTP 种子与找回码状态（见 core/backup.ts）。
+   */
+  listUserSettings(userId: string): Promise<Record<string, string>>
   setUserSetting(userId: string, key: string, value: string): Promise<void>
 
   // 会话
