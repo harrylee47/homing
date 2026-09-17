@@ -52,7 +52,7 @@ import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
 import type { BarkAccess } from './barkproxy.js'
 import { clientIp as resolveClientIp } from './clientip.js'
-import type { EventFilter, OutboundRecord, Store, UserRecord } from '../../core/store.js'
+import type { EventFilter, InviteRecord, OutboundRecord, Store, UserRecord } from '../../core/store.js'
 
 export interface ApiDeps {
   store: Store
@@ -1017,10 +1017,14 @@ route('GET', '/api/invites', async ({ user, res, deps }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
   const users = new Map((await deps.store.listUsers()).map((u) => [u.id, u.name]))
   const t = now()
+  const rows = await deps.store.listInvites()
+  const codes = await Promise.all(rows.map((i) => inviteCode(deps, i)))
   json(res, 200, {
-    invites: (await deps.store.listInvites()).map((i) => ({
-      // 码本身只存哈希，列表里给不出明文——生成时那一次就是唯一一次
+    invites: rows.map((i, n) => ({
       code_hash: i.code_hash,
+      // 码能再拿回来：只存哈希会让「没当场注册、也没存下来」的码变成垃圾
+      code: codes[n] ?? null,
+      url: registerUrl(deps, codes[n] ?? null),
       note: i.note,
       valid_days: i.valid_days,
       expires_at: i.expires_at,
@@ -1029,8 +1033,7 @@ route('GET', '/api/invites', async ({ user, res, deps }) => {
       expired: i.used_at === null && i.expires_at <= t,
       created_at: i.created_at,
       public: i.public,
-      // 公开码的明文本来就贴在「通知」页上，管理员列表里当然也给
-      code: i.code_plain,
+      self_made: i.self_made,
     })),
   })
 })
@@ -1053,8 +1056,10 @@ route('POST', '/api/invites', async ({ user, res, body, deps, ip }) => {
     expires_at: expiresAt,
     used_at: null, used_by: null, created_at: t,
     public: isPublic,
-    // 公开码才存明文——它本来就要贴在未登录可见的页面上。见 core/notice.ts
-    code_plain: isPublic ? code : null,
+    // 明文那一列只留给升级前发出的公开码，新建的一律走密文
+    code_plain: null,
+    // 加密存一份，好让它之后还能再显示。见 core/store.ts 上 code_enc 的说明
+    code_enc: await deps.cipher.encrypt(code),
     self_made: false,
   })
   await deps.store.audit({
@@ -1071,9 +1076,29 @@ route('POST', '/api/invites', async ({ user, res, body, deps, ip }) => {
    * fragment 不会发给服务器，因此不会进反代日志、不会进访问日志、
    * 也不会出现在 Referer 里。而这个码等于一个能看银行验证码的账号。
    */
-  const url = deps.baseUrl ? `${deps.baseUrl.replace(/\/$/, '')}/register#${code}` : null
+  const url = registerUrl(deps, code)
   json(res, 200, { code, url, expires_at: expiresAt })
 })
+
+/**
+ * 把一个邀请码还原成明文。
+ *
+ * 三种来源按顺序试：新建的走密文；升级前发出的公开码还留着明文那一列；
+ * 再老的（两者都没有）只存过哈希，永远拿不回来——如实返回 null，
+ * 界面上会写「这个码是加密落库之前发的，显示不出来」，而不是装作没有这条。
+ */
+async function inviteCode(deps: ApiDeps, i: InviteRecord): Promise<string | null> {
+  if (i.code_enc) {
+    try { return await deps.cipher.decrypt(i.code_enc) } catch { return null }
+  }
+  return i.code_plain
+}
+
+/** 注册链接。码放在 fragment 里——它不发给服务器，不进反代日志、不进 Referer */
+function registerUrl(deps: ApiDeps, code: string | null): string | null {
+  if (!code || !deps.baseUrl) return null
+  return `${deps.baseUrl.replace(/\/$/, '')}/register#${code}`
+}
 
 route('DELETE', '/api/invites/:hash', async ({ user, res, params, deps, ip }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
@@ -1185,11 +1210,26 @@ async function selfInviteGate(
 route('GET', '/api/invites/self', async ({ user, res, deps }) => {
   const t = now()
   const gate = await selfInviteGate(deps, user, t)
+  /**
+   * 顺带把**他自己发过的码**带回去。
+   *
+   * 「每天一个」加上「只显示一次」的组合最伤人：今天生成了、随手关掉了，
+   * 明天之前既拿不回来也再生成不了。列出来之后这个格子就一直找得到。
+   * 只列自己的（created_by = 自己），管理员发的码不在这里。
+   */
+  const mine = (await deps.store.listInvites()).filter((i) => i.created_by === user.id && i.self_made)
+  const codes = await Promise.all(mine.map((i) => inviteCode(deps, i)))
   json(res, 200, {
     can: gate.ok,
     why: gate.ok ? null : gate.why,
     ttl_hours: SELF_INVITE_TTL_MS / 3_600_000,
     per_day: SELF_INVITE_PER_DAY,
+    mine: mine.slice(0, 10).map((i, n) => ({
+      code: codes[n] ?? null,
+      url: registerUrl(deps, codes[n] ?? null),
+      expires_at: i.expires_at,
+      state: inviteState(i, t),
+    })),
   })
 })
 
@@ -1217,12 +1257,13 @@ route('POST', '/api/invites/self', async ({ user, res, deps, ip }) => {
      * 不该替他公开。两件事只是碰巧都产出一个邀请码而已。
      */
     public: false, code_plain: null, self_made: true,
+    code_enc: await deps.cipher.encrypt(code),
   })
   await deps.store.audit({
     user_id: user.id, actor: user.name, action: 'invite.self',
     detail: '自助生成邀请码（24 小时）', ip, created_at: t,
   })
-  const url = deps.baseUrl ? `${deps.baseUrl.replace(/\/$/, '')}/register#${code}` : null
+  const url = registerUrl(deps, code)
   json(res, 200, { code, url, expires_at: expiresAt })
 })
 

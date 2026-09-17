@@ -4062,8 +4062,10 @@ const fmtDay = (ts) => new Date(ts).toLocaleDateString('zh-CN')
 /**
  * 邀请码管理。
  *
- * 码只在生成那一次给出明文——之后库里只有哈希，列表里显示不出来。
- * 所以备注是必需的人类把手：没有它，管理员不知道该撤销哪一条。
+ * 码**加密落库**，所以列表里能再显示出来。第一版只存哈希、只显示一次，
+ * 换来的代价是：被邀请的人没当场注册、邀请人又没存下来，这个码就既没被
+ * 用掉、也再也找不回来——那不是安全，是把一份还活着的凭证变成垃圾。
+ * 备注仍然重要，但不再是唯一的人类把手。
  */
 /** 注册开关的当前状态。生成邀请码那一刻要用它决定提不提醒 */
 let regOpen = false
@@ -4097,13 +4099,20 @@ async function paintInvites() {
           ${i.public ? '<span class="badge plain" style="flex:none">公开</span>' : ''}
           <span class="muted mono" style="font-size:12px;flex:none">${fmt(i.created_at)}</span>
         </div>
-        ${i.code ? `<span class="mono" style="letter-spacing:2px">${esc(i.code)}</span>` : ''}
         <span class="muted">${state} · 开出的账号${i.valid_days ? ` ${i.valid_days} 天` : '永久'}有效</span>
-        ${i.used_at || i.expired ? '' : `<div class="btnrow" style="margin-top:6px">
+        ${i.used_at || i.expired ? '' : (i.code
+          ? `<div style="margin-top:8px">
+              ${copyRow('邀请码', i.code, { big: true })}
+              ${i.url ? copyRow('注册链接', i.url) : ''}
+            </div>`
+          : `<div class="muted" style="margin-top:6px">这个码是加密落库之前发的，显示不出来——当时只存了哈希。</div>`)}
+        ${i.used_at || i.expired ? '' : `<div class="btnrow" style="margin-top:8px">
           <button class="danger sm" data-revoke="${esc(i.code_hash)}">撤销</button>
         </div>`}
       </div>`
     }).join('')}</div>` : '<div class="muted">还没有发过邀请码。</div>')
+
+    bindCopy(box)
 
     for (const b of box.querySelectorAll('[data-revoke]')) {
       b.onclick = async () => {
@@ -4121,6 +4130,46 @@ async function paintInvites() {
 }
 
 /**
+ * 可点即复制的一行。
+ *
+ * 邀请码和注册链接都是「拿出来要发给别人」的东西，让人去框选一串
+ * 区分大小写的随机码是整个流程里最容易出错的一步（配对码那边同理）。
+ * 回落到选中：`navigator.clipboard` 要安全上下文，http 的自建部署上没有。
+ */
+function copyRow(label, text, opts = {}) {
+  if (!text) return ''
+  const id = `cp_${Math.random().toString(36).slice(2, 9)}`
+  return `<label>${esc(label)}</label>
+    <div class="row" style="gap:8px;align-items:stretch">
+      <div class="mono wrap card tight grow" id="${id}" style="user-select:all;margin:0;${opts.big ? 'font-size:18px;letter-spacing:3px' : 'font-size:12px'}">${esc(text)}</div>
+      <button class="ghost sm" data-copy="${id}" style="flex:none;width:auto">复制</button>
+    </div>`
+}
+
+/** 给 copyRow 生成的按钮挂上行为。渲染完调一次即可，重复调不会重复绑定 */
+function bindCopy(root = document) {
+  for (const b of root.querySelectorAll('[data-copy]')) {
+    const node = document.getElementById(b.dataset.copy)
+    if (!node || b.dataset.bound) continue
+    b.dataset.bound = '1'
+    b.onclick = async () => {
+      const text = node.textContent
+      try {
+        await navigator.clipboard.writeText(text)
+        toast('已复制')
+      } catch {
+        const r = document.createRange()
+        r.selectNodeContents(node)
+        const sel = getSelection()
+        sel.removeAllRanges()
+        sel.addRange(r)
+        toast('已选中，长按复制')
+      }
+    }
+  }
+}
+
+/**
  * 自助邀请码：所有人可见。
  *
  * 门槛是「今天有消息进过这台网关」，不是「注册过」——前者说明这是一台真在用
@@ -4133,25 +4182,29 @@ async function paintSelfInvite() {
   if (!box) return
   try {
     const g = await api('/invites/self')
+    const mine = (g.mine || []).filter((i) => i.state === 'open')
     box.innerHTML = `
       <p class="muted">今天有消息进过这台网关，就可以生成一个邀请码，发给你想邀请的人。
       有效期固定 ${g.ttl_hours} 小时，每天 ${g.per_day} 个。</p>
-      <p class="muted"><b>它是你私有的</b>——不会出现在<a href="/notice">通知页</a>上，
-      而且和管理员发的码一样<b>只显示这一次</b>，库里只留哈希。</p>
+      <p class="muted"><b>它是你私有的</b>，不会出现在<a href="/notice">通知页</a>上。</p>
+      ${mine.length ? `<div class="card tight" style="background:var(--bg);margin-bottom:10px">
+        <b>你还没用掉的码</b>
+        ${mine.map((i) => `
+          ${copyRow('邀请码', i.code, { big: true })}
+          ${i.url ? copyRow('注册链接', i.url) : ''}
+          <div class="muted" style="margin-top:6px">${fmt(i.expires_at)} 前有效</div>`).join('<hr style="border:0;border-top:var(--bw) dashed var(--line);margin:12px 0">')}
+      </div>` : ''}
       ${g.can
         ? '<div class="btnrow"><button id="si_go" class="sm">生成邀请码</button></div>'
         : `<div class="notice">${esc(g.why)}</div>`}
       <div id="si_out"></div>`
+    bindCopy(box)
     const b = $('#si_go')
     if (b) b.onclick = async () => {
       b.disabled = true
       try {
-        const r = await api('/invites/self', { method: 'POST' })
-        $('#si_out').innerHTML = `<div class="card tight" style="margin-top:10px">
-          <div class="mono" style="user-select:all;font-size:18px;letter-spacing:3px">${esc(r.code)}</div>
-          ${r.url ? `<div class="mono wrap muted" style="font-size:12px;margin-top:6px;user-select:all">${esc(r.url)}</div>` : ''}
-          <div class="muted" style="margin-top:6px">${fmt(r.expires_at)} 前有效。<b>现在就把它发出去</b>——这串码只显示这一次。</div>
-        </div>`
+        await api('/invites/self', { method: 'POST' })
+        toast('已生成')
         paintSelfInvite()
       } catch (e) { toast(e.message); b.disabled = false }
     }
@@ -4234,16 +4287,14 @@ function showInvite(r, isPublic = false) {
       <div style="font-weight:800;margin-bottom:6px">邀请码已生成</div>
       <p class="muted">${isPublic
         ? '这是<b>公开码</b>：它已经贴在 <a href="/notice">通知页</a> 上了，谁都能看到、谁先用谁得。'
-        : '这串码<b>只显示这一次</b>。把它或下面的链接发给对方，链接里的码放在 # 后面，不会进服务器日志。'}</p>
-      <label>邀请码</label>
-      <div class="mono wrap card tight" style="user-select:all;font-size:18px;letter-spacing:3px">${esc(r.code)}</div>
-      ${r.url ? `<label>注册链接</label>
-        <div class="mono wrap card tight" style="user-select:all;font-size:12px">${esc(r.url)}</div>` : `
-        <div class="muted">没配 GW_BASE_URL，给不出链接——让对方自己打开控制台的注册页填码。</div>`}
+        : '把它或下面的链接发给对方。链接里的码放在 # 后面，不会进服务器日志。<b>没当场发出去也不要紧</b>——上面的列表里随时找得回来。'}</p>
+      ${copyRow('邀请码', r.code, { big: true })}
+      ${r.url ? copyRow('注册链接', r.url) : '<div class="muted">没配 GW_BASE_URL，给不出链接——让对方自己打开控制台的注册页填码。</div>'}
       <div class="muted" style="margin-top:8px">码本身在 ${fmt(r.expires_at)} 前有效。</div>
       ${regOpen ? '' : `<div class="notice" style="margin-top:8px">注意：注册现在是<b>关闭</b>的，这个码发出去对方也注册不了。发之前先把上面的开关改成「凭邀请码注册」。</div>`}
       <div class="btnrow"><button class="ghost sm" id="inv_hide">我记下了，隐藏</button></div>
     </div>`
+  bindCopy($('#inv_new'))
   $('#inv_hide').onclick = () => { $('#inv_new').innerHTML = '' }
 }
 
@@ -4271,6 +4322,25 @@ async function settings() {
   // 「我是谁」要先问清楚：用户管理只对管理员显示
   if (!me) me = (await api('/auth/me').catch(() => null))?.user ?? null
 
+  /*
+   * 设置页原来是一条竖着排到底的长单子：一般设置、安全、管理员、邀请码全在
+   * 一屏里，手机上要滑很久才找得到「修改口令」。拆成四组，选过的记在
+   * localStorage 里——每次进来都要再点一次是很烦的。
+   *
+   * 藏起来的那几组**仍然在 DOM 里**（只是 hidden），所以下面那一大堆
+   * `$('#xxx').onclick` 一行都不用改。把它们改成「切到那个 tab 才渲染」
+   * 会引来一整类新 bug：绑定时元素还不存在。
+   */
+  const TABKEY = 'gw_settings_tab'
+  const TABS = [
+    ['general', '一般'],
+    ['security', '安全'],
+    ['invite', '邀请朋友'],
+    ...(me?.role === 'admin' ? [['admin', '管理员']] : []),
+  ]
+  let tab = localStorage.getItem(TABKEY) || 'general'
+  if (!TABS.some(([k]) => k === tab)) tab = 'general'
+
   render(`
     <h1>设置</h1>
     ${me ? `<div class="card tight row">
@@ -4279,10 +4349,18 @@ async function settings() {
         <span class="muted">${me.role === 'admin' ? '管理员 · 可以建号、停用、续期、重置口令' : '普通用户'}</span>
       </div>
     </div>` : ''}
+
+    <div class="segs" id="settabs">
+      ${TABS.map(([k, t]) => `<a href="#" data-tab="${k}" class="${tab === k ? 'on' : ''}">${t}</a>`).join('')}
+    </div>
+
+    <div data-pane="invite">
     <h2>邀请朋友</h2>
     <div class="card" id="selfinv"><div class="loading">加载中…</div></div>
+    </div>
 
     ${me?.role === 'admin' ? `
+      <div data-pane="admin">
       <h2>用户</h2>
       <div class="card">
         <p class="muted">每个账号在控制台里只能看到自己的设备、渠道、规则和消息。
@@ -4303,6 +4381,9 @@ async function settings() {
         <div id="u_new"></div>
       </div>
 
+      </div>
+
+      <div data-pane="invite">
       <h2>开放注册</h2>
       <div class="card">
         <p class="muted">开了之后，拿到邀请码的人可以自己注册。
@@ -4346,13 +4427,17 @@ async function settings() {
           </div>
         </div>
         <label class="check"><input type="checkbox" id="inv_public"> 公开码（贴到「通知」页上，谁都看得见）</label>
-        <div class="muted">公开码会以<b>明文</b>存库并显示在未登录可达的 /notice 页上——这是它的用途，不是疏漏。
-        普通码只存哈希，生成时那一次是唯一一次能看到它。</div>
+        <div class="muted">公开码会显示在<b>未登录可达</b>的 /notice 页上——这是它的用途，不是疏漏。
+        不勾就是私有码，只有你在这个列表里看得到。两种都加密落库，之后随时能再取回来。</div>
         <div class="btnrow"><button id="inv_add" class="sm">生成邀请码</button></div>
         <div id="inv_err" class="err-text"></div>
         <div id="inv_new"></div>
+      </div>
+      </div>
 
-        <h2 style="margin-top:22px">公告</h2>
+      <div data-pane="admin">
+        <h2>公告</h2>
+        <div class="card">
         <p class="muted">显示在 <a href="/notice">通知页</a>，未登录也看得见。正文按纯文本显示，换行保留。</p>
         <div id="anns"><div class="loading">加载中…</div></div>
         <input type="hidden" id="ann_id">
@@ -4366,10 +4451,15 @@ async function settings() {
           <button id="ann_reset" class="ghost sm" hidden>取消编辑</button>
         </div>
         <div id="ann_err" class="err-text"></div>
+        </div>
       </div>` : ''}
 
+    <div data-pane="security">
       <h2>两步验证</h2>
       <div class="card" id="totpbox"><div class="loading">加载中…</div></div>
+    </div>
+
+    <div data-pane="general">
     <div class="card tight row">
       <span>通知渠道</span>
       <a href="/channels"><button class="ghost sm">管理</button></a>
@@ -4386,7 +4476,6 @@ async function settings() {
     <div id="retention"></div>
     <div id="notify"></div>
     <div id="battery"></div>
-    <div id="smscmd"></div>
 
     <h2>备份</h2>
     <div class="card" id="backup"></div>
@@ -4406,6 +4495,11 @@ async function settings() {
       <div class="btnrow"><button id="tz_save" class="sm">保存</button></div>
       <div id="tz_err" class="err-text"></div>
     </div>
+
+    </div>
+
+    <div data-pane="security">
+    <div id="smscmd"></div>
 
     <h2>修改口令</h2>
     <div class="card">
@@ -4429,7 +4523,20 @@ async function settings() {
         </div>
         <button class="danger sm" id="revokeall">全端下线</button>
       </div>
+    </div>
     </div>`)
+
+  /** 切 tab：只改显示，不重新渲染——下面那一堆绑定都指着现有的元素 */
+  const showTab = (k) => {
+    tab = k
+    try { localStorage.setItem(TABKEY, k) } catch { /* 隐私模式 */ }
+    for (const pane of document.querySelectorAll('[data-pane]')) pane.hidden = pane.dataset.pane !== k
+    for (const a of $('#settabs').children) a.classList.toggle('on', a.dataset.tab === k)
+  }
+  for (const a of $('#settabs').children) {
+    a.onclick = (e) => { e.preventDefault(); showTab(a.dataset.tab) }
+  }
+  showTab(tab)
 
   void paintTotp()
   paintA2HS()

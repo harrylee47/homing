@@ -254,6 +254,9 @@ const MIGRATIONS: string[] = [
   // 「每人每天一个」只数自助那条路生成的：数 created_by 的全部会把管理员
   // 从后台正常发的码也算进去，于是他没按过按钮却被告知「明天再来」
   `ALTER TABLE invites ADD COLUMN self_made INTEGER NOT NULL DEFAULT 0`,
+  // 码加密落库，好让它**能再显示一次**。只存哈希的代价是：被邀请的人没当场注册、
+  // 邀请人又没存下来，这个码就既没被用掉、也再也找不回来。见 core/store.ts 的说明
+  `ALTER TABLE invites ADD COLUMN code_enc BLOB`,
   `CREATE INDEX IF NOT EXISTS idx_invites_public ON invites(public, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_invites_creator ON invites(created_by, created_at DESC)`,
 ]
@@ -646,10 +649,10 @@ export class SqliteStore implements Store {
 
   async createInvite(i: InviteRecord): Promise<void> {
     this.db
-      .prepare(`INSERT INTO invites (code_hash, created_by, note, valid_days, expires_at, used_at, used_by, created_at, public, code_plain, self_made)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .prepare(`INSERT INTO invites (code_hash, created_by, note, valid_days, expires_at, used_at, used_by, created_at, public, code_plain, self_made, code_enc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(i.code_hash, i.created_by, i.note, i.valid_days, i.expires_at, i.used_at, i.used_by,
-           i.created_at, i.public ? 1 : 0, i.code_plain, i.self_made ? 1 : 0)
+           i.created_at, i.public ? 1 : 0, i.code_plain, i.self_made ? 1 : 0, i.code_enc)
   }
 
   async listPublicInvites(limit: number): Promise<InviteRecord[]> {

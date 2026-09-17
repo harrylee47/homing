@@ -14,7 +14,7 @@ const HOUR = 3_600_000
 const invite = (o: Partial<InviteRecord> = {}): InviteRecord => ({
   code_hash: 'h1', created_by: 'admin', note: null, valid_days: 30,
   expires_at: NOW + 24 * HOUR, used_at: null, used_by: null, created_at: NOW,
-  public: false, code_plain: null, self_made: false, ...o,
+  public: false, code_plain: null, code_enc: null, self_made: false, ...o,
 })
 
 describe('邀请码', () => {
