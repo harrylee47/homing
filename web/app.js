@@ -2542,14 +2542,22 @@ async function settings() {
     ${me ? `<div class="card tight row">
       <div class="col grow">
         <span>当前登录 <b>${esc(me.name)}</b></span>
-        <span class="muted">${me.role === 'admin' ? '管理员 · 可以建号删号，但看不到别人的消息' : '普通用户'}</span>
+        <span class="muted">${me.role === 'admin' ? '管理员 · 可以建号、停用、续期、重置口令' : '普通用户'}</span>
       </div>
     </div>` : ''}
     ${me?.role === 'admin' ? `
       <h2>用户</h2>
       <div class="card">
-        <p class="muted">每个用户各有一套<b>完全独立</b>的设备、渠道、规则和消息，互相看不见。
-        家人合用一台网关时，各自配各自的卡，谁也读不到对方的验证码。</p>
+        <p class="muted">每个账号在控制台里只能看到自己的设备、渠道、规则和消息。
+        家人合用一台网关时，各自配各自的卡。</p>
+        <div class="card tight" style="background:var(--bg)">
+          <b>说清楚边界</b>
+          <p class="muted" style="margin:6px 0 0">这是<b>应用层</b>的隔离，不是密码学隔离。
+          你作为管理员能重置任何人的口令，从而以他的身份登录看到他全部的短信——
+          这个动作会写审计，并且会推一条通知到<b>他自己</b>的渠道。
+          持有这台服务器和密钥的人，技术上能读到库里的一切。
+          给朋友开号前请让他知道这件事。</p>
+        </div>
         <div id="users"><div class="loading">加载中…</div></div>
         <label>新用户的登录名</label>
         <input id="u_name" placeholder="字母数字，2–24 位">

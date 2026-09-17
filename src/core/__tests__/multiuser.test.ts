@@ -107,6 +107,14 @@ describe('推送不会走进别人的渠道', () => {
       })
     }
     store.events.set('evt_me', event('evt_me', ME, 'dev_me'))
+    // pipeline 现在会先问「这个账号还能用吗」，两个人都得先存在
+    for (const u of [ME, HER]) {
+      store.users.set(u, {
+        id: u, name: u, password_hash: '', totp_secret: '', role: 'member',
+        bot_token: '', disabled: false, expires_at: null,
+        agreed_version: null, agreed_at: null, created_at: 0,
+      })
+    }
   })
 
   it('我的短信只推到我的渠道', async () => {

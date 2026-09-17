@@ -29,7 +29,8 @@ import type {
 const MIGRATIONS: string[] = [
   // ── 多用户 ──────────────────────────────────────────────
   // 每个用户一套完全独立的数据。管理员的特权只有建号删号，
-  // 看不到别人的消息——那正是多用户要解决的问题，留个后门就等于没做
+  // 管理员在控制台里读不到别人的消息，但他能重置口令从而以对方身份登录——
+  // 「不会顺手看到」不等于「拿不到」，面向用户的文案要按后者写
   `CREATE TABLE IF NOT EXISTS users (
      id            TEXT PRIMARY KEY,
      name          TEXT NOT NULL,
@@ -511,6 +512,13 @@ export class SqliteStore implements Store {
       .prepare(`INSERT INTO invites (code_hash, created_by, note, valid_days, expires_at, used_at, used_by, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(i.code_hash, i.created_by, i.note, i.valid_days, i.expires_at, i.used_at, i.used_by, i.created_at)
+  }
+
+  async peekInvite(codeHash: string, now: number): Promise<InviteRecord | null> {
+    const row = this.db
+      .prepare('SELECT * FROM invites WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?')
+      .get(codeHash, now)
+    return row ? (row as unknown as InviteRecord) : null
   }
 
   /**

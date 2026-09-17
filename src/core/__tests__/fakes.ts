@@ -145,6 +145,10 @@ export class MemoryStore implements Store {
 
   async listInvites() { return [...this.invites.values()] }
   async createInvite(i: InviteRecord) { this.invites.set(i.code_hash, i) }
+  async peekInvite(hash: string, now: number) {
+    const i = this.invites.get(hash)
+    return i && i.used_at === null && i.expires_at > now ? i : null
+  }
   async takeInvite(hash: string, userId: string, now: number) {
     const i = this.invites.get(hash)
     // 与 SQLite 的 UPDATE...WHERE used_at IS NULL 等价：只能取用一次

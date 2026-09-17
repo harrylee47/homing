@@ -350,6 +350,19 @@ const apiDeps = {
     }).catch(() => { /* 告警失败不影响找回本身 */ })
   })(),
 
+  /** 管理员重置了某人的口令：通知本人。审计日志他看不到，推送他能收到 */
+  onPasswordReset: (userId: string, byName: string) => void (async () => {
+    const channels = await liveChannels(userId)
+    if (channels.length === 0) return
+    const { dispatch } = await import('../../core/notifier.js')
+    await dispatch(channels, {
+      title: '🔑 管理员重置了你的口令',
+      body: `管理员 ${byName} 重置了你这个账号的口令，所有已登录的会话都已下线。`
+        + `这意味着他此刻拿着你的新口令，能以你的身份登录。若不是你要求的，请立刻用新口令登录并改掉它。`,
+      alert: true, priority: 'high', code: null, eventId: '', occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
+    }).catch(() => { /* 告警失败不影响重置本身 */ })
+  })(),
+
   onUnknownIpLogin: (ip: string) => void (async () => {
     const channels = await adminChannels()
     if (channels.length === 0) return

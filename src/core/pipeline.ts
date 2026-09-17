@@ -15,6 +15,7 @@ import {
 } from './rules.js'
 import { DEFAULT_TIMEZONE, formatWallTime, offsetMs } from './schedule.js'
 import { simLabel, simsOf } from './sim.js'
+import { userActive } from './users.js'
 import type { Store } from './store.js'
 
 export interface PipelineDeps {
@@ -100,6 +101,17 @@ export async function processEvent(
     // 规则照常跑（历史记录也要能按规则筛），但到此为止，不推送
     if (e.imported) {
       log.info('历史导入，仅归档不推送', { event_id: eventId, matched: matchedIds })
+      return
+    }
+
+    /**
+     * 账号还能不能用。
+     *
+     * 握手时判过、每分钟的清扫也会踢，但那之间有一个最长一分钟的窗口——
+     * 而这一分钟里进来的每一条短信都会被照常转发出去。归档保留，推送停掉。
+     */
+    if (!userActive(await deps.store.getUser(e.user_id), Date.now())) {
+      log.info('账号已停用或到期，仅归档不推送', { event_id: eventId, user_id: e.user_id })
       return
     }
 
