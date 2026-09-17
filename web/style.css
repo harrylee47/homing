@@ -133,15 +133,29 @@ h2::before {
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wrap { overflow-wrap: anywhere; }
 
+/*
+ * `.list` 的 padding: 0 是给 `class="card list"` 用的——让虚线分隔符横贯整张卡。
+ *
+ * **但它同时把 .card 的 14px 内边距一起抹掉了**：两条都是单类选择器、
+ * 优先级相同，写在后面的这条赢。于是控制台里每一张列表卡的文字和右侧徽章
+ * 都贴在边框上。内边距因此要挪到 .item 上：分隔符照旧横贯，内容缩进来。
+ */
 .list { display: flex; flex-direction: column; padding: 0; }
 .item {
   border-bottom: var(--bw) dashed color-mix(in srgb, var(--line) 35%, transparent);
-  padding: 12px 0;
+  padding: 12px 14px;
   cursor: pointer;
   transition: transform 0.15s var(--ease);
 }
 .item:last-child { border-bottom: none; }
 .item:active { transform: translateX(3px); }
+/*
+ * `.list` 也会单独出现在一张普通卡片里（用户、邀请码、公告三处）。
+ * 那时候卡片自己的 14px 还在，再给 .item 加一遍就是 28px。
+ * `.card:not(.list)` 把「卡片本身就是列表」那种排除掉。
+ */
+.card:not(.list) .list > .item { padding-left: 0; padding-right: 0; }
+.card:not(.list) .list > .item.striped { padding-left: 12px; }
 
 /*
  * 列表项的类别用左边一条色带表示，不再塞一个徽章进去。
