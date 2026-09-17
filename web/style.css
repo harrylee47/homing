@@ -213,6 +213,28 @@ h2::before {
 .viewtoggle a:last-child { border-right-width: var(--bw); border-radius: 0 7px 7px 0; }
 .viewtoggle a.on { background: var(--cyan); color: var(--on-bright); }
 
+/* 二选一的大按钮。用在「找回方式」这种「两条路后果不同、必须让人自己选」的地方，
+   下拉或单选框在这里都太轻——它们看起来像个可以随便试的选项 */
+.pickrow { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 4px; }
+.pick {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  width: 100%; text-align: left; padding: 11px 13px;
+  background: var(--card); color: var(--fg);
+  border: var(--bw) solid var(--line); border-radius: 8px;
+  box-shadow: var(--shadow); cursor: pointer;
+}
+.pick b { font-size: 14px; }
+.pick .muted { font-size: 12px; line-height: 1.5; }
+.pick.on { background: var(--cyan); color: var(--on-bright); }
+.pick.on .muted { color: var(--on-bright); opacity: .75; }
+
+/* 一段需要被读到的说明。比 .muted 重，但不像告警那样吓人 */
+.notice {
+  padding: 10px 12px; margin-bottom: 4px; border-radius: 8px;
+  background: var(--bg); border: var(--bw) dashed var(--line);
+  font-size: 13px; line-height: 1.6;
+}
+
 /* ── 会话视图 ────────────────────────────────────────────── */
 
 /* 气泡对话。目的很直接：和手机上短信 App 里看到的是同一个东西，

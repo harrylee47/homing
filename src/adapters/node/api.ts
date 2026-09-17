@@ -751,18 +751,23 @@ route('POST', '/api/auth/totp/disable', async ({ user, res, body, deps, ip }) =>
  * 自己按「我要能自己找回」做出的选择。
  */
 /**
- * 找回口令：**默认走推送渠道，绑了两步验证的也可以用动态码**，两条都行。
+ * 找回口令有两条明确的路，由用户自己选，**不做「填进来我猜是哪种」**：
  *
- *  1. 点「找回口令」→ 往你自己配好的渠道发一个一次性找回码
- *  2. 或者直接填两步验证的动态码（绑过才有）
- *  3. 两样都没有 → 只能请管理员重置
+ *  1. 推送渠道 → 往他自己配好的渠道发一个一次性找回码
+ *  2. 两步验证器 → 直接填认证器上的动态码
  *
- * 渠道为什么算得上一个验证因素：它**本来就在接收你的银行验证码**。
- * 能打开那个 Telegram 或那台装着 Bark 的手机的人，早就看得到你全部的短信了——
+ * 为什么要让他选而不是一个框通吃：这两条路失败时的**下一步动作完全不同**。
+ * 渠道那条收不到就重发一次、或者去查渠道配错没有；验证器那条填错多半是
+ * 手机时间不准，或者在认证器里找错了条目。合成一个框就只能给一句
+ * 模棱两可的「验证码不正确」，而这恰恰是人最需要指引的时刻。
+ *
+ * 渠道为什么算得上一个验证因素：它**本来就在接收他的银行验证码**。
+ * 能打开那个 Telegram 或那台装着 Bark 的手机的人，早就看得到他全部的短信了——
  * 往那里发一个找回码没有新增任何暴露面，而它同时是一个真实的
- * 「你持有某个东西」的证明，因为渠道是你自己配的、还按过测试按钮。
+ * 「你持有某个东西」的证明，因为渠道是他自己配的、还按过测试按钮。
  *
- * 界面上两种码填同一个框：用户不需要知道自己填的是哪一种。
+ * 两条路都**不告诉界面这个账号有没有绑验证器**：那会连带确认账号存在。
+ * 界面一律把两个选项都摆出来，选错了就在这一步告诉他。
  */
 const RECOVERY_TTL_MS = 10 * 60 * 1000
 const RECOVERY_MAX_TRIES = 5
@@ -814,38 +819,52 @@ route('POST', '/api/auth/recover/start', async ({ res, body, deps, ip }) => {
 route('POST', '/api/auth/recover/finish', async ({ res, body, deps, ip }) => {
   if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
 
-  const b = body as { name?: string; code?: string; password?: string }
+  const b = body as { name?: string; code?: string; password?: string; method?: string }
   const pwCheck = validatePassword(b?.password ?? '')
   if (!pwCheck.ok) return json(res, 400, { error: pwCheck.error })
 
-  const fail = { error: '验证码不正确或已失效。渠道发的找回码只有 10 分钟有效期，可以重新获取一个' }
+  const fail = { error: '验证码不正确或已失效' }
   const acct = await deps.store.getUserByName((b?.name ?? '').trim())
   if (!acct || !userActive(acct, now())) return json(res, 401, fail)
 
   const input = (b?.code ?? '').trim()
+  const method = b?.method === 'totp' ? 'totp' : 'channel'
   if (!input) return json(res, 401, fail)
 
-  // 先试认证器的动态码：它无状态，试错不消耗渠道码的次数
-  let ok = acct.totp_secret !== '' && (await verifyTotp(acct.totp_secret, input))
-
-  const raw = ok ? null : await deps.store.getUserSetting(acct.id, S_RECOVERY)
-  if (!ok && raw) {
+  let ok = false
+  if (method === 'totp') {
+    // 认证器这条无状态，错了也不消耗渠道码的次数
+    ok = acct.totp_secret !== '' && (await verifyTotp(acct.totp_secret, input))
+    if (!ok) {
+      return json(res, 401, {
+        error: '动态码不正确。请确认认证器里选的是这个账号那一条，'
+          + '并检查手机时间是否准确——动态码对时间很敏感，差一分钟就会一直失败。',
+        method: 'totp',
+      })
+    }
+  } else {
+    const raw = await deps.store.getUserSetting(acct.id, S_RECOVERY)
     type Pending = { hash: string; expires_at: number; tries: number }
     let pending: Pending | null = null
-    try {
-      pending = JSON.parse(raw) as Pending
-    } catch { /* 存坏了就当没有 */ }
-
-    if (pending) {
-      if (pending.expires_at < now() || pending.tries >= RECOVERY_MAX_TRIES) {
-        await deps.store.setUserSetting(acct.id, S_RECOVERY, '')
-      } else if (timingSafeEqual(await hashToken(input.toUpperCase()), pending.hash)) {
-        ok = true
-      } else {
-        // 记次数：不记的话 10 分钟内可以无限猜
-        await deps.store.setUserSetting(acct.id, S_RECOVERY, JSON.stringify({ ...pending, tries: pending.tries + 1 }))
-      }
+    if (raw) {
+      try {
+        pending = JSON.parse(raw) as Pending
+      } catch { /* 存坏了就当没有 */ }
     }
+    if (!pending || pending.expires_at < now() || pending.tries >= RECOVERY_MAX_TRIES) {
+      if (pending) await deps.store.setUserSetting(acct.id, S_RECOVERY, '')
+      return json(res, 401, { error: '找回码已失效，请重新发送一个', method: 'channel', resend: true })
+    }
+    if (!timingSafeEqual(await hashToken(input.toUpperCase()), pending.hash)) {
+      // 记次数：不记的话 10 分钟内可以无限猜
+      const tries = pending.tries + 1
+      await deps.store.setUserSetting(acct.id, S_RECOVERY, JSON.stringify({ ...pending, tries }))
+      return json(res, 401, {
+        error: `找回码不正确，还可以试 ${Math.max(0, RECOVERY_MAX_TRIES - tries)} 次`,
+        method: 'channel',
+      })
+    }
+    ok = true
   }
   if (!ok) return json(res, 401, fail)
 
@@ -1010,6 +1029,8 @@ route('GET', '/api/register/status', async ({ res, deps }) => {
   json(res, 200, {
     open: (await registrationMode(deps.store)) === 'invite',
     privacy_version: PRIVACY_VERSION,
+    // 注册页、到期提示、找回失败都要写「联系管理员」，得有个地方说清是谁
+    admin_contact: (await deps.store.getSetting(S_ADMIN_CONTACT)) ?? '',
   })
 }, false)
 

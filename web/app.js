@@ -10,6 +10,14 @@ const TOKEN_KEY = 'gw_token'
 const BACK_KEY = 'gw_back'
 /** 上次登录的用户名，只作为输入框的默认值 */
 const LAST_USER_KEY = 'gw_user'
+/**
+ * 不需要登录就能打开的页面。
+ *
+ * **必须是一处**：这个判断同时决定「要不要踢去登录页」和「要不要藏起导航栏」，
+ * 原来两处各写各的硬编码字符串，加一个新公开页时只改一处的后果是
+ * 「页面能打开但底下挂着整条导航栏」或者「导航藏对了但一进去就跳登录」。
+ */
+const PUBLIC_PAGES = new Set(['/login', '/setup', '/recover', '/register'])
 /** 当前登录的人。用于显示「你是谁」与判断要不要显示用户管理 */
 let me = null
 let token = localStorage.getItem(TOKEN_KEY) || ''
@@ -447,6 +455,7 @@ const routes = [
   [/^\/devices$/, devices],
   [/^\/settings$/, settings],
   [/^\/login$/, login],
+  [/^\/recover$/, recover],
   [/^\/setup$/, setup],
 ]
 
@@ -462,7 +471,7 @@ async function route(restore = false) {
     if (!st?.initialized) return setup()
   } catch { /* 网络异常时继续尝试渲染，由各视图报错 */ }
 
-  if (!token && path !== '/login') {
+  if (!token && !PUBLIC_PAGES.has(path)) {
     // 记下想去哪，登录完直接回去（Telegram 通知里的按钮就是这条路）
     sessionStorage.setItem(BACK_KEY, path + location.search)
     return login()
@@ -471,7 +480,7 @@ async function route(restore = false) {
   for (const [re, view] of routes) {
     const m = path.match(re)
     if (m) {
-      nav.hidden = path === '/login' || path === '/setup'
+      nav.hidden = PUBLIC_PAGES.has(path)
       for (const a of nav.querySelectorAll('a')) {
         // 会话和消息是同一件事的两种看法，导航上归到「消息」
         const group = path.startsWith('/events') || path.startsWith('/threads') ? '/events'
@@ -593,6 +602,10 @@ function login() {
       公用设备请取消勾选。任何时候都可以在「设置 → 会话 → 全端下线」一次性作废。</div>
       <div class="btnrow"><button id="go">登录</button></div>
       <div id="err" class="err-text"></div>
+      <div class="row" style="margin-top:10px">
+        <a href="/recover" class="muted">忘记口令？</a>
+        <a href="/register" class="muted" id="toreg" hidden>没有账号？</a>
+      </div>
     </div>`)
 
   const submit = async () => {
@@ -621,6 +634,144 @@ function login() {
   }
   $('#go').onclick = submit
   $('#code').onkeydown = (e) => { if (e.key === 'Enter') submit() }
+}
+
+/**
+ * 找回口令。
+ *
+ * 两条路**让用户自己选**，不做「填进来我猜是哪种」：这两条失败时的下一步
+ * 完全不同——渠道那条收不到就重发、或者去查渠道是不是配错了；验证器那条
+ * 填错多半是手机时间不准。合成一个框就只能给一句模棱两可的「验证码不正确」，
+ * 而那正是人最需要指引的时刻。
+ *
+ * 两个选项**永远都摆出来**，不问服务端这个账号绑没绑验证器——
+ * 那个回答会连带确认账号是否存在。选错了在提交那一步告诉他。
+ */
+async function recover() {
+  nav.hidden = true
+  const pub = await api('/register/status', { allow404: true }).catch(() => null)
+  const contact = pub?.admin_contact || ''
+
+  const state = { step: 'who', name: '', method: 'channel' }
+
+  const help = () => `
+    <details class="card tight" style="margin-top:10px">
+      <summary class="muted">❓ 收不到验证码</summary>
+      <p class="muted" style="margin:8px 0 0">可能是这几种情况：</p>
+      <ul class="muted" style="margin:6px 0 0;padding-left:20px;line-height:1.7">
+        <li><b>还没配过推送渠道</b>——那这条路走不通，换用两步验证器，或者联系管理员重置</li>
+        <li>渠道配错了。登录后到「设置 → 渠道」点一下测试按钮就能确认</li>
+        <li>通知被手机静音或屏蔽了，去通知设置里看一眼</li>
+      </ul>
+      <p class="muted" style="margin:8px 0 0">${contact
+        ? `还是不行就联系管理员：<b>${esc(contact)}</b>`
+        : '还是不行就联系这台服务器的管理员，让他帮你重置。'}</p>
+    </details>`
+
+  const paint = () => {
+    if (state.step === 'who') {
+      render(`
+        ${brand('找回口令')}
+        <div class="card">
+          <label>用户名</label>
+          <input id="name" autocomplete="username" value="${esc(state.name)}">
+          <label>用哪种方式找回</label>
+          <div class="pickrow">
+            <button type="button" class="pick ${state.method === 'channel' ? 'on' : ''}" data-m="channel">
+              <b>📨 推送渠道</b>
+              <span class="muted">把验证码发到你配好的 Bark / Telegram / Webhook</span>
+            </button>
+            <button type="button" class="pick ${state.method === 'totp' ? 'on' : ''}" data-m="totp">
+              <b>🔐 两步验证器</b>
+              <span class="muted">用认证器 App 上的 6 位动态码</span>
+            </button>
+          </div>
+          <div class="btnrow"><button id="next">下一步</button></div>
+          <div id="err" class="err-text"></div>
+          <div class="muted" style="margin-top:10px">两样都没有？只能请管理员重置${
+            contact ? `：<b>${esc(contact)}</b>` : '。'}</div>
+        </div>
+        <div class="card tight row"><a href="/login" class="muted">← 回登录</a></div>`)
+
+      for (const b of app.querySelectorAll('[data-m]')) {
+        b.onclick = () => { state.method = b.dataset.m; paint() }
+      }
+      $('#name').oninput = () => { state.name = $('#name').value }
+      $('#next').onclick = async () => {
+        state.name = $('#name').value.trim()
+        if (!state.name) return ($('#err').textContent = '请填用户名')
+        if (state.method === 'channel') {
+          $('#next').disabled = true
+          // 无论账号存不存在都回同一句话，所以这里不用判结果
+          await api('/auth/recover/start', { method: 'POST', body: { name: state.name }, allow404: true }).catch(() => {})
+        }
+        state.step = 'code'
+        paint()
+      }
+      return
+    }
+
+    // 第二步：填码 + 设新口令
+    const isCh = state.method === 'channel'
+    render(`
+      ${brand('找回口令')}
+      <div class="card">
+        ${isCh ? `
+          <div class="notice">已向 <b>${esc(state.name)}</b> 配置的<b>所有渠道</b>发送了验证码，10 分钟内有效。
+          手机上没动静的话，看看下面那条。</div>`
+        : `
+          <div class="notice">打开你的认证器 App，找到这一条：
+          <div class="mono card tight" style="margin:8px 0 0;user-select:all">SMS Gateway: ${esc(state.name)}</div>
+          <span class="muted">输入它当前显示的 6 位数字。动态码对时间很敏感，手机时间不准会一直失败。</span></div>`}
+        <label>验证码</label>
+        <input id="code" class="mono" inputmode="${isCh ? 'text' : 'numeric'}"
+               maxlength="${isCh ? 8 : 6}" style="letter-spacing:4px;font-size:18px"
+               autocomplete="one-time-code" placeholder="${isCh ? '8 位' : '6 位'}">
+        <label>设置新口令（至少 8 位，字母 / 数字 / 符号里占两类）</label>
+        <input id="pw" type="password" autocomplete="new-password">
+        <label>再输一次</label>
+        <input id="pw2" type="password" autocomplete="new-password">
+        <div class="btnrow">
+          <button id="go">完成</button>
+          ${isCh ? '<button class="ghost sm" id="resend">重新发送</button>' : ''}
+          <button class="ghost sm" id="back">换一种方式</button>
+        </div>
+        <div id="err" class="err-text"></div>
+        ${isCh ? help() : `<div class="muted" style="margin-top:10px">认证器丢了？改用推送渠道找回，或联系管理员${
+          contact ? `：<b>${esc(contact)}</b>` : '重置。'}</div>`}
+      </div>`)
+
+    $('#back').onclick = () => { state.step = 'who'; paint() }
+    const resend = $('#resend')
+    if (resend) resend.onclick = async () => {
+      resend.disabled = true
+      await api('/auth/recover/start', { method: 'POST', body: { name: state.name }, allow404: true }).catch(() => {})
+      toast('已重新发送')
+      setTimeout(() => { resend.disabled = false }, 5000)
+    }
+
+    $('#go').onclick = async () => {
+      const pw = $('#pw').value
+      if (pw !== $('#pw2').value) return ($('#err').textContent = '两次输入的新口令不一致')
+      const bad = checkPassword(pw)
+      if (bad) return ($('#err').textContent = bad)
+      $('#go').disabled = true
+      $('#err').textContent = ''
+      try {
+        await api('/auth/recover/finish', {
+          method: 'POST', allow404: true,
+          body: { name: state.name, method: state.method, code: $('#code').value.trim(), password: pw },
+        })
+        toast('口令已重置，请用新口令登录')
+        go('/login')
+      } catch (e) {
+        $('#err').textContent = e.message
+        $('#go').disabled = false
+      }
+    }
+  }
+
+  paint()
 }
 
 // ── 总览 ────────────────────────────────────────────────────
