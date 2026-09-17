@@ -19,6 +19,7 @@ import type {
   EventFilter,
   PairingCodeRecord,
   InviteRecord,
+  AnnouncementRecord,
   SessionRecord,
   TaskRecord,
   UserRecord,
@@ -234,7 +235,38 @@ const MIGRATIONS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_events_user_kind ON events(user_id, kind, occurred_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_outbound_user ON outbound(user_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id)`,
+  // 公告：运营者写给所有人看的，未登录可见。没有 user_id——它不属于任何人
+  `CREATE TABLE IF NOT EXISTS announcements (
+     id         TEXT PRIMARY KEY,
+     title      TEXT NOT NULL,
+     body       TEXT NOT NULL,
+     pinned     INTEGER NOT NULL DEFAULT 0,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_announce_time ON announcements(pinned DESC, updated_at DESC)`,
+
+  // ↓↓↓ ALTER TABLE 一律排在所有 CREATE TABLE 之后（见 CLAUDE.md「迁移语句的顺序」）
+  // 公开邀请码：会出现在未登录可见的「通知」页上，所以要存明文。
+  // 理由写在 core/notice.ts 开头——存哈希对一个本来就要公开的码不是安全措施
+  `ALTER TABLE invites ADD COLUMN public INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE invites ADD COLUMN code_plain TEXT`,
+  // 「每人每天一个」只数自助那条路生成的：数 created_by 的全部会把管理员
+  // 从后台正常发的码也算进去，于是他没按过按钮却被告知「明天再来」
+  `ALTER TABLE invites ADD COLUMN self_made INTEGER NOT NULL DEFAULT 0`,
+  `CREATE INDEX IF NOT EXISTS idx_invites_public ON invites(public, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_invites_creator ON invites(created_by, created_at DESC)`,
 ]
+
+/**
+ * SQLite 没有布尔类型，`public` / `pinned` 取出来是 0 或 1。
+ * 不还原的话 `if (i.public)` 对 `0` 同样成立——一个「不公开」的邀请码
+ * 会被当成公开的贴到未登录可见的页面上。这类 bug 不报错，只泄漏。
+ */
+type RawInvite = Omit<InviteRecord, 'public' | 'self_made'> & { public: number; self_made: number }
+type RawAnnouncement = Omit<AnnouncementRecord, 'pinned'> & { pinned: number }
+const reviveInvite = (r: RawInvite): InviteRecord => ({ ...r, public: r.public === 1, self_made: r.self_made === 1 })
+const reviveAnnouncement = (r: RawAnnouncement): AnnouncementRecord => ({ ...r, pinned: r.pinned === 1 })
 
 /** 状态机的前进顺序。数字大者为更后的状态，用于拒绝倒退的回执。 */
 const OUTBOUND_RANK: Record<string, number> = {
@@ -608,22 +640,43 @@ export class SqliteStore implements Store {
   // ── 邀请码 ────────────────────────────────────────────
 
   async listInvites(): Promise<InviteRecord[]> {
-    return this.db.prepare('SELECT * FROM invites ORDER BY created_at DESC')
-      .all() as unknown as InviteRecord[]
+    return (this.db.prepare('SELECT * FROM invites ORDER BY created_at DESC')
+      .all() as unknown as RawInvite[]).map(reviveInvite)
   }
 
   async createInvite(i: InviteRecord): Promise<void> {
     this.db
-      .prepare(`INSERT INTO invites (code_hash, created_by, note, valid_days, expires_at, used_at, used_by, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(i.code_hash, i.created_by, i.note, i.valid_days, i.expires_at, i.used_at, i.used_by, i.created_at)
+      .prepare(`INSERT INTO invites (code_hash, created_by, note, valid_days, expires_at, used_at, used_by, created_at, public, code_plain, self_made)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(i.code_hash, i.created_by, i.note, i.valid_days, i.expires_at, i.used_at, i.used_by,
+           i.created_at, i.public ? 1 : 0, i.code_plain, i.self_made ? 1 : 0)
+  }
+
+  async listPublicInvites(limit: number): Promise<InviteRecord[]> {
+    return (this.db
+      .prepare('SELECT * FROM invites WHERE public = 1 ORDER BY created_at DESC LIMIT ?')
+      .all(limit) as unknown as RawInvite[]).map(reviveInvite)
+  }
+
+  async countSelfInvitesBy(userId: string, since: number): Promise<number> {
+    const r = this.db
+      .prepare('SELECT COUNT(*) AS n FROM invites WHERE created_by = ? AND self_made = 1 AND created_at >= ?')
+      .get(userId, since) as { n: number }
+    return Number(r.n)
+  }
+
+  async countEventsReceivedSince(userId: string, since: number): Promise<number> {
+    const r = this.db
+      .prepare('SELECT COUNT(*) AS n FROM events WHERE user_id = ? AND received_at >= ?')
+      .get(userId, since) as { n: number }
+    return Number(r.n)
   }
 
   async peekInvite(codeHash: string, now: number): Promise<InviteRecord | null> {
     const row = this.db
       .prepare('SELECT * FROM invites WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?')
       .get(codeHash, now)
-    return row ? (row as unknown as InviteRecord) : null
+    return row ? reviveInvite(row as unknown as RawInvite) : null
   }
 
   /**
@@ -639,13 +692,40 @@ export class SqliteStore implements Store {
                 WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`)
       .run(now, userId, codeHash, now)
     if (Number(r.changes) === 0) return null
-    return this.db.prepare('SELECT * FROM invites WHERE code_hash = ?')
-      .get(codeHash) as unknown as InviteRecord
+    return reviveInvite(this.db.prepare('SELECT * FROM invites WHERE code_hash = ?')
+      .get(codeHash) as unknown as RawInvite)
   }
 
   async deleteInvite(codeHash: string): Promise<boolean> {
     return Number(this.db.prepare('DELETE FROM invites WHERE code_hash = ? AND used_at IS NULL')
       .run(codeHash).changes) > 0
+  }
+
+  // ── 公告 ──────────────────────────────────────────────
+
+  async listAnnouncements(limit: number): Promise<AnnouncementRecord[]> {
+    return (this.db
+      .prepare('SELECT * FROM announcements ORDER BY pinned DESC, updated_at DESC LIMIT ?')
+      .all(limit) as unknown as RawAnnouncement[]).map(reviveAnnouncement)
+  }
+
+  async getAnnouncement(id: string): Promise<AnnouncementRecord | null> {
+    const row = this.db.prepare('SELECT * FROM announcements WHERE id = ?').get(id)
+    return row ? reviveAnnouncement(row as unknown as RawAnnouncement) : null
+  }
+
+  async upsertAnnouncement(a: AnnouncementRecord): Promise<void> {
+    this.db
+      .prepare(`INSERT INTO announcements (id, title, body, pinned, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  title = excluded.title, body = excluded.body,
+                  pinned = excluded.pinned, updated_at = excluded.updated_at`)
+      .run(a.id, a.title, a.body, a.pinned ? 1 : 0, a.created_at, a.updated_at)
+  }
+
+  async deleteAnnouncement(id: string): Promise<boolean> {
+    return Number(this.db.prepare('DELETE FROM announcements WHERE id = ?').run(id).changes) > 0
   }
 
   // ── 配对码 ────────────────────────────────────────────

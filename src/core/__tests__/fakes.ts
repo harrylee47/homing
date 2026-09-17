@@ -3,7 +3,7 @@ import type { Connection, Hub } from '../hub.js'
 import type {
   DeviceLogRecord,
   ChannelRecord, DeviceRecord, EventFilter, EventQuery, InsertEventResult, OutboundFilter, OutboundRecord,
-  InviteRecord, MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord, UserRecord,
+  AnnouncementRecord, InviteRecord, MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord, UserRecord,
 } from '../store.js'
 
 /** 与 SQLite 实现保持一致的状态机顺序 */
@@ -198,6 +198,27 @@ export class MemoryStore implements Store {
     const i = this.invites.get(hash)
     return i && i.used_at === null ? this.invites.delete(hash) : false
   }
+  async listPublicInvites(limit: number) {
+    return [...this.invites.values()].filter((i) => i.public)
+      .sort((a, b) => b.created_at - a.created_at).slice(0, limit)
+  }
+  async countSelfInvitesBy(userId: string, since: number) {
+    return [...this.invites.values()]
+      .filter((i) => i.created_by === userId && i.self_made && i.created_at >= since).length
+  }
+  async countEventsReceivedSince(userId: string, since: number) {
+    return [...this.events.values()].filter((e) => e.user_id === userId && e.received_at >= since).length
+  }
+
+  announcements = new Map<string, AnnouncementRecord>()
+  async listAnnouncements(limit: number) {
+    return [...this.announcements.values()]
+      .sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updated_at - a.updated_at))
+      .slice(0, limit)
+  }
+  async getAnnouncement(id: string) { return this.announcements.get(id) ?? null }
+  async upsertAnnouncement(a: AnnouncementRecord) { this.announcements.set(a.id, a) }
+  async deleteAnnouncement(id: string) { return this.announcements.delete(id) }
 
   async createPairingCode(p: PairingCodeRecord) { this.pairings.set(p.code_hash, p) }
   async takePairingCode(hash: string, now: number) {

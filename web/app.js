@@ -4062,8 +4062,10 @@ async function paintInvites() {
       return `<div class="item">
         <div class="row">
           <b class="truncate">${i.note ? esc(i.note) : '（没写备注）'}</b>
+          ${i.public ? '<span class="badge plain" style="flex:none">公开</span>' : ''}
           <span class="muted mono" style="font-size:12px;flex:none">${fmt(i.created_at)}</span>
         </div>
+        ${i.code ? `<span class="mono" style="letter-spacing:2px">${esc(i.code)}</span>` : ''}
         <span class="muted">${state} · 开出的账号${i.valid_days ? ` ${i.valid_days} 天` : '永久'}有效</span>
         ${i.used_at || i.expired ? '' : `<div class="btnrow" style="margin-top:6px">
           <button class="danger sm" data-revoke="${esc(i.code_hash)}">撤销</button>
@@ -4086,13 +4088,119 @@ async function paintInvites() {
   }
 }
 
+/**
+ * 自助邀请码：所有人可见。
+ *
+ * 门槛是「今天有消息进过这台网关」，不是「注册过」——前者说明这是一台真在用
+ * 的网关，后者只说明有人开过号。所以**不能不问就给按钮**：先问一次服务端
+ * 能不能开，把不能开的原因原样显示出来。只画一个点了才报错的按钮，
+ * 等于让人先失败一次才知道规则。
+ */
+async function paintSelfInvite() {
+  const box = $('#selfinv')
+  if (!box) return
+  try {
+    const g = await api('/invites/self')
+    box.innerHTML = `
+      <p class="muted">今天有消息进过这台网关，就可以生成一个<b>公开邀请码</b>。
+      它会出现在 <a href="/notice">通知页</a> 上，有效期固定 ${g.ttl_hours} 小时，每天 ${g.per_day} 个。</p>
+      ${g.can
+        ? '<div class="btnrow"><button id="si_go" class="sm">生成邀请码</button></div>'
+        : `<div class="notice">${esc(g.why)}</div>`}
+      <div id="si_out"></div>`
+    const b = $('#si_go')
+    if (b) b.onclick = async () => {
+      b.disabled = true
+      try {
+        const r = await api('/invites/self', { method: 'POST' })
+        $('#si_out').innerHTML = `<div class="card tight" style="margin-top:10px">
+          <div class="mono" style="user-select:all;font-size:18px;letter-spacing:3px">${esc(r.code)}</div>
+          ${r.url ? `<div class="mono wrap muted" style="font-size:12px;margin-top:6px;user-select:all">${esc(r.url)}</div>` : ''}
+          <div class="muted" style="margin-top:6px">${fmt(r.expires_at)} 前有效，已经贴在通知页上了。</div>
+        </div>`
+        paintSelfInvite()
+      } catch (e) { toast(e.message); b.disabled = false }
+    }
+  } catch (e) {
+    box.innerHTML = `<div class="err-text">${esc(e.message)}</div>`
+  }
+}
+
+/**
+ * 公告列表（管理员侧）。
+ *
+ * 正文用 `esc()` 转义之后塞进 `<div>`，而不是当 HTML 渲染——
+ * 它会原样发给每一个未登录的访客，当 HTML 用就等于开了一条从后台直通
+ * 所有访客浏览器的注入路径。通知页那边同样只用 textContent。
+ */
+async function paintAnnouncements() {
+  const box = $('#anns')
+  if (!box) return
+  try {
+    const { announcements } = await api('/announcements')
+    box.innerHTML = announcements.length
+      ? `<div class="list">${announcements.map((a) => `<div class="item">
+          <div class="row">
+            <b class="truncate">${esc(a.title)}</b>
+            ${a.pinned ? '<span class="badge plain" style="flex:none">置顶</span>' : ''}
+            <span class="muted mono" style="font-size:12px;flex:none">${fmt(a.updated_at)}</span>
+          </div>
+          <span class="muted truncate">${esc(a.body)}</span>
+          <div class="btnrow" style="margin-top:6px">
+            <button class="ghost sm" data-ann-edit="${esc(a.id)}">编辑</button>
+            <button class="danger sm" data-ann-del="${esc(a.id)}">删除</button>
+          </div>
+        </div>`).join('')}</div>`
+      : '<div class="muted">还没有公告。</div>'
+
+    for (const b of box.querySelectorAll('[data-ann-edit]')) {
+      b.onclick = () => {
+        const a = announcements.find((x) => x.id === b.dataset.annEdit)
+        if (!a) return
+        $('#ann_id').value = a.id
+        $('#ann_title').value = a.title
+        $('#ann_body').value = a.body
+        $('#ann_pin').checked = a.pinned
+        $('#ann_save').textContent = '保存修改'
+        $('#ann_reset').hidden = false
+        $('#ann_title').scrollIntoView({ block: 'center', behavior: 'smooth' })
+      }
+    }
+    for (const b of box.querySelectorAll('[data-ann-del]')) {
+      b.onclick = async () => {
+        if (!confirm('删掉这条公告？通知页上会立刻消失。')) return
+        try {
+          await api(`/announcements/${encodeURIComponent(b.dataset.annDel)}`, { method: 'DELETE' })
+          toast('已删除')
+          resetAnnForm()
+          paintAnnouncements()
+        } catch (e) { toast(e.message) }
+      }
+    }
+  } catch (e) {
+    box.innerHTML = `<div class="err-text">${esc(e.message)}</div>`
+  }
+}
+
+function resetAnnForm() {
+  if (!$('#ann_id')) return
+  $('#ann_id').value = ''
+  $('#ann_title').value = ''
+  $('#ann_body').value = ''
+  $('#ann_pin').checked = false
+  $('#ann_save').textContent = '发布'
+  $('#ann_reset').hidden = true
+  $('#ann_err').textContent = ''
+}
+
 /** 生成之后把码、链接、二维码一次性摆出来——之后再也拿不到明文 */
-function showInvite(r) {
+function showInvite(r, isPublic = false) {
   $('#inv_new').innerHTML = `
     <div class="card" style="margin-top:12px">
       <div style="font-weight:800;margin-bottom:6px">邀请码已生成</div>
-      <p class="muted">这串码<b>只显示这一次</b>。把它或下面的链接发给对方，
-      链接里的码放在 # 后面，不会进服务器日志。</p>
+      <p class="muted">${isPublic
+        ? '这是<b>公开码</b>：它已经贴在 <a href="/notice">通知页</a> 上了，谁都能看到、谁先用谁得。'
+        : '这串码<b>只显示这一次</b>。把它或下面的链接发给对方，链接里的码放在 # 后面，不会进服务器日志。'}</p>
       <label>邀请码</label>
       <div class="mono wrap card tight" style="user-select:all;font-size:18px;letter-spacing:3px">${esc(r.code)}</div>
       ${r.url ? `<label>注册链接</label>
@@ -4137,6 +4245,9 @@ async function settings() {
         <span class="muted">${me.role === 'admin' ? '管理员 · 可以建号、停用、续期、重置口令' : '普通用户'}</span>
       </div>
     </div>` : ''}
+    <h2>邀请朋友</h2>
+    <div class="card" id="selfinv"><div class="loading">加载中…</div></div>
+
     ${me?.role === 'admin' ? `
       <h2>用户</h2>
       <div class="card">
@@ -4200,9 +4311,27 @@ async function settings() {
             </select>
           </div>
         </div>
+        <label class="check"><input type="checkbox" id="inv_public"> 公开码（贴到「通知」页上，谁都看得见）</label>
+        <div class="muted">公开码会以<b>明文</b>存库并显示在未登录可达的 /notice 页上——这是它的用途，不是疏漏。
+        普通码只存哈希，生成时那一次是唯一一次能看到它。</div>
         <div class="btnrow"><button id="inv_add" class="sm">生成邀请码</button></div>
         <div id="inv_err" class="err-text"></div>
         <div id="inv_new"></div>
+
+        <h2 style="margin-top:22px">公告</h2>
+        <p class="muted">显示在 <a href="/notice">通知页</a>，未登录也看得见。正文按纯文本显示，换行保留。</p>
+        <div id="anns"><div class="loading">加载中…</div></div>
+        <input type="hidden" id="ann_id">
+        <label>标题</label>
+        <input id="ann_title" placeholder="如 9 月 20 日凌晨维护">
+        <label>正文</label>
+        <textarea id="ann_body" rows="4" placeholder="写给所有人看的话"></textarea>
+        <label class="check"><input type="checkbox" id="ann_pin"> 置顶</label>
+        <div class="btnrow">
+          <button id="ann_save" class="sm">发布</button>
+          <button id="ann_reset" class="ghost sm" hidden>取消编辑</button>
+        </div>
+        <div id="ann_err" class="err-text"></div>
       </div>` : ''}
 
       <h2>两步验证</h2>
@@ -4273,6 +4402,8 @@ async function settings() {
   void paintWebPush()
   paintBackup()
 
+  if (me?.role !== 'admin') paintSelfInvite()
+
   if (me?.role === 'admin') {
     void paintUsers()
     void paintInvites()
@@ -4297,14 +4428,39 @@ async function settings() {
             note: $('#inv_note').value.trim(),
             days: $('#inv_days').value ? Number($('#inv_days').value) : undefined,
             ttl_hours: Number($('#inv_ttl').value),
+            public: $('#inv_public').checked,
           },
         })
         $('#inv_note').value = ''
-        showInvite(r)
+        showInvite(r, $('#inv_public').checked)
         paintInvites()
       } catch (e) { $('#inv_err').textContent = e.message }
       $('#inv_add').disabled = false
     }
+    paintSelfInvite()
+
+    $('#ann_save').onclick = async () => {
+      $('#ann_save').disabled = true
+      $('#ann_err').textContent = ''
+      try {
+        await api('/announcements', {
+          method: 'POST',
+          body: {
+            id: $('#ann_id').value || undefined,
+            title: $('#ann_title').value,
+            body: $('#ann_body').value,
+            pinned: $('#ann_pin').checked,
+          },
+        })
+        toast($('#ann_id').value ? '已保存' : '已发布')
+        resetAnnForm()
+        paintAnnouncements()
+      } catch (e) { $('#ann_err').textContent = e.message }
+      $('#ann_save').disabled = false
+    }
+    $('#ann_reset').onclick = resetAnnForm
+    paintAnnouncements()
+
     $('#u_add').onclick = async () => {
       const name = $('#u_name').value.trim()
       if (!name) return ($('#u_err').textContent = '请填用户名')

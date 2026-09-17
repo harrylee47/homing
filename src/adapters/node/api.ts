@@ -31,6 +31,10 @@ import {
   type RetainableKind,
 } from '../../core/retention.js'
 import { describeFetchError } from '../../core/neterror.js'
+import {
+  ANNOUNCE_LIMIT, PUBLIC_INVITE_LIMIT, SELF_INVITE_PER_DAY, SELF_INVITE_TTL_MS,
+  dayStart, inviteState, normalizeAnnouncement,
+} from '../../core/notice.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import { SmsCommandConfig, type DownstreamFrame } from '../../core/protocol.js'
 import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
@@ -1024,19 +1028,23 @@ route('GET', '/api/invites', async ({ user, res, deps }) => {
       used_by: i.used_by ? users.get(i.used_by) ?? i.used_by : null,
       expired: i.used_at === null && i.expires_at <= t,
       created_at: i.created_at,
+      public: i.public,
+      // 公开码的明文本来就贴在「通知」页上，管理员列表里当然也给
+      code: i.code_plain,
     })),
   })
 })
 
 route('POST', '/api/invites', async ({ user, res, body, deps, ip }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
-  const b = body as { note?: string; days?: number; ttl_hours?: number }
+  const b = body as { note?: string; days?: number; ttl_hours?: number; public?: boolean }
   const code = generateInviteCode()
   const t = now()
   const ttlHours = (INVITE_TTL_HOURS as readonly number[]).includes(Number(b?.ttl_hours))
     ? Number(b.ttl_hours)
     : DEFAULT_INVITE_TTL_HOURS
   const expiresAt = t + ttlHours * 3_600_000
+  const isPublic = b?.public === true
   await deps.store.createInvite({
     code_hash: await hashToken(code),
     created_by: user.id,
@@ -1044,11 +1052,17 @@ route('POST', '/api/invites', async ({ user, res, body, deps, ip }) => {
     valid_days: (VALIDITY_DAYS as readonly number[]).includes(Number(b?.days)) ? Number(b.days) : null,
     expires_at: expiresAt,
     used_at: null, used_by: null, created_at: t,
+    public: isPublic,
+    // 公开码才存明文——它本来就要贴在未登录可见的页面上。见 core/notice.ts
+    code_plain: isPublic ? code : null,
+    self_made: false,
   })
   await deps.store.audit({
     user_id: user.id, actor: user.name, action: 'invite.create',
-    // 码本身不进审计：审计日志会被看、会被导出，而这个码等于一个账号
-    detail: b?.note ? `备注 ${b.note}` : null, ip, created_at: t,
+    // 码本身不进审计：审计日志会被看、会被导出，而这个码等于一个账号。
+    // 公开与否要记：它决定了这个码会不会被贴到公网页面上
+    detail: [isPublic ? '公开' : null, b?.note ? `备注 ${b.note}` : null].filter(Boolean).join(' · ') || null,
+    ip, created_at: t,
   })
 
   /**
@@ -1067,6 +1081,142 @@ route('DELETE', '/api/invites/:hash', async ({ user, res, params, deps, ip }) =>
   if (!ok) return json(res, 404, { error: '邀请码不存在或已被使用' })
   await deps.store.audit({ user_id: user.id, actor: user.name, action: 'invite.revoke', detail: null, ip, created_at: now() })
   json(res, 200, { ok: true })
+})
+
+/**
+ * 「通知」页的数据。**未认证可达**——这是整套系统里唯一一个这样的业务接口。
+ *
+ * 它给出去的东西要一条条数清楚：公告的标题正文时间、公开邀请码的明文与状态。
+ * 除此之外一个字都不给——谁生成的、备注写了什么、被谁用掉的，都留在管理员
+ * 那一侧。这些字段在 InviteRecord 上就摆着，漏一个 `...i` 就全出去了，
+ * 所以这里是**逐字段挑出来**的，不是挑掉不要的。
+ */
+route('GET', '/api/notice', async ({ res, deps }) => {
+  const t = now()
+  const [ann, invites] = await Promise.all([
+    deps.store.listAnnouncements(ANNOUNCE_LIMIT),
+    deps.store.listPublicInvites(PUBLIC_INVITE_LIMIT),
+  ])
+  json(res, 200, {
+    announcements: ann.map((a) => ({
+      id: a.id, title: a.title, body: a.body, pinned: a.pinned, updated_at: a.updated_at,
+    })),
+    invites: invites.map((i) => ({
+      code: i.code_plain,
+      expires_at: i.expires_at,
+      state: inviteState(i, t),
+    })),
+    /** 注册关着的时候，页面要说清楚「码在这儿但现在注册不开」 */
+    open: (await registrationMode(deps.store)) === 'invite',
+  })
+}, false)
+
+// ── 公告（管理员增删改） ────────────────────────────────
+
+route('GET', '/api/announcements', async ({ user, res, deps }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理公告' })
+  json(res, 200, { announcements: await deps.store.listAnnouncements(ANNOUNCE_LIMIT) })
+})
+
+route('POST', '/api/announcements', async ({ user, res, body, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理公告' })
+  const b = body as { id?: string; title?: string; body?: string; pinned?: boolean }
+  const norm = normalizeAnnouncement(b ?? {})
+  if ('error' in norm) return json(res, 400, { error: norm.error })
+
+  const t = now()
+  // 带 id 就是改，不带就是新建。改的时候保留原来的 created_at——
+  // 「发布于」这一行是给读的人看的，编一次错别字不该让它跳到今天
+  const old = b?.id ? await deps.store.getAnnouncement(b.id) : null
+  if (b?.id && !old) return json(res, 404, { error: '公告不存在' })
+  const rec = {
+    id: old?.id ?? newId('ann'),
+    title: norm.title,
+    body: norm.body,
+    pinned: b?.pinned === true,
+    created_at: old?.created_at ?? t,
+    updated_at: t,
+  }
+  await deps.store.upsertAnnouncement(rec)
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: old ? 'announce.update' : 'announce.create',
+    detail: norm.title, ip, created_at: t,
+  })
+  json(res, 200, { announcement: rec })
+})
+
+route('DELETE', '/api/announcements/:id', async ({ user, res, params, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理公告' })
+  if (!(await deps.store.deleteAnnouncement(params.id!))) {
+    return json(res, 404, { error: '公告不存在' })
+  }
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'announce.delete',
+    detail: params.id!, ip, created_at: now(),
+  })
+  json(res, 200, { ok: true })
+})
+
+// ── 用户自助生成公开邀请码 ──────────────────────────────
+
+/**
+ * 能不能生成，以及为什么不能。
+ *
+ * 两道门都要**把原因说出来**：只回一个 403 的话，「今天还没有消息进来」
+ * 和「今天已经生成过了」在界面上长得一模一样，而这两件事的下一步完全不同
+ * （一个是等一条短信，一个是明天再来）。
+ */
+async function selfInviteGate(
+  deps: ApiDeps, user: UserRecord, t: number,
+): Promise<{ ok: true; since: number } | { ok: false; why: string }> {
+  if ((await registrationMode(deps.store)) !== 'invite') {
+    return { ok: false, why: '这台网关现在不开放自助注册' }
+  }
+  const since = dayStart(t, offsetMs(t, await timezone(deps.store, user.id)))
+  if ((await deps.store.countEventsReceivedSince(user.id, since)) === 0) {
+    return { ok: false, why: '今天还没有消息进来。这道门槛确认的是「这台网关真的在用」，收到一条短信、来电或应用通知之后再来' }
+  }
+  if ((await deps.store.countSelfInvitesBy(user.id, since)) >= SELF_INVITE_PER_DAY) {
+    return { ok: false, why: `每天一个，明天再来（已生成 ${SELF_INVITE_PER_DAY} 个）` }
+  }
+  return { ok: true, since }
+}
+
+route('GET', '/api/invites/self', async ({ user, res, deps }) => {
+  const t = now()
+  const gate = await selfInviteGate(deps, user, t)
+  json(res, 200, {
+    can: gate.ok,
+    why: gate.ok ? null : gate.why,
+    ttl_hours: SELF_INVITE_TTL_MS / 3_600_000,
+    per_day: SELF_INVITE_PER_DAY,
+  })
+})
+
+route('POST', '/api/invites/self', async ({ user, res, deps, ip }) => {
+  const t = now()
+  const gate = await selfInviteGate(deps, user, t)
+  if (!gate.ok) return json(res, 403, { error: gate.why })
+
+  const code = generateInviteCode()
+  const expiresAt = t + SELF_INVITE_TTL_MS
+  await deps.store.createInvite({
+    code_hash: await hashToken(code),
+    created_by: user.id,
+    note: `${user.name} 自助生成`,
+    // 自助码开出来的账号跟着管理员设的默认走。这里不给选：
+    // 普通用户不该有能力决定别人的账号能用多久
+    valid_days: null,
+    expires_at: expiresAt,
+    used_at: null, used_by: null, created_at: t,
+    public: true, code_plain: code, self_made: true,
+  })
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'invite.self',
+    detail: '自助生成公开邀请码（24 小时）', ip, created_at: t,
+  })
+  const url = deps.baseUrl ? `${deps.baseUrl.replace(/\/$/, '')}/register#${code}` : null
+  json(res, 200, { code, url, expires_at: expiresAt })
 })
 
 /** 注册限速。与配对码那套分开——配对失败不该把注册一起锁死，反之亦然 */

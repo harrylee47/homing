@@ -304,6 +304,35 @@ export interface InviteRecord {
   used_at: number | null
   used_by: string | null
   created_at: number
+  /** 公开码：会出现在未登录可见的「通知」页上 */
+  public: boolean
+  /**
+   * 走「用户自助」那条路生成的。
+   *
+   * 「每人每天一个」必须只数这一类。数 `created_by` 的全部会把管理员从
+   * 后台正常发出去的码也算进去——于是管理员今天发过几个码之后，
+   * 自助按钮就报「每天一个，明天再来」，而他根本没按过那个按钮。
+   */
+  self_made: boolean
+  /**
+   * 码的明文，**只有公开码才有**，其余一律 null。
+   *
+   * 普通码只存哈希，因为拿到码等于拿到一个能看银行验证码的账号。公开码的
+   * 处境正相反：它本来就要被贴在一个谁都能打开的页面上，再存哈希不是安全
+   * 措施，只是让它没法显示。详见 core/notice.ts 开头。
+   */
+  code_plain: string | null
+}
+
+/** 公告。运营者写给所有人看的，未登录可见。 */
+export interface AnnouncementRecord {
+  id: string
+  title: string
+  body: string
+  /** 置顶的排在最前，其余按更新时间倒序 */
+  pinned: boolean
+  created_at: number
+  updated_at: number
 }
 
 export interface Store {
@@ -382,6 +411,26 @@ export interface Store {
   takeInvite(codeHash: string, userId: string, now: number): Promise<InviteRecord | null>
   /** 撤销尚未使用的邀请码 */
   deleteInvite(codeHash: string): Promise<boolean>
+  /**
+   * 公开邀请码，**新的在前**。未登录可达的接口会读它，所以这里只按
+   * `public = 1` 过滤，不做任何用户作用域——公开就是公开。
+   */
+  listPublicInvites(limit: number): Promise<InviteRecord[]>
+  /** 某人在某个时刻之后**自助**生成了几个码。只数 self_made，见上面的说明 */
+  countSelfInvitesBy(userId: string, since: number): Promise<number>
+  /**
+   * 某人在某个时刻之后**入库**了几条事件。
+   *
+   * 按 `received_at` 而不是 `occurred_at`：判断的是「这台网关今天在不在用」，
+   * 而补传会带着几天前的 occurred_at 进来——那恰恰说明它今天活着。
+   */
+  countEventsReceivedSince(userId: string, since: number): Promise<number>
+
+  // 公告
+  listAnnouncements(limit: number): Promise<AnnouncementRecord[]>
+  getAnnouncement(id: string): Promise<AnnouncementRecord | null>
+  upsertAnnouncement(a: AnnouncementRecord): Promise<void>
+  deleteAnnouncement(id: string): Promise<boolean>
 
   // 配对码
   createPairingCode(p: PairingCodeRecord): Promise<void>

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Homing — 通知</title>
+<meta name="description" content="Homing 的公告与公开邀请码。">
+<meta name="theme-color" content="#f4f2ec">
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<link rel="stylesheet" href="/style.css">
+<!--
+  通知页：整套系统里**唯一一个不需要登录就能读到业务数据**的页面。
+
+  它是落地页的兄弟，不进 SPA（SPA 的路由前面有两道闸：未初始化去向导、
+  无 token 去登录），也不能进——来看公开邀请码的人恰恰是还没有账号的那些人。
+
+  `noindex`：公开邀请码是给「看到这个页面的人」的，不是给搜索引擎的。
+  被索引之后，一个已经被用掉或撤销的码还会在搜索结果里挂很久，
+  而爬虫顺着它每天来敲一遍注册接口也毫无意义。
+
+  内容必须靠 JS 拉（它是变的），所以这一页**没有**落地页那条「关掉 JS 也
+  一个字不少」的约定。但要把话说清楚：<noscript> 里明写要开 JS，
+  而不是留一个永远转圈的空列表。
+-->
+<script src="/notice.js"></script>
+<style>
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 16px; }
+  .top {
+    position: sticky; top: 0; z-index: 10; background: var(--bg);
+    border-bottom: var(--bw) solid var(--line); padding: 10px 0;
+  }
+  .top .wrap { display: flex; align-items: center; gap: 8px; }
+  .top img { width: 38px; height: 38px; flex: none; }
+  .top .name { font-weight: 800; font-size: 20px; letter-spacing: .02em; }
+  .top .sp { flex: 1 }
+
+  .head { padding: 34px 0 6px }
+  .head h1 { font-size: clamp(28px, 6vw, 44px); line-height: 1.16; margin: 0 0 10px; letter-spacing: -.02em }
+  .head p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.7 }
+
+  .sec { padding: 26px 0 }
+  .sec h2 { font-size: 13px; letter-spacing: .16em; color: var(--muted); margin: 0 0 14px; font-weight: 800 }
+  .sec h2 small { font-weight: 700; letter-spacing: 0; margin-left: 8px; color: var(--muted); opacity: .8 }
+
+  .ann {
+    border: var(--bw) solid var(--line); border-radius: 12px; background: var(--card);
+    box-shadow: var(--shadow); padding: 14px 16px; margin-bottom: 12px;
+  }
+  .ann h3 { margin: 0 0 8px; font-size: 17px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap }
+  .ann .pin {
+    font-size: 11px; font-weight: 800; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px;
+    background: var(--yellow); color: var(--on-bright); border: 1.5px solid var(--line);
+  }
+  /* 公告正文是管理员手打的纯文本，换行要留住；但绝不允许 HTML（见 notice.js） */
+  .ann .body { margin: 0; white-space: pre-wrap; line-height: 1.75; font-size: 15px }
+  .ann time { display: block; margin-top: 10px; font-size: 12px; color: var(--muted) }
+
+  /* 邀请码列表：码本身是这一屏的主角，所以它用等宽、大字号、能点一下就复制 */
+  .inv {
+    display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap;
+    border: var(--bw) solid var(--line); border-radius: 12px; background: var(--card);
+    box-shadow: var(--shadow); padding: 12px 14px; margin-bottom: 10px;
+  }
+  /* 码本身是这一屏的主角：等宽、大字号、点一下就能复制。
+     类名不叫 .code —— style.css 里那个是配对码的大黄块，撞上就变成一整块黄底 */
+  .inv .ivc {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 20px; font-weight: 800; letter-spacing: .14em; flex: 1 0 100%;
+  }
+  .inv.gone .ivc { color: var(--muted); text-decoration: line-through; letter-spacing: .12em }
+  .inv .when { font-size: 12px; color: var(--muted); white-space: nowrap; flex: none }
+  .inv button { width: auto; font-size: 12px; padding: 7px 12px; border-radius: 999px; flex: none; margin-left: auto }
+  .inv .badge { flex: none }
+
+  .empty { color: var(--muted); font-size: 14px; padding: 6px 0 }
+  .warn-line {
+    border: var(--bw) solid var(--line); border-left-width: 6px; border-radius: 8px;
+    background: var(--card); padding: 11px 14px; font-size: 14px; line-height: 1.7; margin: 0 0 16px;
+  }
+  footer { border-top: var(--bw) solid var(--line); margin-top: 20px; padding: 22px 0 40px; color: var(--muted); font-size: 13px }
+  footer a { color: inherit }
+</style>
+</head>
+<body>
+
+<div class="top"><div class="wrap">
+  <img src="/logo.svg" alt="">
+  <span class="name">Homing</span>
+  <span class="sp"></span>
+  <a class="btnlink" href="/welcome"><button class="ghost sm">返回首页</button></a>
+  <a class="btnlink" href="/login"><button class="ghost sm">登录</button></a>
+</div></div>
+
+<div class="wrap">
+  <div class="head">
+    <h1>通知</h1>
+    <p>这一页不需要登录。公告是这台网关的运营者写的；下面的邀请码是公开放出来的，谁先用谁得。</p>
+  </div>
+
+  <noscript>
+    <p class="warn-line">这一页的内容要靠脚本去取，请开启 JavaScript 后刷新。</p>
+  </noscript>
+
+  <section class="sec">
+    <h2>公告</h2>
+    <div id="ann"><p class="empty">加载中…</p></div>
+  </section>
+
+  <section class="sec">
+    <h2>公开邀请码<small id="inv_note"></small></h2>
+    <div id="inv"><p class="empty">加载中…</p></div>
+  </section>
+
+  <footer><div>
+    <p style="margin:0 0 8px">Homing · 作者 <b>Kou.</b> · <a href="https://kou.im" rel="noopener">kou.im</a></p>
+    <p style="margin:0">拿到邀请码后到 <a href="/register">注册页</a> 开号。注册即表示你接受首页上的《隐私与风险声明》。</p>
+  </div></footer>
+</div>
+
+</body>
+</html>
