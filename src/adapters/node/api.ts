@@ -28,6 +28,7 @@ import { toSvg } from '../../core/qr.js'
 import { eventFingerprint, planReconcile } from '../../core/fingerprint.js'
 import { scanMatches } from '../../core/search.js'
 import { simLabel, simsOf } from '../../core/sim.js'
+import { checkWebhookTarget } from '../../core/ssrf.js'
 import { daysLeft, inactiveReason, userActive } from '../../core/users.js'
 import { groupThreads, mergeThread, threadKey, type ThreadItem } from '../../core/thread.js'
 import { buildSeedRules } from '../../core/seeds.js'
@@ -287,6 +288,33 @@ route('POST', '/api/setup/verify', async ({ res, body, deps, ip }) => {
 /** 登录失败计数。锁定状态可从审计日志重建，这里只是快路径。 */
 const loginFails = new Map<string, { count: number; until: number }>()
 
+/**
+ * 同时最多几次口令运算。
+ *
+ * argon2id 每次要 19MiB 内存、约 100ms CPU，而登录与注册都是免鉴权可达的。
+ * 不设闸的话，几十个并发请求就能把内存和事件循环一起吃干净——
+ * 而这个进程同时还扛着设备的 WebSocket 心跳与事件入库，卡住就是漏报。
+ *
+ * 限速器只在连错 5 次之后才拦，前 5 次是白送的；换个 IP 又是 5 次。
+ * 所以真正兜底的是这里：排队而不是拒绝，慢下来但不倒。
+ */
+const PASSWORD_CONCURRENCY = 4
+let pwRunning = 0
+const pwQueue: (() => void)[] = []
+
+async function withPasswordSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (pwRunning >= PASSWORD_CONCURRENCY) {
+    await new Promise<void>((resolve) => pwQueue.push(resolve))
+  }
+  pwRunning++
+  try {
+    return await fn()
+  } finally {
+    pwRunning--
+    pwQueue.shift()?.()
+  }
+}
+
 route('POST', '/api/auth/login', async ({ user, req, res, body, deps, ip }) => {
   const rec = loginFails.get(ip)
   if (rec && now() < rec.until) {
@@ -294,12 +322,19 @@ route('POST', '/api/auth/login', async ({ user, req, res, body, deps, ip }) => {
   }
 
   const b = body as { password?: string; code?: string; name?: string }
-  // 不填用户名时按第一个管理员算：单用户部署不该被迫多打一个框
+  /**
+   * 不填用户名时按第一个管理员算——**但只在单用户部署下**。
+   *
+   * 这个便利在多用户下会变成「不用知道任何用户名就能定向打管理员」，
+   * 而管理员是唯一能建号、删号、续期的身份。多一个人之后就必须报上名来。
+   */
+  const all = await deps.store.listUsers()
   const acct = b.name?.trim()
     ? await deps.store.getUserByName(b.name.trim())
-    : (await deps.store.listUsers()).find((u) => u.role === 'admin') ?? null
+    : (all.length === 1 ? all[0] ?? null : null)
 
-  const okPw = !!acct && userActive(acct, now()) && verifyPassword(b.password ?? '', acct.password_hash)
+  const okPw = !!acct && userActive(acct, now())
+    && (await withPasswordSlot(async () => verifyPassword(b.password ?? '', acct.password_hash)))
   /**
    * 两步验证是可选的，所以这里要分支——但**不能**用 try/catch 兜。
    *
@@ -730,6 +765,23 @@ route('GET', '/api/channels', async ({ user, res, deps }) => {
   })
 })
 
+/**
+ * 渠道配置里可能藏着 SSRF。
+ *
+ * webhook 会让服务端按用户给的地址发请求。allow_private 这一项只有管理员
+ * 能开——普通成员开了它，就等于拿到一个「让服务器替我访问内网」的原语。
+ * 静默忽略而不是报错：用户没这个权限，就当他没填。
+ */
+function sanitizeChannelConfig(
+  type: string, cfg: Record<string, unknown>, isAdmin: boolean,
+): { ok: true; config: Record<string, unknown> } | { ok: false; error: string } {
+  if (type !== 'webhook') return { ok: true, config: cfg }
+  const allowPrivate = isAdmin && cfg.allow_private === true
+  const bad = checkWebhookTarget(String(cfg.url ?? ''), allowPrivate)
+  if (bad) return { ok: false, error: bad }
+  return { ok: true, config: { ...cfg, allow_private: allowPrivate } }
+}
+
 route('POST', '/api/channels', async ({ user, res, body, deps, ip }) => {
   const b = body as { type?: string; name?: string; config?: unknown; enabled?: boolean }
   const provider = b.type ? PROVIDERS[b.type] : undefined
@@ -739,12 +791,14 @@ route('POST', '/api/channels', async ({ user, res, body, deps, ip }) => {
   if (!parsed.success) {
     return json(res, 400, { error: '配置校验失败', detail: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) })
   }
+  const safe = sanitizeChannelConfig(b.type!, parsed.data as Record<string, unknown>, user.role === 'admin')
+  if (!safe.ok) return json(res, 400, { error: safe.error })
 
   const id = newId('ch')
   await deps.store.audit({ actor: 'admin', action: 'channel.create', detail: `${b.type}:${b.name ?? b.type}`, ip, created_at: now() })
   await deps.store.upsertChannel({
     id, user_id: user.id, type: b.type!, name: b.name ?? b.type!,
-    config_enc: await deps.cipher.encrypt(JSON.stringify(parsed.data)),
+    config_enc: await deps.cipher.encrypt(JSON.stringify(safe.config)),
     enabled: b.enabled ?? true, created_at: now(),
   })
   json(res, 200, { id })
@@ -778,7 +832,9 @@ route('PUT', '/api/channels/:id', async ({ user, res, params, body, deps, ip }) 
     if (!parsed.success) {
       return json(res, 400, { error: '配置校验失败', detail: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) })
     }
-    configEnc = await deps.cipher.encrypt(JSON.stringify(parsed.data))
+    const safe = sanitizeChannelConfig(c.type, parsed.data as Record<string, unknown>, user.role === 'admin')
+    if (!safe.ok) return json(res, 400, { error: safe.error })
+    configEnc = await deps.cipher.encrypt(JSON.stringify(safe.config))
   }
 
   await deps.store.upsertChannel({
@@ -1040,6 +1096,10 @@ route('GET', '/api/bark/info', async ({ user, res, deps }) => {
 })
 
 route('POST', '/api/bark/access', async ({ user, res, body, deps, ip }) => {
+  // 这是实例级的开关，不是个人设置。route() 的 scope 只区分 token 类型，
+  // **不做角色判断**——真正判角色的只有显式写了 role !== 'admin' 的地方。
+  // 漏了这一句，任何注册进来的成员都能把 Bark 开成完全开放
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能改 Bark 的开放档位' })
   const v = (body as { access?: string })?.access
   if (v !== 'off' && v !== 'push' && v !== 'full') {
     return json(res, 400, { error: 'access 必须是 off / push / full' })
