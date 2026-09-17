@@ -918,6 +918,8 @@ const S_REGISTRATION = 'registration_mode'
  * 到期那一刻手上只有一个打不开的控制台。
  */
 const S_ADMIN_CONTACT = 'admin_contact'
+/** 这个账号有没有成功测试过任意一个渠道。上手清单的第二步靠它判断 */
+const S_CHANNEL_TESTED = 'channel_tested_at'
 
 /**
  * 为什么没有「完全开放」。
@@ -1781,6 +1783,19 @@ route('POST', '/api/channels/:id/test', async ({ user, res, params, deps }) => {
       + '请告诉他，否则他的短信会一直发到你这里。',
     alert: true, priority: 'normal', code: null, eventId: '', occurredAt: now(),
   })
+  /**
+   * 测试成功留个痕。
+   *
+   * 「配了渠道」和「渠道真的通」是两件事，而它们的差别只有按下测试那一刻
+   * 才看得出来——渠道配错的表现是**什么都没发生**，不报错、不告警，
+   * 等你发现时已经漏了几条。总览的上手清单靠这个标记判断第二步做完没有，
+   * 所以它记的是「测通过」，不是「存过」。
+   */
+  if (r?.ok) {
+    await deps.store.setUserSetting(user.id, S_CHANNEL_TESTED, String(now()))
+      .catch(() => { /* 记不上不该让测试本身失败 */ })
+  }
+
   json(res, r?.ok ? 200 : 502, {
     ok: r?.ok ?? false, attempts: r?.attempts ?? 0, error: r?.error ?? null,
     // 让操作者当场看见「发给了谁」。填错 chat_id 时这是唯一的线索——
@@ -2596,6 +2611,18 @@ route('GET', '/api/stats', async ({ user, res, deps }) => {
     },
     channels: (await deps.store.listChannels(user.id)).filter((c) => c.enabled).length,
     rules: (await deps.store.listRules(user.id)).filter((r) => r.enabled).length,
+    /**
+     * 上手清单的三个信号。
+     *
+     * 都要「曾经」而不是「今天」：今日事件为 0 只说明今天安静，
+     * 不说明这条链路没通过。第一次跑通之后这个清单就不再出现，
+     * 而判断「跑通过没有」只能看历史。
+     */
+    onboarding: {
+      paired: devices.some((d) => d.status !== 'revoked'),
+      channel_tested: (await deps.store.getUserSetting(user.id, S_CHANNEL_TESTED)) !== null,
+      got_event: (await deps.store.countEvents({ user_id: user.id })) > 0,
+    },
   })
 }, true, false, 'bot')
 

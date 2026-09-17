@@ -608,3 +608,47 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 3px; 
   border: var(--bw) solid var(--line); border-radius: 5px; padding: 0 4px;
 }
 
+
+
+/* ── 上手清单 ──────────────────────────────────────────────
+   总览上那张「先把这三件事做完」。颜色沿用落地页那条路径：
+   青 → 黄 → 薄荷，终点落在薄荷（= 成功/在线），三步本身就画出一条有终点的路。
+   落地页与控制台用同一套视觉，人才会认出「这就是刚才说的那三件事」。 */
+.onboard { padding: 0; }
+.ob-step {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px 14px; border-bottom: var(--bw) solid var(--line);
+}
+.ob-step:last-child { border-bottom: none }
+.ob-n {
+  flex: none; width: 30px; height: 30px; border-radius: 8px;
+  border: var(--bw) solid var(--line); display: flex;
+  align-items: center; justify-content: center;
+  font-weight: 800; font-size: 14px; color: var(--on-bright);
+}
+.ob-n.c1 { background: var(--cyan) }
+.ob-n.c2 { background: var(--yellow) }
+.ob-n.c3 { background: var(--mint) }
+.ob-body { flex: 1; min-width: 0 }
+.ob-body b { display: block; font-size: 15px; margin-bottom: 3px }
+.ob-body p { margin: 0; font-size: 13px; line-height: 1.7 }
+.ob-step a { text-decoration: none; flex: none; align-self: center }
+
+/* 没轮到的步骤压暗，但**不禁用**——顺序是建议不是强制，
+   先配渠道再配手机也完全能用，挡住反而是添乱 */
+.ob-step:not(.cur):not(.done) { opacity: .55 }
+/* 做完的那步：编号球换成对勾，标题划掉，整行让位给还没做的 */
+.ob-step.done .ob-n { background: var(--card); color: var(--muted) }
+.ob-step.done .ob-body b { color: var(--muted); text-decoration: line-through }
+.ob-step.done .ob-body p { display: none }
+.ob-step.done { padding-top: 9px; padding-bottom: 9px }
+
+
+/* 轻量警告行。比 .notice 轻——.notice 是整块虚线框，一个表单里出现两次就太重了。
+   用在「这一项填错会静默失效」这类提醒上：粉色左边线（配色语义里 = 失败）。
+   落地页与控制台共用，别在各自的页面里再复制一份。 */
+.warn-line {
+  border-left: 4px solid var(--pink); padding-left: 10px;
+  font-size: 13px; line-height: 1.7; color: var(--muted); margin: 10px 0 0;
+}
+.warn-line b { color: var(--fg) }

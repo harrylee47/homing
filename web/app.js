@@ -807,6 +807,17 @@ function privacyHtml() {
 async function register() {
   nav.hidden = true
   const fromLink = decodeURIComponent(location.hash.slice(1)).trim().toUpperCase()
+  /**
+   * 读完立刻把码从地址栏擦掉。
+   *
+   * 邀请码放在 fragment 里，图的就是它不发给服务器——不进反代日志、不进
+   * 访问日志、不进 Referer（api.ts 里生成链接那处写了这段来历）。但读完不擦，
+   * 它就留在**浏览器历史**里，也留在截图和「把这个链接发给我看看」里，
+   * 而这个码等于一个能看银行验证码的账号。
+   *
+   * 用 replaceState 不用 pushState：擦掉这一步不该在后退栈里多一格。
+   */
+  if (fromLink) history.replaceState(null, '', location.pathname)
   const pub = await api('/register/status', { allow404: true }).catch(() => null)
   const contact = pub?.admin_contact || ''
 
@@ -1032,6 +1043,56 @@ async function recover() {
 
 // ── 总览 ────────────────────────────────────────────────────
 
+/**
+ * 上手清单。
+ *
+ * 落地页对外承诺的是「其实只有三件事」，登进来却是一个空仪表盘加三个 0——
+ * 承诺到这儿就断了。这张卡把同一套说法接上：同样三步、同样的顺序、
+ * 同样的颜色（青 → 黄 → 薄荷，终点落在薄荷 = 成功）。
+ *
+ * 三条自我约束，免得它变成又一条烦人的横幅：
+ *
+ * ① **三步都完成后永久消失**，不留「太好了，全部完成！」这种庆祝横幅——
+ *    它此刻唯一的作用就是占地方。
+ * ② **只高亮当前这一步**，后面的步骤压暗但仍可点。顺序是建议不是强制：
+ *    先配渠道再配手机也完全能用，挡住反而是添乱。
+ * ③ **第三步没有按钮**。它不是一件要做的事，是前两步做对了自然会发生的事；
+ *    给它一个按钮等于让人去找一件根本不存在的操作。
+ */
+function onboardCard(ob) {
+  if (!ob || (ob.paired && ob.channel_tested && ob.got_event)) return ''
+
+  const steps = [
+    { done: ob.paired, color: 'c1', title: '配对那台安卓机',
+      desc: '在「设备」页生成配对码，用装好 App 的那台手机扫一下。',
+      href: '/devices', btn: '去配对' },
+    { done: ob.channel_tested, color: 'c2', title: '配一个通知渠道，然后按测试',
+      // 这句是整张卡里最重要的一句：配错的表现是「什么都没发生」
+      desc: '<b>一定要按那个「测试」按钮。</b>渠道配错不会报错，' +
+        '表现就是什么都没发生——等你发现时已经漏了几条。',
+      href: '/channels', btn: '去配置' },
+    { done: ob.got_event, color: 'c3', title: '收到第一条消息',
+      desc: '前两步做完就会自动发生。让人给那张卡发条短信，或者等一条自己来。',
+      href: null, btn: null },
+  ]
+  // 当前这一步 = 第一个没做完的
+  const cur = steps.findIndex((x) => !x.done)
+
+  return `
+    <h2>先把这三件事做完</h2>
+    <div class="card onboard">
+      ${steps.map((x, i) => `
+        <div class="ob-step${x.done ? ' done' : ''}${i === cur ? ' cur' : ''}">
+          <span class="ob-n ${x.color}">${x.done ? '✓' : i + 1}</span>
+          <div class="ob-body">
+            <b>${x.title}</b>
+            <p class="muted">${x.desc}</p>
+          </div>
+          ${x.btn && !x.done ? `<a href="${x.href}"><button class="sm${i === cur ? '' : ' ghost'}">${x.btn}</button></a>` : ''}
+        </div>`).join('')}
+    </div>`
+}
+
 async function overview() {
   render('<div class="loading">加载中…</div>')
   try {
@@ -1051,11 +1112,24 @@ async function overview() {
           <span class="badge ${d.status === 'online' ? 'ok' : d.status === 'revoked' ? 'err' : 'plain'}">${
             d.status === 'online' ? '在线' : d.status === 'revoked' ? '已吊销' : '离线'}</span>
         </div>
-      </div>`).join('') : '<div class="card muted">还没有设备。到「设备」页生成配对码。</div>'
+      </div>`).join('') : ''
+
+    /**
+     * 新用户第一眼看到的是清单，不是三个 0。
+     *
+     * 而「还没有设备。到『设备』页生成配对码。」这句在清单出现时就不出——
+     * 它和第 1 步说的是同一件事，两条并排放着只会让人以为是两件待办。
+     * 清单走完之后它才回来：那时候它的意思变成了「你的设备都没了」，
+     * 是个异常信号，该显眼。
+     */
+    const onboard = onboardCard(s.onboarding)
+    const noDevice = (s.devices.length || onboard) ? ''
+      : '<div class="card muted">还没有设备。到「设备」页生成配对码。</div>'
 
     render(`
       ${brand()}
-      ${deviceCards}
+      ${onboard}
+      ${deviceCards}${noDevice}
       <div class="card">
         <div class="stat">
           <div><b>${s.today.events}</b><span class="muted">今日事件</span></div>
@@ -2457,9 +2531,18 @@ function fmtFull(ts) {
 async function channels() {
   render('<div class="loading">加载中…</div>')
   try {
+    /**
+     * `me` 要在这儿补一次。
+     *
+     * 它平时是登录那一下赋上的，但整页刷新（书签、总览上手清单里的「去配置」、
+     * 或者直接输地址）之后它是 null——于是 `me?.role === 'admin'` 恒为假，
+     * 管理员专属的那一项（webhook 的「允许内网地址」）**永远不出现**，
+     * 而且不报错，只是静静地少一个勾选框。
+     */
     const [{ channels: cs }, bark] = await Promise.all([
       api('/channels'),
       api('/bark/info').catch(() => null),
+      me ? null : api('/auth/me').then((r) => { me = r.user }).catch(() => null),
     ])
     render(`
       <h1>渠道</h1>
@@ -2574,14 +2657,46 @@ async function channels() {
       },
       telegram: {
         name: '主 Telegram',
-        html: `<label>Bot Token</label><input id="f_bt" class="mono" type="password" autocomplete="off">
+        /**
+         * Telegram 是四个渠道里**唯一需要你先去别处造一个东西**的：
+         * Bark 装个 App、ntfy 起个名字就完了，这里得先有一个自己的 Bot。
+         * 原来的表单只有两个空框，等于默认「你已经知道 Bot 是怎么来的」——
+         * 而不知道的人在这儿就卡死了，还不知道自己卡在哪。
+         */
+        html: `<div class="card tight" style="background:var(--bg)">
+                 <b>第一步：造一个属于你自己的 Bot</b>
+                 <ol class="howto">
+                   <li>在 Telegram 里搜 <b class="mono">@BotFather</b>（认准带蓝勾的那个），给它发
+                       <b class="mono">/newbot</b>。</li>
+                   <li>按它问的填两个名字：显示名随便起；用户名必须以
+                       <b class="mono">bot</b> 结尾、且全网唯一。</li>
+                   <li>成功后它会回一串
+                       <span class="mono">123456789:AAH...</span> —— <b>那就是 Bot Token</b>，填到下面。</li>
+                 </ol>
+                 <div class="warn-line"><b>要用你自己新建的，不能和别人共用一个。</b>
+                 Telegram 只允许一个程序拉取一个 Bot 的消息，两边同时用会互相把对方的命令吃掉，
+                 表现是「Bot 时灵时不灵」。保存时这里会拦住重复的 token。</div>
+               </div>
+               <label>Bot Token</label>
+               <input id="f_bt" class="mono" type="password" autocomplete="off" placeholder="123456789:AAH…">
+
+               <div class="card tight" style="background:var(--bg);margin-top:12px">
+                 <b>第二步：让它认识你</b>
+                 <div class="muted" style="margin:6px 0 0">在 Telegram 里<b>搜你刚建的那个 Bot</b>，
+                 点开，发一句 <b class="mono">/start</b>。<b>顺序不能反</b>——Telegram 只让 Bot 读到
+                 「已经有人跟它说过话」之后的消息，没发过就点下面的按钮，永远是空的。</div>
+               </div>
                <label>Chat ID</label>
-               <input id="f_cid" class="mono" autocomplete="off">
+               <input id="f_cid" class="mono" autocomplete="off" placeholder="点下面的按钮自动填">
                <button class="ghost sm" id="discover" type="button" style="margin-top:8px">自动获取 Chat ID</button>
                <div class="muted" id="discovered" style="margin-top:6px">
-                 Chat ID 是「你」的标识，和用哪个 Bot 无关。换 Bot 后先给它发一条 /start，再点上面的按钮。
+                 Chat ID 是<b>「你」</b>的标识，不是 Bot 的——换了 Bot 它也不变。
+                 想发到群里就把 Bot 拉进群、在群里发一句话，这里会多出一个负数的 ID。
                </div>
-               <div class="muted" style="margin-top:8px">正文会以模糊形式发送，点击才可见——明文转发验证码会导致 Bot 被封禁。</div>`,
+
+               <div class="notice" style="margin-top:12px"><b>验证码在 Telegram 里是打码的，要点一下才看得见。</b>
+               这不是设计取舍：Telegram 的反欺诈系统会封禁转发验证码的 Bot，明文发等于让它随时失效
+               —— 上一版网关就是这么被封的。想要「通知栏直接看到码、长按即复制」，用 Bark 或 ntfy。</div>`,
         collect: () => ({ bot_token: $('#f_bt').value.trim(), chat_id: $('#f_cid').value.trim() }),
       },
       ntfy: {
@@ -2618,10 +2733,69 @@ async function channels() {
       },
       webhook: {
         name: 'Webhook',
-        html: `<label>目标地址</label><input id="f_url" class="mono" placeholder="https://example.com/hook">
-               <div class="muted">正文会以结构化 JSON 发往这个地址，必须是 https。
-               企业微信机器人、钉钉机器人，或者你自己的接口都行。</div>`,
-        collect: () => ({ url: $('#f_url').value.trim() }),
+        /**
+         * 这是唯一一个把短信正文**发往你指定的任意地址**的渠道，所以：
+         * ① 先把这件事说清楚，别让人以为它和前面几个一样只是「换个 App 收」；
+         * ② 把收到的 JSON 长什么样直接列出来——不然对接方要靠猜，
+         *    而「猜错字段名」的表现同样是「什么都没发生」；
+         * ③ 自定义请求头暴露出来。schema 里一直支持，界面上一直没有，
+         *    结果是所有需要鉴权的接口都对接不了。
+         */
+        html: `<label>目标地址</label>
+               <input id="f_url" class="mono" placeholder="https://example.com/hook">
+               <div class="muted">企业微信机器人、钉钉机器人，或者你自己的接口都行。
+               群机器人的地址在群设置里「群机器人 → 添加 → 复制 Webhook 地址」。</div>
+
+               <div class="notice" style="margin-top:10px"><b>短信正文会明文发到这个地址。</b>
+               别的渠道是把消息送到你自己的手机上，这一个是送到<b>你填的那台服务器</b>——
+               它归谁、日志留多久、谁能看，网关这边管不着。填之前想清楚。</div>
+
+               <details style="margin-top:10px"><summary class="muted">对方会收到什么（JSON 字段）</summary>
+                 <pre class="mono wrap" style="font-size:12px;line-height:1.6;margin:8px 0 0">{
+  "title": "95533",          发件人
+  "body": "…",               短信正文
+  "code": "493021",          提取到的验证码，没有则 null
+  "priority": "high",
+  "event_id": "evt_…",
+  "kind": "sms",             sms / call / notification
+  "direction": "in",
+  "device": "家里的备用机",
+  "sim": "SIM1 · 8868",
+  "occurred_at": 1789…,      毫秒时间戳
+  "occurred_at_local": "…",  已按你的时区格式化
+  "console_url": "https://…"
+}</pre></details>
+
+               <label style="margin-top:10px">自定义请求头（可选）</label>
+               <textarea id="f_headers" class="mono" rows="2" placeholder="Authorization: Bearer xxx&#10;X-Token: yyy"></textarea>
+               <div class="muted">一行一个，<span class="mono">名字: 值</span>。接口要鉴权时用。</div>
+
+               <label style="margin-top:10px"><input type="checkbox" id="f_insecure" style="width:auto;margin-right:6px">允许 http（不加密）</label>
+               <div class="muted">默认只允许 https——正文里有验证码，走明文等于沿途公开广播。
+               只有目标在内网、你清楚在做什么时才勾。</div>
+               ${me?.role === 'admin' ? `
+               <label style="margin-top:10px"><input type="checkbox" id="f_private" style="width:auto;margin-right:6px">允许指向内网 / 本机地址</label>
+               <div class="warn-line"><b>只有管理员看得到这一项，因为它能让服务器替你访问它自己的内网。</b>
+               云厂商的元数据接口、只监听回环的管理端口、同机的数据库端口，都在这道闸后面。
+               接收端确实就在这台机器上时才勾（比如同机的 n8n、Home Assistant）。</div>` : ''}`,
+        collect: () => {
+          const headers = {}
+          for (const line of ($('#f_headers').value || '').split('\n')) {
+            const i = line.indexOf(':')
+            if (i <= 0) continue
+            const k = line.slice(0, i).trim()
+            const v = line.slice(i + 1).trim()
+            if (k && v) headers[k] = v
+          }
+          return {
+            url: $('#f_url').value.trim(),
+            headers,
+            allow_insecure: $('#f_insecure').checked,
+            // 非管理员根本没有这个框；服务端也会再判一次角色，
+            // 这里送 true 也没用（sanitizeChannelConfig 会静默降成 false）
+            allow_private: $('#f_private')?.checked === true,
+          }
+        },
       },
     }
 
@@ -2747,7 +2921,24 @@ function channelEditor(c, bark) {
       { key: 'token', label: '访问令牌', secret: true, clearable: true },
       { key: 'icon', label: '通知图标（PNG/JPEG 的公网地址）', secret: false, placeholder: iconUrl(), clearable: true },
     ],
-    webhook: [{ key: 'url', label: '目标地址', secret: false }],
+    webhook: [
+      { key: 'url', label: '目标地址', secret: false },
+      // headers 在这里只能整体替换不能逐条改，但有总比完全够不着强
+      // headers 在库里是对象，界面上是「一行一个」的文本 —— 用 parse 把两者接上。
+      // 不给 parse 的话这里送出去的是字符串，schema 当场 400，而报错只会说
+      // 「配置不合法」，看不出是哪一项
+      { key: 'headers', label: '自定义请求头（一行一个「名字: 值」）', secret: false, clearable: true,
+        parse: (v) => {
+          const out = {}
+          for (const line of v.split('\n')) {
+            const i = line.indexOf(':')
+            if (i <= 0) continue
+            const k = line.slice(0, i).trim(); const val = line.slice(i + 1).trim()
+            if (k && val) out[k] = val
+          }
+          return out
+        } },
+    ],
     // 订阅信息由浏览器生成，手改只会改坏。要换就去「设置 → 浏览器通知」重订
     webpush: [],
   }
@@ -2770,8 +2961,11 @@ function channelEditor(c, bark) {
       <p class="muted">留空表示不修改。密钥不会回显。</p>
       ${fields.map((f) => `
         <label>${esc(f.label)}</label>
-        <input id="c_${esc(f.key)}" class="mono" type="${f.secret ? 'password' : 'text'}"
-               placeholder="${esc(f.placeholder || '留空则不变')}" autocomplete="off">
+        ${f.parse
+          ? `<textarea id="c_${esc(f.key)}" class="mono" rows="2"
+               placeholder="${esc(f.placeholder || '留空则不变')}"></textarea>`
+          : `<input id="c_${esc(f.key)}" class="mono" type="${f.secret ? 'password' : 'text'}"
+               placeholder="${esc(f.placeholder || '留空则不变')}" autocomplete="off">`}
         ${f.clearable ? `<label style="text-transform:none;letter-spacing:0;font-size:13px;color:var(--fg)">
           <input type="checkbox" id="c_${esc(f.key)}_clear" style="width:auto;margin-right:6px">清空这一项</label>` : ''}
       `).join('')}
@@ -2793,7 +2987,7 @@ function channelEditor(c, bark) {
       // 勾了「清空」就送显式 null——服务端把 null 当清空、把空串当「没填」
       if (f.clearable && $(`#c_${f.key}_clear`)?.checked) { config[f.key] = null; continue }
       const v = $(`#c_${f.key}`).value.trim()
-      if (v) config[f.key] = v
+      if (v) config[f.key] = f.parse ? f.parse(v) : v
     }
     try {
       await api(`/channels/${c.id}`, {
