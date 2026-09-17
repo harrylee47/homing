@@ -377,6 +377,89 @@ describe('历史导入只归档不推送', () => {
   })
 })
 
+describe('短信应用的通知是短信的回声', () => {
+  let store: MemoryStore
+  let cipher: Cipher
+  const SMS = '【农商银行】为促进经济恢复，我行给予您 388000 元综合贷款，拒收请回复R'
+  const AT = 1_700_000_000_000
+
+  const addSms = async (at: number, content = SMS, device = 'dev_1') => {
+    store.events.set(`sms_${at}`, {
+      id: `sms_${at}`, device_id: device, kind: 'sms', direction: 'in', sim_slot: null,
+      sender_enc: await cipher.encrypt('10690442001808'),
+      content_enc: await cipher.encrypt(content),
+      enc_ver: 1, occurred_at: at, received_at: at, matched_rules: null, created_at: at,
+    })
+  }
+  const notif = (content: string) => evt({
+    kind: 'notification' as const, from: '10690442001808', content, occurred_at: AT + 1000,
+  })
+
+  beforeEach(async () => {
+    store = new MemoryStore()
+    cipher = await createCipher(generateDek())
+    sent.length = 0
+    store.events.set('evt_n', {
+      id: 'evt_n', device_id: 'dev_1', kind: 'notification', direction: 'in', sim_slot: null,
+      sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
+      enc_ver: 1, occurred_at: AT + 1000, received_at: 0, matched_rules: null, created_at: 0,
+    })
+    store.channels.set('ch_1', {
+      id: 'ch_1', type: 'stub', name: 'ch_1',
+      config_enc: await cipher.encrypt(JSON.stringify({ tag: 'ch_1' })),
+      enabled: true, created_at: 0,
+    })
+  })
+
+  it('内容与刚到的短信重合就不再推一遍', async () => {
+    await addSms(AT)
+    // 通知的正文是「标题换行短信内容」，所以是通知包含短信
+    await processEvent({ store, cipher }, 'evt_n', notif(`10690442001808\n${SMS}`))
+    expect(sent).toHaveLength(0)
+  })
+
+  it('但照样归档 —— 历史里该有这条', async () => {
+    await addSms(AT)
+    store.rules.set('r1', {
+      id: 'r1', name: '应用通知', priority: 10, enabled: true,
+      match_json: JSON.stringify(RuleMatch.parse({ kind: ['notification'] })),
+      action_json: JSON.stringify(RuleAction.parse({ channels: ['ch_1'] })),
+      created_at: 0,
+    })
+    await processEvent({ store, cipher }, 'evt_n', notif(`10690442001808\n${SMS}`))
+    expect(store.events.get('evt_n')?.matched_rules).toBe('["r1"]')
+  })
+
+  it('没有对应短信时照常推 —— 有的 ROM 不给短信权限，这条通知是唯一来源', async () => {
+    await processEvent({ store, cipher }, 'evt_n', notif(`10690442001808\n${SMS}`))
+    expect(sent).toHaveLength(1)
+  })
+
+  it('隔得太久的短信不算', async () => {
+    await addSms(AT - 120_000)
+    await processEvent({ store, cipher }, 'evt_n', notif(`10690442001808\n${SMS}`))
+    expect(sent).toHaveLength(1)
+  })
+
+  it('另一台设备上的同样短信不算', async () => {
+    await addSms(AT, SMS, 'dev_2')
+    await processEvent({ store, cipher }, 'evt_n', notif(`10690442001808\n${SMS}`))
+    expect(sent).toHaveLength(1)
+  })
+
+  it('短正文不做判定 —— 「您有新消息」谁都包含得了', async () => {
+    await addSms(AT, '收到')
+    await processEvent({ store, cipher }, 'evt_n', notif('微信\n收到'))
+    expect(sent).toHaveLength(1)
+  })
+
+  it('内容不同的通知照常推', async () => {
+    await addSms(AT)
+    await processEvent({ store, cipher }, 'evt_n', notif('微信\n张三给你发了一条消息，快去看看吧'))
+    expect(sent).toHaveLength(1)
+  })
+})
+
 describe('删除消息', () => {
   let store: MemoryStore
 

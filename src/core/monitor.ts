@@ -193,7 +193,7 @@ async function notify(
     return
   }
   const results = await dispatch(channels, {
-    ...msg, code: null, eventId: '', occurredAt: Date.now(),
+    ...msg, alert: true, code: null, eventId: '', occurredAt: Date.now(),
     consoleUrl: deps.baseUrl ?? null,
   })
   const failed = results.filter((r) => !r.ok)

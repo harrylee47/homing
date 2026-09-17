@@ -70,17 +70,51 @@ export const telegramProvider: Provider<TelegramConfig> = {
   },
 }
 
+/**
+ * 一条 Telegram 消息长什么样。
+ *
+ * 排版规则只有一条：**归属信息在头部，逐行带标签；正文只放内容。**
+ *
+ * 之前是「来自: X」加上模板拼出来的「【X】正文」，同一个号码在一条消息里
+ * 出现两到三次（通知类事件的正文本身还会再带一次标题），读起来全是噪音。
+ * 现在发件人、卡槽、设备、时间各占一行，正文干净。
+ *
+ * 时间用 pipeline 按用户时区算好的 localTime，不在这里 toLocaleString——
+ * 服务端跑在 UTC 容器里，那样会比 Telegram 自己的时间戳差一整个时区。
+ */
 export function buildText(msg: NotifyMessage, useSpoiler: boolean): string {
-  const time = new Date(msg.occurredAt).toLocaleString('zh-CN', { hour12: false })
-  let head = `📩 新消息 · ${esc(time)}\n\n来自: ${esc(msg.title)}`
-  // 设备名不是敏感信息，放在 spoiler 外便于一眼区分来源
-  if (msg.deviceName) head += `\n设备: ${esc(msg.deviceName)}`
+  const time = msg.localTime ?? new Date(msg.occurredAt).toISOString().replace('T', ' ').slice(0, 19)
+  const lines: string[] = []
 
-  if (!msg.body) return head
+  if (msg.alert === true) {
+    // 系统告警（设备离线、渠道故障、异地登录）：没有发件人可言，
+    // 标题就是全部信息，再套一层「来自:」只会让人找不到重点。
+    // 也不模糊——这里面没有短信正文，模糊了反而要多点一下才看得见。
+    lines.push(`<b>${esc(msg.title)}</b> · ${esc(time)}`)
+    if (msg.body) lines.push('', esc(msg.body))
+    return lines.join('\n')
+  }
+
+  const h = msg.kind ? HEAD[msg.kind] : HEAD.sms
+  const label = msg.kind === 'sms' && msg.direction === 'out' ? '已发送' : h.label
+  lines.push(`${h.icon} <b>${label}</b> · ${esc(time)}`)
+  lines.push(`${msg.kind === 'sms' && msg.direction === 'out' ? '收件人' : h.field}: ${esc(msg.title)}`)
+  // 卡槽与设备都只在「有歧义时」才由 pipeline 填：单卡单设备下是纯噪音
+  if (msg.sim) lines.push(`SIM: ${esc(msg.sim)}`)
+  if (msg.deviceName) lines.push(`设备: ${esc(msg.deviceName)}`)
+
+  if (!msg.body) return lines.join('\n')
 
   // 验证码放在 spoiler 内部的首行：点开后第一眼就能看到，
   // 但在通知栏预览和 Telegram 的内容扫描里都不是明文。
-  const inner = msg.code ? `🔑 ${msg.code}\n${msg.body}` : msg.body
+  const inner = msg.code ? `🔑 ${msg.code}\n\n${msg.body}` : msg.body
   const shown = useSpoiler ? `<tg-spoiler>${esc(inner)}</tg-spoiler>` : esc(inner)
-  return `${head}\n\n💬 ${shown}`
+  return `${lines.join('\n')}\n\n💬 ${shown}`
+}
+
+/** 每种事件的图标与「谁」那一行的标签。来电写「号码」而不是「发件人」。 */
+const HEAD: Record<'sms' | 'call' | 'notification', { icon: string; label: string; field: string }> = {
+  sms: { icon: '📨', label: '新短信', field: '发件人' },
+  call: { icon: '📞', label: '来电', field: '号码' },
+  notification: { icon: '🔔', label: '应用通知', field: '来源' },
 }

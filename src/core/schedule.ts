@@ -188,8 +188,11 @@ export function describe(schedule: Schedule): string {
  * 不用 ISO 串：推送到手机上的「2026-09-15T13:30:00.000Z」既难读又是 UTC，
  * 收到验证码的人要在脑子里做一次时区换算。
  */
-export function formatWallTime(epoch: number, tz: string): string {
+export function formatWallTime(epoch: number, tz: string, withSeconds = false): string {
   const p = partsIn(epoch, tz)
   const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${p.year}-${pad(p.month)}-${pad(p.day)} ${pad(p.hour)}:${pad(p.minute)}`
+  const hm = `${pad(p.hour)}:${pad(p.minute)}`
+  // 通知头部带秒：同一秒内到达的两条消息本来就该看得出先后，
+  // 而验证码短信常常是成对出现的（短信 + App 推送）
+  return `${p.year}-${pad(p.month)}-${pad(p.day)} ${hm}${withSeconds ? `:${pad(p.second)}` : ''}`
 }

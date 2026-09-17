@@ -1341,11 +1341,13 @@ function ruleEditor(rule, chs, devs = []) {
       <div class="chips">
         ${TEMPLATE_VARS.map(([k, t]) => `<button type="button" class="ghost" data-var="${k}">${t}</button>`).join('')}
       </div>
-      <div class="preview" id="tplpv"></div>
 
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="extract" style="width:auto"${r.action.extract_code ? ' checked' : ''}><span>提取验证码</span></label>
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="stop" style="width:auto"${r.action.stop_processing ? ' checked' : ''}><span>命中后不再匹配后续规则</span></label>
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="high" style="width:auto"${r.action.priority === 'high' ? ' checked' : ''}><span>高优先级（推送时出声）</span></label>
+
+      <!-- 预览放在这些开关之后：它们都会改变通知的样子，先因后果 -->
+      <div class="preview" id="tplpv"></div>
     </div>
 
     ${chs.some((c) => c.type === 'bark') ? `
@@ -1420,9 +1422,26 @@ function ruleEditor(rule, chs, devs = []) {
     }
   }
   const paintPreview = () => {
-    $('#tplpv').innerHTML = `<span class="muted">预览：</span>${esc(renderTemplate(tpl.value))}`
+    const kinds = [...app.querySelectorAll('[data-kind]')].filter((c) => c.checked).map((c) => c.dataset.kind)
+    const dir = $('#direction').value
+    $('#tplpv').innerHTML = notifyPreview(tpl.value, {
+      kind: kinds.length === 1 ? kinds[0] : 'sms',
+      direction: dir || 'in',
+      extractCode: $('#extract').checked,
+      // 设备名与卡槽只在真的分得清的时候才出现在通知里，预览也照这个来
+      device: devs.filter((d) => d.status !== 'revoked').length > 1 ? '日本卡' : '',
+      sim: allSims.length > 1 ? simText(allSims[0]) : '',
+    })
   }
   tpl.oninput = paintPreview
+  // spoiler 点一下展开：CSP 不让写内联 onclick，事件在这里挂
+  app.addEventListener('click', (e) => {
+    if (e.target.classList?.contains('spoiler')) e.target.classList.toggle('show')
+  })
+  // 类型、方向、提取验证码都会改变通知的样子，改哪个都要重画
+  $('#extract').onchange = paintPreview
+  $('#direction').onchange = paintPreview
+  for (const c of app.querySelectorAll('[data-kind]')) c.addEventListener('change', paintPreview)
   paintPreview()
 
   const collect = () => {
@@ -1530,12 +1549,66 @@ const TEMPLATE_VARS = [
 ]
 
 /** 模板预览用的样例消息。挑的是验证码短信——模板最常调的就是这一类。 */
-function renderTemplate(template) {
-  const sample = {
-    sender: '95533', content: '【建设银行】您的验证码是 902431，请勿泄露',
-    code: '902431', time: fmt(Date.now()), device: '日本卡', sim: 'SIM1',
-  }
+const SAMPLE = {
+  sms: { sender: '95533', content: '【建设银行】您的验证码是 902431，5 分钟内有效，请勿泄露', code: '902431' },
+  call: { sender: '+8613800138000', content: '未接来电', code: '' },
+  notification: { sender: '微信', content: '张三: 验证码 902431，请勿转发', code: '902431' },
+}
+
+function renderTemplate(template, kind = 'sms') {
+  const s = SAMPLE[kind] || SAMPLE.sms
+  const sample = { ...s, time: fmt(Date.now()), device: '日本卡', sim: 'SIM1' }
   return String(template).replace(/\{(\w+)\}/g, (whole, k) => (k in sample ? sample[k] : whole))
+}
+
+/**
+ * 通知长什么样的预览。
+ *
+ * 光预览「模板渲染成什么字符串」是不够的——真正发出去的那条消息里，
+ * 发件人、时间、设备、卡槽是**渠道自己**加的头部。看不到这部分，
+ * 就会写出一个把发件人又拼一遍的模板，而那正是之前默认模板的毛病。
+ *
+ * 排版与 core/providers/telegram.ts 的 buildText 一一对应，改一处要改两处。
+ */
+function notifyPreview(template, opts) {
+  const kind = opts.kind || 'sms'
+  const s = SAMPLE[kind] || SAMPLE.sms
+  const body = renderTemplate(template, kind)
+  const code = opts.extractCode ? s.code : ''
+  const head = { sms: ['📨', '新短信', '发件人'], call: ['📞', '来电', '号码'], notification: ['🔔', '应用通知', '来源'] }[kind]
+  const label = kind === 'sms' && opts.direction === 'out' ? '已发送' : head[1]
+  const field = kind === 'sms' && opts.direction === 'out' ? '收件人' : head[2]
+
+  const lines = [
+    `${head[0]} <b>${label}</b> · <span class="mono">${esc(fmtFull(Date.now()))}</span>`,
+    `${field}: ${esc(s.sender)}`,
+  ]
+  if (opts.sim) lines.push(`SIM: ${esc(opts.sim)}`)
+  if (opts.device) lines.push(`设备: ${esc(opts.device)}`)
+
+  const inner = (code ? `🔑 ${code}\n\n` : '') + body
+  const barkTitle = [s.sender, opts.device, opts.sim].filter(Boolean).join(' · ')
+
+  return `
+    <div class="pvhead">Telegram</div>
+    <div class="pvbubble">
+      <div>${lines.join('<br>')}</div>
+      <div style="margin-top:8px">💬 <span class="spoiler" title="点一下看看">${esc(inner).replace(/\n/g, '<br>')}</span></div>
+    </div>
+    <div class="muted" style="font-size:12px;margin:4px 0 10px">正文在 Telegram 里是模糊的，点一下才显示——明文转发验证码的 Bot 会被封。这里点一下同样能看。</div>
+    <div class="pvhead">Bark / 通知栏</div>
+    <div class="pvbubble">
+      <div><b>${esc(barkTitle)}</b></div>
+      <div style="margin-top:2px">${esc(body).replace(/\n/g, '<br>')}</div>
+      ${code ? `<div class="muted" style="font-size:12px;margin-top:6px">长按可复制 ${esc(code)}</div>` : ''}
+    </div>`
+}
+
+/** 带秒的时间，与通知头部一致——两条几乎同时到的消息要分得出先后。 */
+function fmtFull(ts) {
+  const d = new Date(ts)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
 // ── 渠道 ────────────────────────────────────────────────────

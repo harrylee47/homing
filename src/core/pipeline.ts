@@ -98,6 +98,12 @@ export async function processEvent(
       return
     }
 
+    // 系统短信应用的通知，内容就是刚刚那条短信——两条一模一样的推送连着来
+    if (await isSmsEcho(deps, eventId, e)) {
+      log.info('与刚收到的短信重复，仅归档不推送', { event_id: eventId })
+      return
+    }
+
     const targetIds = result.matched.length > 0 ? result.channels : action.channels
     const targets = channels.filter((c) => targetIds.includes(c.id))
 
@@ -139,12 +145,18 @@ export async function processEvent(
         // 但单卡时本来就取不到卡槽，结果仍然是空串
         sim: e.sim_slot == null ? '' : `SIM${e.sim_slot + 1}`,
       }),
+      kind: e.kind,
+      direction: e.direction ?? 'in',
+      // 时间在这里就按用户时区算好：渠道那边拿不到设置，自己算会得到 UTC，
+      // 于是消息头写着 01:12 而 Telegram 自己的时间戳是 10:12
+      localTime: safeFormatTime(e.occurred_at, tz, true),
+      sim: sim || null,
       priority: result.matched.length > 0 ? result.priority : action.priority,
       code,
       eventId,
       occurredAt: e.occurred_at,
       consoleUrl: deps.baseUrl ?? null,
-      deviceName: [showDevice ? deviceName : null, sim || null].filter(Boolean).join(' · ') || null,
+      deviceName: showDevice ? deviceName : null,
       ...(action.bark ? { options: { bark: action.bark } } : {}),
     }
 
@@ -269,10 +281,55 @@ function safeOffsetMin(epoch: number, tz: string): number {
   }
 }
 
-function safeFormatTime(epoch: number, tz: string): string {
+/**
+ * 这条通知是不是刚刚那条短信的回声。
+ *
+ * 短信应用（com.android.mms 之类）收到短信时会发一条系统通知，正文就是短信本身。
+ * 两条事件都采到，于是同一条验证码在手机上连着响两次、内容一字不差。
+ *
+ * 不在 Agent 侧按包名硬编码跳过：有的 ROM 不给短信权限，那时候这条通知
+ * 是唯一的来源，跳过就等于收不到。服务端能看见「有没有对应的短信事件」，
+ * 只有真的重复时才压下去——而且只压推送，历史照样归档。
+ */
+async function isSmsEcho(
+  deps: PipelineDeps, eventId: string, e: MatchableEvent,
+): Promise<boolean> {
+  if (e.kind !== 'notification') return false
+  const body = normalize(e.content)
+  // 太短的正文容易误判：「您有新消息」这种谁都包含得了
+  if (body.length < MIN_ECHO_LEN) return false
+
   try {
-    return formatWallTime(epoch, tz)
+    const recent = await deps.store.listEvents({
+      limit: 10, offset: 0, kind: 'sms', device_id: e.device_id,
+      since: e.occurred_at - ECHO_WINDOW_MS, until: e.occurred_at + ECHO_WINDOW_MS,
+    })
+    for (const r of recent) {
+      if (r.id === eventId) continue
+      const sms = normalize(await deps.cipher.decrypt(r.content_enc))
+      if (sms.length < MIN_ECHO_LEN) continue
+      // 通知正文通常是「标题\n短信内容」，所以是通知包含短信，不是反过来
+      if (body.includes(sms)) return true
+    }
+  } catch (err) {
+    // 查不动就当不是重复：宁可多推一条，也不能因为一次数据库抖动漏掉通知
+    log.warn('重复通知判定失败，按不重复处理', { event_id: eventId, error: String(err) })
+  }
+  return false
+}
+
+/** 两条路径的空白与全半角标点不一定一致，比对前抹平。 */
+const normalize = (s: string): string => s.replace(/\s+/g, '')
+
+/** 短信到达与系统通知弹出之间的间隔。实测在一秒内，给足余量。 */
+const ECHO_WINDOW_MS = 30_000
+/** 短于这个长度不做重复判定 */
+const MIN_ECHO_LEN = 12
+
+function safeFormatTime(epoch: number, tz: string, withSeconds = false): string {
+  try {
+    return formatWallTime(epoch, tz, withSeconds)
   } catch {
-    return formatWallTime(epoch, 'UTC')
+    return formatWallTime(epoch, 'UTC', withSeconds)
   }
 }

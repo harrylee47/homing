@@ -80,8 +80,14 @@ export const RuleAction = z.object({
   priority: z.enum(['normal', 'high']).default('normal'),
   /** 提取 4–8 位验证码，单独放进推送标题，通知栏无需展开即可见 */
   extract_code: z.boolean().default(false),
-  /** 支持 {sender} {content} {code} {time} {device} {sim} 占位符 */
-  template: z.string().max(1000).default('【{sender}】{content}'),
+  /**
+   * 支持 {sender} {content} {code} {time} {device} {sim} 占位符。
+   *
+   * 默认只有 {content}：发件人、时间、设备、卡槽由渠道自己渲染成结构化的头部
+   * （见 providers/types.ts 的 NotifyMessage）。模板里再拼一次，
+   * 出来的就是「来自: 10690…」+「【10690…】10690…」这种同一个号码三连。
+   */
+  template: z.string().max(1000).default('{content}'),
   archive: z.boolean().default(true),
   /** 命中后不再匹配后续规则 */
   stop_processing: z.boolean().default(false),
@@ -311,7 +317,7 @@ export function defaultAction(allChannelIds: string[]): RuleAction {
     channels: allChannelIds,
     priority: 'normal',
     extract_code: true,
-    template: '【{sender}】{content}',
+    template: '{content}',
     archive: true,
     stop_processing: true,
   }

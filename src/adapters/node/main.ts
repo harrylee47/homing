@@ -21,7 +21,7 @@ import { TelegramBot } from './bot.js'
 import { isBarkAllowed, isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
 import { createWsServer, isAllowedAgentOrigin } from './wsserver.js'
-import { missingDirection, missingSeedRules, SEED_RULES_VERSION } from '../../core/seeds.js'
+import { migratedTemplate, missingDirection, missingSeedRules, SEED_RULES_VERSION } from '../../core/seeds.js'
 
 /**
  * 强制优先使用 IPv4。
@@ -90,6 +90,31 @@ async function backfillSeedRules(): Promise<void> {
       })
       fixed.push(row.name)
     }
+
+    // 老默认模板把发件人拼进了正文，而渠道本身就在显示发件人——
+    // 同一个号码在一条通知里出现两三次。只改一模一样的，用户写过的不动
+    const retemplated: string[] = []
+    for (const row of existing) {
+      let action: Record<string, unknown>
+      try { action = JSON.parse(row.action_json) as Record<string, unknown> } catch { continue }
+      if (typeof action.template !== 'string') continue
+      const next = migratedTemplate(action.template)
+      if (next === null) continue
+      await store.upsertRule({
+        id: row.id, name: row.name, priority: row.priority, enabled: row.enabled,
+        match_json: row.match_json,
+        action_json: JSON.stringify({ ...action, template: next }),
+        created_at: row.created_at,
+      })
+      retemplated.push(row.name)
+    }
+    if (retemplated.length > 0) {
+      log.info('已把仍是老默认值的通知模板换成只含正文', { names: retemplated })
+      await store.audit({
+        actor: 'system', action: 'rules.template_migrate',
+        detail: retemplated.join('、'), ip: null, created_at: t,
+      })
+    }
     if (fixed.length > 0) {
       log.info('已为预置规则补上方向限制', { names: fixed })
       await store.audit({
@@ -154,7 +179,7 @@ async function alertLoginLockout(ip: string, attempts: number): Promise<void> {
     await dispatch(targets, {
       title: '⚠️ 控制台登录告警',
       body: `来自 ${ip} 的登录连续失败 ${attempts} 次，该地址已被锁定。若非本人操作，请立即更换口令。`,
-      priority: 'high', code: null, eventId: '', occurredAt: Date.now(),
+      alert: true, priority: 'high', code: null, eventId: '', occurredAt: Date.now(),
     })
   } catch (e) {
     log.error('登录告警发送失败', { error: String(e) })
@@ -286,7 +311,7 @@ const apiDeps = {
     await dispatch(channels, {
       title: '🔑 控制台异地登录',
       body: `有人从 ${ip} 登录了控制台，这个网段此前没见过。若非本人操作，请立即修改口令并全端下线。`,
-      priority: 'high', code: null, eventId: '', occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
+      alert: true, priority: 'high', code: null, eventId: '', occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
     }).catch(() => { /* 告警失败不应影响登录本身 */ })
   })(),
 }
@@ -480,7 +505,7 @@ const taskDeps = async () => ({
     if (channels.length === 0) return
     const { dispatch } = await import('../../core/notifier.js')
     await dispatch(channels, {
-      title, body, priority: 'high' as const, code: null, eventId: '',
+      title, body, alert: true, priority: 'high' as const, code: null, eventId: '',
       occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
     })
   },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { evaluate, extractCode, matchRule, RuleMatch, type MatchableEvent } from '../rules.js'
-import { buildSeedRules, missingDirection, missingSeedRules, SEED_RULES } from '../seeds.js'
+import { buildSeedRules, migratedTemplate, missingDirection, missingSeedRules, SEED_RULES } from '../seeds.js'
 
 const rules = buildSeedRules(['ch_bark', 'ch_tg'], (i) => `seed_${i}`)
 
@@ -281,5 +281,27 @@ describe('去电只进记录，不推送', () => {
     const r = evaluate(rules, call('in'))
     expect(r.matched.map((x) => x.name)).toEqual(['来电'])
     expect(r.channels.length).toBeGreaterThan(0)
+  })
+})
+
+describe('老默认模板的迁移', () => {
+  it('还是老默认值的改成只含正文 —— 发件人由渠道显示，模板里再拼一次就是三连', () => {
+    expect(migratedTemplate('【{sender}】{content}')).toBe('{content}')
+    expect(migratedTemplate('→ {sender}：{content}')).toBe('{content}')
+    expect(migratedTemplate('{content}：{sender}')).toBe('{content}')
+  })
+
+  it('用户自己写过的一律不动，哪怕只差一个空格', () => {
+    expect(migratedTemplate('【{sender}】 {content}')).toBeNull()
+    expect(migratedTemplate('{sender}: {content}')).toBeNull()
+    expect(migratedTemplate('{content}')).toBeNull()
+    expect(migratedTemplate('收到 {code}')).toBeNull()
+  })
+
+  it('预置规则本身不再把发件人拼进正文', () => {
+    for (const s of SEED_RULES) {
+      const t = (s.action as { template: string }).template
+      expect(t, s.name).not.toContain('{sender}')
+    }
   })
 })

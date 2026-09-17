@@ -645,8 +645,8 @@ route('POST', '/api/channels/:id/test', async ({ res, params, deps }) => {
     id: c.id, type: c.type, name: c.name, config: parsed.data, enabled: true,
   }
   const [r] = await dispatch([cfg], {
-    title: '短信网关', body: '这是一条测试消息，收到即说明渠道配置正确。',
-    priority: 'normal', code: null, eventId: '', occurredAt: now(),
+    title: '✅ 渠道测试', body: '这是一条测试消息，收到即说明渠道配置正确。',
+    alert: true, priority: 'normal', code: null, eventId: '', occurredAt: now(),
   })
   json(res, r?.ok ? 200 : 502, { ok: r?.ok ?? false, attempts: r?.attempts ?? 0, error: r?.error ?? null })
 })

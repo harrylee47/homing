@@ -122,6 +122,7 @@ export async function crossChannelAlert(
   await dispatch(healthy, {
     title: '⚠️ 渠道发送失败',
     body: `${context}\n${detail}`.slice(0, 500),
+    alert: true,
     priority: 'high',
     code: null,
     eventId: '',

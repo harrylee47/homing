@@ -5,8 +5,62 @@ import type { NotifyMessage } from '../providers/types.js'
 const msg = (o: Partial<NotifyMessage> = {}): NotifyMessage => ({
   title: '95533',
   body: '【建设银行】您的验证码是 902431，请勿泄露',
+  kind: 'sms', direction: 'in', localTime: '2026-09-17 10:12:07',
   priority: 'normal', code: '902431',
   eventId: 'evt_1', occurredAt: 1_700_000_000_000, ...o,
+})
+
+describe('消息头部：归属信息逐行带标签，正文只放内容', () => {
+  it('一条短信长这样', () => {
+    expect(buildText(msg({ code: null, deviceName: 'A25-JP', sim: 'SIM1 · 尾号8868' }), false)).toBe(
+      '📨 <b>新短信</b> · 2026-09-17 10:12:07\n' +
+      '发件人: 95533\n' +
+      'SIM: SIM1 · 尾号8868\n' +
+      '设备: A25-JP\n' +
+      '\n💬 【建设银行】您的验证码是 902431，请勿泄露',
+    )
+  })
+
+  it('发件人只出现一次 —— 之前头部一次、模板里又一次', () => {
+    const t = buildText(msg({ body: '正文', code: null }), false)
+    expect(t.match(/95533/g)).toHaveLength(1)
+  })
+
+  it('单卡单设备时不出现 SIM 与设备行', () => {
+    const t = buildText(msg({ code: null }), false)
+    expect(t).not.toContain('SIM:')
+    expect(t).not.toContain('设备:')
+  })
+
+  it('时间用传进来的本地时间，不自己算 —— 服务端在 UTC 容器里', () => {
+    expect(buildText(msg({ code: null }), false)).toContain('2026-09-17 10:12:07')
+  })
+
+  it('来电与应用通知各有各的标签', () => {
+    expect(buildText(msg({ kind: 'call', body: '未接来电', code: null }), false))
+      .toContain('📞 <b>来电</b>')
+    expect(buildText(msg({ kind: 'call', body: '未接来电', code: null }), false)).toContain('号码: 95533')
+    expect(buildText(msg({ kind: 'notification', code: null }), false)).toContain('🔔 <b>应用通知</b>')
+    expect(buildText(msg({ kind: 'notification', code: null }), false)).toContain('来源: 95533')
+  })
+
+  it('自己发出去的短信写「收件人」而不是「发件人」', () => {
+    const t = buildText(msg({ direction: 'out', code: null }), false)
+    expect(t).toContain('<b>已发送</b>')
+    expect(t).toContain('收件人: 95533')
+  })
+
+  it('系统告警走另一套排版，且不模糊 —— 里面没有短信正文', () => {
+    const t = buildText(msg({ alert: true, title: '⚠️ 设备离线', body: 'A25-JP 已离线 5 分钟', code: null }), true)
+    expect(t).not.toContain('<tg-spoiler>')
+    expect(t).toContain('<b>⚠️ 设备离线</b>')
+    expect(t).not.toContain('发件人')
+  })
+
+  it('漏填 kind 时仍然模糊 —— 失手只能多模糊一条，不能明文泄漏', () => {
+    const t = buildText({ ...msg(), kind: undefined }, true)
+    expect(t).toContain('<tg-spoiler>')
+  })
 })
 
 describe('Telegram 消息构造', () => {

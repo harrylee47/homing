@@ -48,8 +48,13 @@ export const barkProvider: Provider<BarkConfig> = {
       ? (o.group ? `${o.group} · ${msg.deviceName}` : msg.deviceName)
       : (o.group ?? undefined)
 
+    // 标题是「谁发来的」，正文只放内容。
+    // 归属信息缀在标题后面而不是塞进正文——通知栏里正文那几行要留给内容本身，
+    // 开头先来一遍号码等于把最该看的挤下去。
+    const from = [msg.title, msg.deviceName, msg.sim].filter(Boolean).join(' · ')
+
     const body: Record<string, unknown> = {
-      title: msg.deviceName ? `${msg.title} · ${msg.deviceName}` : msg.title,
+      title: from,
       body: msg.body,
       // high 的规则统一升级为可穿透专注模式：银行验证码半夜也得响
       level: msg.priority === 'high' && o.level === 'active' ? 'timeSensitive' : o.level,

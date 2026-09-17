@@ -38,8 +38,13 @@ export const webhookProvider: Provider<WebhookConfig> = {
         code: msg.code,
         priority: msg.priority,
         event_id: msg.eventId,
+        kind: msg.kind ?? null,
+        direction: msg.direction ?? null,
         device: msg.deviceName ?? null,
+        sim: msg.sim ?? null,
         occurred_at: msg.occurredAt,
+        /** 已按用户时区格式化，省得下游再猜服务端时区 */
+        occurred_at_local: msg.localTime ?? null,
         console_url: msg.consoleUrl ?? null,
       }),
       signal: AbortSignal.timeout(15_000),

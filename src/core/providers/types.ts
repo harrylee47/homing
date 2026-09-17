@@ -6,8 +6,38 @@
 import type { z } from 'zod'
 
 export interface NotifyMessage {
+  /** 渠道标题：短信/通知是发件人，来电是号码，告警是标题本身 */
   title: string
+  /**
+   * 正文。**只放内容**，不要把发件人、时间、设备拼进来。
+   *
+   * 每个渠道本身就在显示归属信息（Telegram 的头部、Bark 的标题），
+   * 模板里再拼一次就成了「来自: 10690…」+「【10690…】10690…」这种三连。
+   * 归属由下面那几个结构化字段表达，各渠道按自己的形式渲染。
+   */
   body: string
+  /** 消息类型，决定头部怎么排。系统告警没有类型。 */
+  kind?: 'sms' | 'call' | 'notification' | undefined
+  /**
+   * 这是系统告警（设备离线、渠道故障、异地登录），不是转发来的消息。
+   *
+   * **默认 false，且必须显式打开**：Telegram 那边靠它决定要不要模糊正文。
+   * 反过来设计——「没标类型就当告警」——意味着哪天有人漏填一个字段，
+   * 短信正文就明文发进了 Telegram，而那正是上一版网关被封的原因。
+   * 漏填只能导致「多模糊了一条告警」，不能导致明文泄漏。
+   */
+  alert?: boolean | undefined
+  direction?: 'in' | 'out' | undefined
+  /**
+   * 已按用户设置的时区格式化好的时间。
+   *
+   * 由 pipeline 算好传进来，渠道不要自己 `toLocaleString`——
+   * 服务端跑在 UTC 容器里，那样算出来的时间比 Telegram 自己的时间戳
+   * 差了整整一个时区，同一条消息上出现两个时间，谁也不知道该信哪个。
+   */
+  localTime?: string | undefined
+  /** 「SIM2 · 尾号8888」。单卡或卡槽未知时为 null，见 core/sim.ts */
+  sim?: string | null | undefined
   priority: 'normal' | 'high'
   /** 提取出的验证码，可空 */
   code: string | null

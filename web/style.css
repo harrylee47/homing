@@ -444,6 +444,27 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
   font-size: 13px;
 }
 
+/* 通知预览：把最终发出去的那条消息画出来。
+   光看模板渲染成什么字符串是不够的——发件人、时间、设备是渠道加的头部，
+   看不见它就会写出一个把发件人又拼一遍的模板。 */
+.pvhead {
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  color: var(--muted); letter-spacing: .04em; margin: 8px 0 4px;
+}
+.pvbubble {
+  padding: 9px 11px; border-radius: 8px; line-height: 1.5;
+  background: var(--card); border: var(--bw) solid var(--line);
+  box-shadow: 2px 2px 0 var(--line);
+  word-break: break-word;
+}
+/* Telegram 的 spoiler：默认糊掉，点一下展开。
+   这不是装饰——用户得看见「验证码在通知栏里本来就不可见」这件事 */
+.spoiler {
+  filter: blur(4px); cursor: pointer; user-select: none;
+  transition: filter .15s;
+}
+.spoiler:hover, .spoiler:active, .spoiler.show { filter: none; user-select: text; }
+
 /* 发送状态机：每一步一个方块，走到哪亮到哪 */
 .track { display: flex; gap: 8px; flex-wrap: wrap; }
 .track > span { flex: 1; min-width: 74px; text-align: center; justify-content: center; }

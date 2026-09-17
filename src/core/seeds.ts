@@ -33,7 +33,7 @@ export const SEED_RULES: SeedSpec[] = [
     },
     action: {
       priority: 'high', extract_code: true,
-      template: '【{sender}】{content}', archive: true, stop_processing: true,
+      template: '{content}', archive: true, stop_processing: true,
       bark: { level: 'timeSensitive', group: '验证码', auto_copy_code: true, deep_link: 'event' },
     },
   },
@@ -53,7 +53,7 @@ export const SEED_RULES: SeedSpec[] = [
     action: {
       priority: 'normal', extract_code: false,
       // channels 留空 = 只归档不推送
-      template: '【{sender}】{content}', archive: true, stop_processing: true,
+      template: '{content}', archive: true, stop_processing: true,
     },
   },
   {
@@ -63,7 +63,7 @@ export const SEED_RULES: SeedSpec[] = [
     match: { kind: ['sms'], direction: ['in'] },
     action: {
       priority: 'normal', extract_code: false,
-      template: '【{sender}】{content}', archive: true, stop_processing: true,
+      template: '{content}', archive: true, stop_processing: true,
       bark: { level: 'active', group: '短信', auto_copy_code: false, deep_link: 'event' },
     },
   },
@@ -76,7 +76,7 @@ export const SEED_RULES: SeedSpec[] = [
     match: { kind: ['notification'] },
     action: {
       priority: 'high', extract_code: true,
-      template: '【{sender}】{content}', archive: true, stop_processing: true,
+      template: '{content}', archive: true, stop_processing: true,
       bark: { level: 'timeSensitive', group: '应用通知', auto_copy_code: true, deep_link: 'event' },
     },
   },
@@ -88,7 +88,7 @@ export const SEED_RULES: SeedSpec[] = [
     match: { kind: ['sms'], direction: ['out'] },
     action: {
       priority: 'normal', extract_code: false,
-      template: '→ {sender}：{content}', archive: true, stop_processing: true,
+      template: '{content}', archive: true, stop_processing: true,
     },
   },
   {
@@ -98,7 +98,7 @@ export const SEED_RULES: SeedSpec[] = [
     match: { kind: ['call'], direction: ['in'] },
     action: {
       priority: 'normal', extract_code: false,
-      template: '{content}：{sender}', archive: true, stop_processing: true,
+      template: '{content}', archive: true, stop_processing: true,
       bark: { level: 'active', group: '来电', auto_copy_code: false, deep_link: 'compose' },
     },
   },
@@ -109,7 +109,7 @@ export const SEED_RULES: SeedSpec[] = [
     match: { kind: ['call'], direction: ['out'] },
     action: {
       priority: 'normal', extract_code: false,
-      template: '{content}：{sender}', archive: true, stop_processing: true,
+      template: '{content}', archive: true, stop_processing: true,
     },
   },
 ]
@@ -139,7 +139,7 @@ export function buildSeedRules(channelIds: string[], idFor: (i: number) => strin
  * 「已发送短信只归档不推送」这类新语义只对新装的人生效，老用户会
  * 莫名其妙地收到自己发出去的短信的推送。
  */
-export const SEED_RULES_VERSION = 4
+export const SEED_RULES_VERSION = 5
 
 /**
  * 相对现有规则缺了哪几条预置规则。
@@ -154,6 +154,27 @@ export function missingSeedRules(
 ): Rule[] {
   const have = new Set(existingNames)
   return buildSeedRules(channelIds, idFor).filter((r) => !have.has(r.name))
+}
+
+/**
+ * 早期预置规则用过的模板。
+ *
+ * 它们都把发件人拼进了正文，而每个渠道**本身**就在显示发件人
+ * （Telegram 的头部、Bark 的标题），结果是同一个号码在一条通知里出现两三次。
+ * 归属信息现在由渠道统一渲染，模板只管内容。
+ *
+ * 只改**一模一样**的模板：用户自己写过的一律不动，哪怕只差一个空格。
+ * 通知长什么样是个人口味，不该被一次升级悄悄改掉。
+ */
+const LEGACY_TEMPLATES = new Set([
+  '【{sender}】{content}',
+  '→ {sender}：{content}',
+  '{content}：{sender}',
+])
+
+/** 模板还是老默认值就返回新的，否则返回 null（不动）。 */
+export function migratedTemplate(template: string): string | null {
+  return LEGACY_TEMPLATES.has(template) ? '{content}' : null
 }
 
 /**
