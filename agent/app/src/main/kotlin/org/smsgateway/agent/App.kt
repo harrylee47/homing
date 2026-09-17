@@ -12,6 +12,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import org.smsgateway.agent.net.PairingClient
 import org.smsgateway.agent.net.WsClient
 import org.smsgateway.agent.net.label
 import org.smsgateway.agent.receiver.CallLogObserver
@@ -39,6 +43,51 @@ class App : Application() {
      */
     private var sentObserver: SentSmsObserver? = null
     private var callObserver: CallLogObserver? = null
+
+    /**
+     * 配对的进行状态。**挂在 App 上，不挂在 Activity 上。**
+     *
+     * 原来配对请求飞在 `lifecycleScope` 上：转一次屏、展一次折叠屏、ROM 在这一秒
+     * 改了字体大小，Activity 一销毁协程就被取消，返回的 token 直接丢掉。
+     * 而服务端那一侧**码已经用掉了**（pairing_codes 是一次性的，
+     * `used_at IS NULL` 写在 UPDATE 的 WHERE 里），于是：配对码作废、服务端多出
+     * 一台幽灵设备，而手机上按钮只是从「配对中…」复位成「配对」，什么提示都没有。
+     * 人拿同一个码重试只会得到「配对码无效」，得回控制台重新生成、再去清掉那条
+     * 多出来的设备记录——而这是每个人的第一步。
+     *
+     * 所以请求走进程作用域，**拿到结果第一件事就是落盘**；界面只是订阅这个状态，
+     * 它在不在都不影响配对完成。
+     */
+    private val _pairPhase = MutableStateFlow<PairPhase>(PairPhase.Idle)
+    val pairPhase: StateFlow<PairPhase> = _pairPhase.asStateFlow()
+
+    fun startPairing(url: String, code: String) {
+        if (_pairPhase.value is PairPhase.Running) return
+        _pairPhase.value = PairPhase.Running
+        scope.launch {
+            when (val r = PairingClient().pair(url, code)) {
+                is PairingClient.Result.Ok -> {
+                    // 先落盘。配对码已经在服务端消费掉了，这一刻起唯一的凭证就在手上
+                    prefs.serverUrl = url
+                    prefs.deviceId = r.data.deviceId
+                    prefs.token = r.data.token
+                    prefs.deviceName = r.data.deviceName
+                    ws.stop()
+                    ws.start()
+                    Log.i("配对成功 ${r.data.deviceName}")
+                    _pairPhase.value = PairPhase.Done(true, "配对成功：${r.data.deviceName}")
+                }
+                is PairingClient.Result.Fail -> {
+                    _pairPhase.value = PairPhase.Done(false, r.message)
+                }
+            }
+        }
+    }
+
+    /** 界面把结果显示过了就调一次，免得重建之后又弹一遍同一个 toast。 */
+    fun consumePairResult() {
+        if (_pairPhase.value is PairPhase.Done) _pairPhase.value = PairPhase.Idle
+    }
 
     @Volatile var captureNotification: Boolean = false
     /** "all" = 全部应用（含以后新装的）；"selected" = 仅白名单 */
@@ -156,4 +205,11 @@ class App : Application() {
         @Volatile private var instance: App? = null
         fun get(): App = instance!!
     }
+}
+
+/** 配对的三个阶段。Done 带上要显示给人的那句话。 */
+sealed interface PairPhase {
+    data object Idle : PairPhase
+    data object Running : PairPhase
+    data class Done(val ok: Boolean, val message: String) : PairPhase
 }

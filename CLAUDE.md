@@ -609,6 +609,26 @@ pipeline 按事件发生时刻现算偏移（`offsetMs(epoch, tz)`）而不是�
 
 手打一个 wss 地址加一串区分大小写的配对码，是整个接入流程里最容易出错的一步。
 
+**因此配对路径上的两件事必须做对，它们各自都会把这一步毁掉：**
+
+- **扫码页别让库把它变成横屏。** zxing-android-embedded 的库清单写死
+  `android:screenOrientation="sensorLandscape"`，合并后原样生效——每一次扫码，
+  人都得把手机横过来对着电脑屏幕。`ScanOptions.setOrientationLocked(false)`
+  **压不住它**：那个参数只决定「要不要额外调 setRequestedOrientation 去锁」，
+  传 false 等于什么都不做，清单里的值就是最终值。只能在自己的清单里
+  `tools:replace="android:screenOrientation"` 覆盖成 `fullUser`。
+- **配对请求绝不能挂在 Activity 的生命周期上。** 原来它跑在 `lifecycleScope` 上：
+  配对途中转一次屏、展一次折叠屏、ROM 改一下字体大小，Activity 销毁、协程取消、
+  token 直接丢掉。而**服务端那一侧码已经用掉了**（`pairing_codes` 一次性，
+  `used_at IS NULL` 写在 UPDATE 的 WHERE 里）。后果是：配对码作废、服务端多出
+  一台幽灵设备，而手机上按钮只是从「配对中…」复位成「配对」，**什么提示都没有**。
+  人拿同一个码重试只会得到「配对码无效」。
+  现在走 `App.startPairing()`（进程作用域），**拿到结果第一件事是落盘**，
+  界面只订阅 `pairPhase`——界面在不在都不影响配对完成。
+  `configChanges` 那一串是第二道（挡住重建），但挡不住进程被杀，
+  所以「先落盘」那一条无论如何都得有。
+
+
 - 控制台「设备」页生成配对码时一并给二维码，内容是 `smsgw://pair?url=<ws 地址>&code=<配对码>`
   （`pairPayload()` in api.ts ↔ `PairPayload.kt`，改一端要改两端）。
   没配 `GW_BASE_URL` 就不给二维码——指向 localhost 的错二维码比没有更难排查。

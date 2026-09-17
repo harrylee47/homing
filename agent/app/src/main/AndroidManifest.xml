@@ -64,10 +64,35 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Agent">
 
+        <!--
+          zxing 的扫码页**默认是横屏的**：zxing-android-embedded 的库清单里写着
+          android:screenOrientation="sensorLandscape"，合并后原样生效。
+          于是每一次扫码配对，人都得把手机横过来对着电脑屏幕上的二维码。
+
+          `ScanOptions.setOrientationLocked(false)` 压不住它——CaptureManager 那个
+          参数只决定「要不要额外调 setRequestedOrientation 去锁」，传 false 等于
+          什么都不做，清单里的 sensorLandscape 就是最终值。所以只能在这里覆盖。
+
+          用 fullUser 而不是 portrait：尊重用户自己的旋转设置，横着扫也允许。
+          配合 setOrientationLocked 的默认值 true，CaptureManager 会在打开那一刻
+          把方向钉在「他此刻拿着的方向」，扫码途中不会因转屏重建。
+        -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="fullUser"
+            tools:replace="android:screenOrientation" />
+
+        <!--
+          configChanges 这一串：这一页是纯 ScrollView + 线性布局，配置变更不需要
+          重新 inflate，而重建的代价很实在——配对请求原来挂在 lifecycleScope 上，
+          转一次屏就把一次性配对码白烧掉（详见 MainActivity.pair 的注释）。
+          挡住重建只是第一道，真正的保障是那边「拿到结果先落盘」。
+        -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
-            android:launchMode="singleTask">
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|fontScale|density">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

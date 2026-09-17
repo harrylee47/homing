@@ -21,14 +21,12 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.Lifecycle
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.smsgateway.agent.net.PairPayload
-import org.smsgateway.agent.net.PairingClient
 import org.smsgateway.agent.notification.NotificationCapture
 import org.smsgateway.agent.App
+import org.smsgateway.agent.PairPhase
 import org.smsgateway.agent.BuildConfig
 import org.smsgateway.agent.R
 import org.smsgateway.agent.databinding.ActivityMainBinding
@@ -150,6 +148,26 @@ class MainActivity : AppCompatActivity() {
                     .collect { (s, p) -> render(s, p) }
             }
         }
+
+        /*
+         * 配对状态单独订阅。界面重建之后重新收到的是**当前**阶段，
+         * 所以「配对中…」在转屏之后仍然是「配对中…」，而不是复位成「配对」。
+         */
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                app.pairPhase.collect { phase ->
+                    vb.pairButton.isEnabled = phase !is PairPhase.Running
+                    vb.pairButton.text = if (phase is PairPhase.Running) "配对中…" else "配对"
+                    if (phase is PairPhase.Done) {
+                        toast(phase.message)
+                        // 配对码用过即弃，不留在界面上
+                        if (phase.ok) vb.codeInput.setText("")
+                        render(lastState, lastPending)
+                        app.consumePairResult()
+                    }
+                }
+            }
+        }
     }
 
     private fun render(s: ConnState, pending: Int) {
@@ -239,7 +257,9 @@ class MainActivity : AppCompatActivity() {
                 .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                 .setPrompt("对准控制台「设备」页生成的二维码")
                 .setBeepEnabled(false)
-                .setOrientationLocked(false),
+                // 不传 setOrientationLocked：默认 true，CaptureManager 会在打开那一刻
+                // 把方向钉住，扫码途中转屏不会重建。方向本身由清单里那条
+                // fullUser 决定（库清单默认是 sensorLandscape，见 AndroidManifest）
         )
     }
 
@@ -257,29 +277,15 @@ class MainActivity : AppCompatActivity() {
         }
         if (url.startsWith("ws://")) toast("警告：ws:// 为明文传输")
 
-        vb.pairButton.isEnabled = false
-        vb.pairButton.text = "配对中…"
-
-        lifecycleScope.launch {
-            val r = withContext(Dispatchers.IO) { PairingClient().pair(url, code) }
-            vb.pairButton.isEnabled = true
-            vb.pairButton.text = "配对"
-
-            when (r) {
-                is PairingClient.Result.Fail -> toast(r.message)
-                is PairingClient.Result.Ok -> {
-                    val app = App.get()
-                    app.prefs.serverUrl = url
-                    app.prefs.deviceId = r.data.deviceId
-                    app.prefs.token = r.data.token
-                    app.prefs.deviceName = r.data.deviceName
-                    vb.codeInput.setText("")   // 配对码用过即弃，不留在界面上
-                    app.ws.stop()
-                    app.ws.start()
-                    toast("配对成功：${r.data.deviceName}")
-                }
-            }
-        }
+        /*
+         * 只发起，不等结果——请求跑在 App 的进程作用域上。
+         *
+         * 原来它挂在 lifecycleScope 上：配对途中转一次屏，Activity 销毁、协程取消、
+         * token 丢掉，而服务端那一侧配对码已经用掉了（一次性）。用户看到的只是
+         * 按钮从「配对中…」复位，然后拿同一个码重试得到「配对码无效」。
+         * 理由与落盘顺序写在 App.startPairing。
+         */
+        App.get().startPairing(url, code)
     }
 
     private fun unpair() {
