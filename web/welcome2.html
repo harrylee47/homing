@@ -64,7 +64,7 @@
      所有段落高度都用 svh 写死，于是镜头位置是算得出来的，不用去量任何元素——
      v1 在「自己算位置」上栽过两次，这里一次都不用算。 */
   .stage { position: relative }
-  html[data-motion="on"] .stage { height: 340svh }
+  html[data-motion="on"] .stage { height: 300svh }
   .stage-in {
     position: sticky; top: 0; height: 100svh; min-height: 540px; overflow: hidden;
   }
@@ -77,7 +77,7 @@
         align-items: center; padding: 0 16px }
   .sc-a   { height: 90svh; justify-content: center; padding-top: 58px; gap: clamp(10px, 2.4vh, 26px) }
   .sc-mid { height: 92svh }
-  .sc-c   { height: 100svh; position: relative; justify-content: center; padding: 0 16px 74px; gap: 12px }
+  .sc-c   { height: 100svh; position: relative; justify-content: center; padding: 0 16px 116px; gap: 12px }
 
   .v2head {
     margin: 0; text-align: center; font-weight: 800; letter-spacing: -.02em;
@@ -119,7 +119,7 @@
   .scr-idle {
     display: flex; align-items: center; justify-content: center; gap: 8px;
     padding: 24px 0; font-size: 14px; font-weight: 800;
-    opacity: calc((.11 - var(--p, 0)) / .03);
+    opacity: calc((.037 - var(--p, 0)) / .022);
   }
   .scr-idle i { width: 9px; height: 9px; border-radius: 50%; background: var(--cyan);
                 border: 1.5px solid var(--line); flex: none; font-style: normal }
@@ -128,7 +128,7 @@
     border: var(--bw) solid var(--line); border-radius: 13px 13px 13px 4px;
     background: var(--cyan); color: var(--on-bright); padding: 10px 12px;
     font-size: 14px; line-height: 1.55;
-    opacity: calc((var(--p, 1) - .11) / .03);
+    opacity: calc((var(--p, 1) - .015) / .022);
   }
   .vmsg b { display: block; font-size: 11px; letter-spacing: .04em; margin-bottom: 3px; opacity: .7 }
   /* 明文与打码固定宽度、都居中：这是一句话中间的一个词，
@@ -136,8 +136,8 @@
   .vswap { position: relative; display: inline-block; width: 3.1em; text-align: center }
   .vswap i { font-style: normal; font-weight: 800; letter-spacing: .06em }
   .vswap .mask { position: absolute; left: 0; right: 0; top: 0 }
-  .vswap .plain { opacity: calc((.30 - var(--p, 1)) / .04) }
-  .vswap .mask  { opacity: calc((var(--p, 1) - .30) / .04) }
+  .vswap .plain { opacity: calc((.115 - var(--p, 1)) / .028) }
+  .vswap .mask  { opacity: calc((var(--p, 1) - .115) / .028) }
 
   /* 桌子：一块板 + 两条腿。它的作用不是好看，是给那台手机一个**地方**——
      「放在家里」是这个产品的前提，悬在空中的手机说不出这件事。 */
@@ -156,7 +156,7 @@
   }
   .vding {
     position: absolute; right: 44px; top: -40px; font-size: 13px; font-weight: 800; color: var(--cyan);
-    opacity: calc(min((var(--p, 1) - .04) / .03, (.26 - var(--p, 1)) / .06));
+    opacity: calc(min((var(--p, 1) - .006) / .012, (.11 - var(--p, 1)) / .04));
   }
 
   /* ── 场景二：路上 ────────────────────────────────────────
@@ -236,12 +236,13 @@
 
   /* ── 常驻：下滑提示 ── */
   .stage-in::after {
-    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 92px; z-index: 3;
+    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 160px; z-index: 3;
     background: linear-gradient(to bottom, transparent, var(--bg) 74%); pointer-events: none;
   }
   html:not([data-motion="on"]) .stage-in::after { display: none }
   .stage-cue {
-    position: absolute; left: 0; right: 0; bottom: 14px; z-index: 4;
+    position: absolute; left: 0; right: 0; z-index: 4;
+    bottom: calc(70px + env(safe-area-inset-bottom, 0px));
     font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 8px;
   }
   .stage-cue span, .stage-cue i {

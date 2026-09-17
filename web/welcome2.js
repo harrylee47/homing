@@ -103,7 +103,7 @@
      * 而不是换画面——「短信跟着你走」这句话只有在你的位置一直变、
      * 而链路一直通的时候才立得住。
      */
-    var WHERE = [[0.30, '在路上'], [0.52, '地铁上'], [0.74, '咖啡馆'], [1.01, '机场']]
+    var WHERE = [[0.35, '在路上'], [0.58, '地铁上'], [0.80, '咖啡馆'], [1.01, '机场']]
     var lastWhere = '', lastCue = '', swapTimer = 0, ticking = false
 
     function frame() {
@@ -113,9 +113,9 @@
       var p = clamp01(-el.getBoundingClientRect().top / span)
 
       root.style.setProperty('--p', p.toFixed(4))
-      root.style.setProperty('--wake', clamp01((p - 0.04) / 0.07).toFixed(3))
-      root.style.setProperty('--mid', clamp01((p - 0.20) / 0.62).toFixed(4))
-      root.style.setProperty('--land', clamp01((p - 0.82) / 0.09).toFixed(4))
+      root.style.setProperty('--wake', clamp01((p - 0.005) / 0.022).toFixed(3))
+      root.style.setProperty('--mid', clamp01((p - 0.10) / 0.70).toFixed(4))
+      root.style.setProperty('--land', clamp01((p - 0.80) / 0.11).toFixed(4))
 
       if (where) {
         var w = ''
@@ -136,8 +136,8 @@
 
       if (cue) {
         /* 提示要跟着分镜走：先「看一眼」，再「传过去」，最后「这就到了」 */
-        var t = p < 0.11 ? '下滑查看' : p < 0.22 ? '下滑，把它传过去'
-              : p < 0.86 ? '继续下滑' : '再往下，是正文'
+        var t = p < 0.04 ? '下滑查看' : p < 0.13 ? '下滑，把它传过去'
+              : p < 0.88 ? '继续下滑' : '再往下，是正文'
         if (t !== lastCue) { cue.textContent = t; lastCue = t }
       }
     }
