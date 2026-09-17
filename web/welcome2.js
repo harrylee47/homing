@@ -80,12 +80,16 @@
    *
    * - `--p`    0→1 总进度。导线的生长、数据包的位置、明文与打码的交叉淡、
    *            两站的高亮环、状态梯的三个点，都是它的 calc()。
+   * - `--mid`  数据包在中间那一段里的进度（0→1）。它是 --p 的重映射：
+   *            镜头从 p=0.20 才开始走那条线、到 0.82 走完，两头留给首尾两个场景。
+   *            导线的生长、包的位置、两站的高亮环都读它。
+   * - `--land` 最后一段：线尾从两幕的接缝往下长到手机里，那颗点跟着它走，
+   *            中段那颗同时淡出——从头到尾只有一颗点在动。
    * - `--wake` 鸽子抬头。单独一个是因为它要在 CSS 里乘上 deg，
    *            而 `clamp(0, calc(...), 1)` 这种无单位夹取写在 calc 里可读性太差。
-   * - `--done` 落地。通知横幅的淡入与上浮共用它。
    *
-   * 后两个的默认值都是 1（醒着 / 已送达），和 --p 的默认值 1 是一套的：
-   * 不跑 JS 时这张图是完成态，而不是「等一个永远不来的信号」。
+   * 两个的默认值都是 1（走完 / 醒着），和 --p 的默认值 1 是一套的：
+   * 不跑 JS 时这三段是完成态，而不是「等一个永远不来的信号」。
    */
   function stage2() {
     var el = document.getElementById('stage')
@@ -99,7 +103,7 @@
      * 而不是换画面——「短信跟着你走」这句话只有在你的位置一直变、
      * 而链路一直通的时候才立得住。
      */
-    var WHERE = [[0.30, '地铁上'], [0.52, '咖啡馆'], [0.74, '办公室'], [1.01, '机场']]
+    var WHERE = [[0.30, '在路上'], [0.52, '地铁上'], [0.74, '咖啡馆'], [1.01, '机场']]
     var lastWhere = '', lastCue = '', swapTimer = 0, ticking = false
 
     function frame() {
@@ -109,8 +113,9 @@
       var p = clamp01(-el.getBoundingClientRect().top / span)
 
       root.style.setProperty('--p', p.toFixed(4))
-      root.style.setProperty('--wake', clamp01((p - 0.06) / 0.08).toFixed(3))
-      root.style.setProperty('--done', clamp01((p - 0.84) / 0.08).toFixed(3))
+      root.style.setProperty('--wake', clamp01((p - 0.04) / 0.07).toFixed(3))
+      root.style.setProperty('--mid', clamp01((p - 0.20) / 0.62).toFixed(4))
+      root.style.setProperty('--land', clamp01((p - 0.82) / 0.09).toFixed(4))
 
       if (where) {
         var w = ''
@@ -130,7 +135,9 @@
       }
 
       if (cue) {
-        var t = p < 0.26 ? '往下滑' : p < 0.88 ? '继续往下滑' : '再往下，是正文'
+        /* 提示要跟着分镜走：先「看一眼」，再「传过去」，最后「这就到了」 */
+        var t = p < 0.11 ? '下滑查看' : p < 0.22 ? '下滑，把它传过去'
+              : p < 0.86 ? '继续下滑' : '再往下，是正文'
         if (t !== lastCue) { cue.textContent = t; lastCue = t }
       }
     }

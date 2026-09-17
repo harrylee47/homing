@@ -50,34 +50,35 @@
   html[data-motion="on"] [data-reveal][data-shown] { opacity: 1; transform: none; }
 
 
-  /* ══ 第一屏 v2：一条短信从家里那台走到你手上 ══════════════════
-     和 v1（信鸽飞越地图）是两条路子。v1 讲的是**感觉**——有个东西替你把它
-     带过来了；v2 画的是**链路**——两台手机自始至终同框，家里那台一动不动，
-     动的只有那个数据包。想让人打开网站几秒内就明白这一句：
-     家里那台收到短信 → 加密 → 过服务器 → 推到我手上这台。
+  /* ══ 第一屏 v2：镜头顺着一条短信下摇 ══════════════════════════
+     分镜：桌上那台（屏幕先亮「收到新消息」，下滑才显出正文）→ 正文缩成一个
+     数据包 ● 沿线往下走，路过加密与托管服务器 → 一个边走路边看手机的人，
+     同样的内容出现在他手上，标着「来自 Homing」。
 
-     实现上反而比 v1 简单，因为**一条自由曲线都没有**：链路就是一串 flex 项，
-     窄屏竖排、宽屏横排；数据包不是沿 offset-path 飞的元素，而是每段导线上
-     那条正在生长的进度条的**端点**——位置由布局算，不由我算。
-     v1 在「我自己算位置」这件事上栽过两次（slice 裁剪把线甩进标题里、
-     scale 把鸽子弹回路径起点），这一版从根上绕开了。
+     上一版把整条链路一次性摆在一屏里：好处是一眼看懂，坏处是**第一屏就没有
+     悬念**——手机屏幕在 p=0 时还是空的、底下「你 · 地铁上」只剩一行孤零零的字，
+     两处都在等一个用户还没做的动作。这一版改成镜头下摇：任何时刻屏幕上都是
+     一个完整的场景，而不是一张等着被点亮的图。
 
-     `--p` 挂在 :root 上而不是 .stage 上，且**默认值是 1 = 已走完**：
-     这张图静止时本来就读得懂，所以「没跑 JS」的正确样子是整条链路点亮，
-     而不是像 v1 那样把后两幕藏起来。代价是反过来的——脚本必须赶在 body
-     绘制前把它摁到 0，否则会先闪一下完成态；welcome2.js 在 <head> 同步
-     加载、且在那里就 setProperty，就是为这个（.stage 那时还没解析出来）。 */
+     做法是一条 316svh 的「胶片」在 100svh 的取景框里按 --p 上移 216svh。
+     所有段落高度都用 svh 写死，于是镜头位置是算得出来的，不用去量任何元素——
+     v1 在「自己算位置」上栽过两次，这里一次都不用算。 */
   .stage { position: relative }
-  html[data-motion="on"] .stage { height: 300svh }
+  html[data-motion="on"] .stage { height: 340svh }
   .stage-in {
-    position: sticky; top: 0; height: 100svh; min-height: 520px;
-    display: grid; place-items: center; overflow: hidden;
-    padding: 58px 16px 30px; box-sizing: border-box;
+    position: sticky; top: 0; height: 100svh; min-height: 540px; overflow: hidden;
   }
-  .v2 {
-    width: 100%; max-width: 1000px; display: flex; flex-direction: column;
-    align-items: center; gap: clamp(12px, 2.6vh, 28px);
+  .v2film {
+    position: absolute; left: 0; right: 0; top: 0;
+    display: flex; flex-direction: column; align-items: center;
+    transform: translateY(calc(var(--p, 1) * -182svh));
   }
+  .sc { width: 100%; box-sizing: border-box; display: flex; flex-direction: column;
+        align-items: center; padding: 0 16px }
+  .sc-a   { height: 90svh; justify-content: center; padding-top: 58px; gap: clamp(10px, 2.4vh, 26px) }
+  .sc-mid { height: 92svh }
+  .sc-c   { height: 100svh; position: relative; justify-content: center; padding: 0 16px 74px; gap: 12px }
+
   .v2head {
     margin: 0; text-align: center; font-weight: 800; letter-spacing: -.02em;
     font-size: clamp(26px, 5.4vw, 48px); line-height: 1.16;
@@ -87,60 +88,17 @@
     color: var(--muted); margin-bottom: 10px;
   }
   .v2head em { font-style: normal; color: var(--muted) }
-  .v2sub { margin: 0; text-align: center; font-size: 14px; color: var(--muted); max-width: 30em }
-
-  /* ── 链路 ────────────────────────────────────────────────
-     窄屏竖着走、宽屏横着走，全靠 flex-direction 一行切换。 */
-  .vchain { display: flex; flex-direction: column; align-items: center; margin-top: 14px }
-  .vnode { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px }
   .vtag { margin: 0; font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .04em }
   #v2_where { transition: opacity .13s linear }
   #v2_where[data-swap] { opacity: 0 }
 
-  /* 导线：灰底 + 一条按 --p 生长的青色。
-     百分比长度不像 opacity 会被自动夹在 0–1，必须显式 clamp()，
-     否则走过头会直接溢出到下一个节点里。 */
-  .vwire { position: relative; flex: none; background: var(--line); opacity: .3;
-          width: 2px; height: clamp(24px, 5.4vh, 56px) }
-  .vwire i {
-    position: absolute; display: block; border-radius: 3px; background: var(--cyan);
-    left: -1px; top: 0; width: 4px;
-    height: clamp(0%, calc((var(--p, 1) - var(--a)) / var(--d) * 100%), 100%);
-  }
-  /* 数据包 ●：就是那条线正在生长的端点，不是另外一个元素。
-     只在这一段正走着的时候露面——min() 两条斜坡拼出一个梯形，
-     opacity 本来就会被夹回 0–1，不用再 clamp 一次。 */
-  .vwire i::after {
-    content: ''; position: absolute; left: 50%; bottom: 0; box-sizing: border-box;
-    width: 15px; height: 15px; margin: 0 0 -7.5px -7.5px; border-radius: 50%;
-    background: var(--cyan); border: var(--bw) solid var(--line);
-    opacity: calc(min((var(--p, 1) - var(--a)) / .04, (var(--a) + var(--d) - var(--p, 1)) / .04));
-  }
-  .vw1 { --a: .30; --d: .13 }
-  .vw2 { --a: .47; --d: .12 }
-  .vw3 { --a: .63; --d: .17 }
-
-  /* 中途两站 */
-  .vhop {
-    position: relative; display: flex; align-items: center; gap: 7px; white-space: nowrap;
-    padding: 7px 13px; font-size: 12px; font-weight: 800;
-    border: var(--bw) solid var(--line); border-radius: 999px;
-    background: var(--card); box-shadow: var(--shadow);
-  }
-  .vhop svg { width: 15px; height: 15px; flex: none; display: block; color: var(--fg) }
-  /* 数据包路过时这一站亮一圈 */
-  .vhop::before {
-    content: ''; position: absolute; inset: -5px; border-radius: 999px;
-    border: 2px solid var(--cyan);
-    opacity: calc(min((var(--p, 1) - var(--at)) / .04, (var(--at) + .12 - var(--p, 1)) / .06));
-  }
-
-  /* 两台手机都画成「设备卡」而不是整机：这一屏要的是链路，
-     一张写实的机身会把视线全吸过去（v1 那版正是如此，那里是对的，这里不是）。 */
+  /* ── 场景一：桌上那台 ──────────────────────────────────── */
+  .deskset { display: flex; flex-direction: column; align-items: center; width: 100% }
   .vdev {
-    width: min(340px, 84vw); border: var(--bw) solid var(--line); border-radius: 16px;
-    background: var(--card); box-shadow: var(--shadow); overflow: hidden;
+    width: min(352px, 88vw); border: var(--bw) solid var(--line); border-radius: 16px;
+    background: var(--card); box-shadow: var(--shadow); overflow: hidden; position: relative; z-index: 1;
   }
+  .vdev-wrap { position: relative }
   .vdev-bar {
     display: flex; align-items: center; gap: 7px; padding: 7px 11px;
     border-bottom: var(--bw) solid var(--line);
@@ -148,71 +106,140 @@
   }
   .vdev-bar b { margin-left: auto; color: var(--fg); font-variant-numeric: tabular-nums }
   .vlive { width: 8px; height: 8px; border-radius: 50%; flex: none;
-          background: var(--mint); border: 1.5px solid var(--line) }
+           background: var(--mint); border: 1.5px solid var(--line) }
   html[data-motion="on"] .vlive { animation: livep 2.2s var(--ease) infinite }
   @keyframes livep { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.4) } }
   @media (prefers-reduced-motion: reduce) { .vlive { animation: none } }
 
-  .vdev-scr { padding: 13px 12px 15px }
+  /* 两条屏幕内容叠在同一处：先「收到新消息」，下滑才显出正文。
+     叠着放而不是前后排，是为了机身高度不随内容跳动——一跳，
+     蹲在顶边上的鸽子和底下的桌子就都跟着动了。 */
+  .vdev-scr { position: relative; min-height: 118px }
+  .scr-idle, .vmsg { position: absolute; left: 12px; right: 12px; top: 14px }
+  .scr-idle {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 24px 0; font-size: 14px; font-weight: 800;
+    opacity: calc((.11 - var(--p, 0)) / .03);
+  }
+  .scr-idle i { width: 9px; height: 9px; border-radius: 50%; background: var(--cyan);
+                border: 1.5px solid var(--line); flex: none; font-style: normal }
+  .scr-idle span { font-weight: 700; font-size: 12px; color: var(--muted) }
   .vmsg {
     border: var(--bw) solid var(--line); border-radius: 13px 13px 13px 4px;
     background: var(--cyan); color: var(--on-bright); padding: 10px 12px;
     font-size: 14px; line-height: 1.55;
-    opacity: calc((var(--p, 1) - .06) / .06);
+    opacity: calc((var(--p, 1) - .11) / .03);
   }
   .vmsg b { display: block; font-size: 11px; letter-spacing: .04em; margin-bottom: 3px; opacity: .7 }
-  /* 明文与打码叠在一起交叉淡——这就是「加密」那一下，
-     不用再写一句 Encrypted 去解释它 */
+  /* 明文与打码固定宽度、都居中：这是一句话中间的一个词，
+     不能因为换了状态就把整句话的长度改掉 */
   .vswap { position: relative; display: inline-block; width: 3.1em; text-align: center }
   .vswap i { font-style: normal; font-weight: 800; letter-spacing: .06em }
   .vswap .mask { position: absolute; left: 0; right: 0; top: 0 }
-  .vswap .plain { opacity: calc((.31 - var(--p, 1)) / .04) }
-  .vswap .mask  { opacity: calc((var(--p, 1) - .31) / .04) }
+  .vswap .plain { opacity: calc((.30 - var(--p, 1)) / .04) }
+  .vswap .mask  { opacity: calc((var(--p, 1) - .30) / .04) }
 
-  /* 鸽子：方案里把角色定位从「跑遍城市的快递员」改成「守在家里那台里的小管理员」，
-     这条改得对——它本来就一直在那台手机上跑着。消息一来它抬头。
-     --wake 由 JS 给，默认 1（醒着），不跑 JS 时它不是低着头等一个不来的信号。 */
-  .vdev-wrap { position: relative }
+  /* 桌子：一块板 + 两条腿。它的作用不是好看，是给那台手机一个**地方**——
+     「放在家里」是这个产品的前提，悬在空中的手机说不出这件事。 */
+  .deskset { --legh: clamp(28px, 5.4vh, 50px) }
+  .desk { position: relative; width: min(440px, 96vw); height: 13px;
+          margin: -3px 0 var(--legh);
+          background: var(--card); border: var(--bw) solid var(--line); border-radius: 3px;
+          box-shadow: var(--shadow) }
+  .desk i { position: absolute; top: 11px; width: 13px; height: var(--legh);
+            background: var(--card); border: var(--bw) solid var(--line); border-top: none }
+  .desk .l { left: 30px } .desk .r { right: 30px }
+
   .vhomi {
     position: absolute; right: -4px; top: -40px; width: 50px; height: 50px;
     transform: rotate(calc(var(--wake, 1) * -8deg)); transform-origin: 46% 88%;
   }
   .vding {
     position: absolute; right: 44px; top: -40px; font-size: 13px; font-weight: 800; color: var(--cyan);
-    opacity: calc(min((var(--p, 1) - .08) / .04, (.30 - var(--p, 1)) / .08));
+    opacity: calc(min((var(--p, 1) - .04) / .03, (.26 - var(--p, 1)) / .06));
   }
 
-  /* 随身那台只画一条通知横幅：落点是「它响在你手上」，不是「你打开了一个 App」 */
-  .vbanner {
-    width: min(360px, 88vw); display: flex; align-items: center; gap: 10px;
-    padding: 10px 11px; border: var(--bw) solid var(--line); border-radius: 16px;
-    background: var(--card); box-shadow: var(--shadow);
-    opacity: var(--done, 1); transform: translateY(calc((1 - var(--done, 1)) * 16px));
+  /* ── 场景二：路上 ────────────────────────────────────────
+     --mid 是数据包在这一段里的进度（0→1），由 JS 从 --p 重映射。
+     百分比长度不像 opacity 会自动夹在 0–1，所以必须显式 clamp()。 */
+  .rail { position: relative; width: 100%; height: 100% }
+  .rail::before {
+    content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px;
+    background: repeating-linear-gradient(var(--line) 0 5px, transparent 5px 15px); opacity: .32;
   }
-  .vbanner img { flex: none; display: block }
-  .bn-t { min-width: 0; flex: 1 }
-  .bn-t b { display: flex; align-items: baseline; gap: 8px; font-size: 12px; letter-spacing: .04em }
-  .bn-t b i { font-style: normal; font-weight: 700; font-size: 11px; color: var(--muted); margin-left: auto; white-space: nowrap }
-  .bn-t span { display: block; font-size: 13px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
-  .bn-t em { font-style: normal; font-weight: 800; letter-spacing: .1em }
+  .rail-done {
+    position: absolute; top: 0; left: 50%; width: 4px; margin-left: -2px; border-radius: 2px;
+    background: var(--cyan); height: clamp(0%, calc(var(--mid, 1) * 100%), 100%);
+  }
+  .packet {
+    position: absolute; left: 50%; width: 17px; height: 17px; margin: -8.5px 0 0 -8.5px;
+    top: clamp(0%, calc(var(--mid, 1) * 100%), 100%); box-sizing: border-box;
+    background: var(--cyan); border: var(--bw) solid var(--line); border-radius: 50%;
+    opacity: calc(min(var(--mid, 1) / .03, (.14 - var(--land, 0)) / .1));
+  }
+  .packet::after {
+    content: '••••'; position: absolute; left: 24px; top: 50%; transform: translateY(-50%);
+    font-size: 12px; font-weight: 800; letter-spacing: .14em; color: var(--cyan); white-space: nowrap;
+  }
+  .vhop {
+    position: absolute; left: 50%; transform: translate(-50%, -50%);
+    display: flex; align-items: center; gap: 7px; white-space: nowrap;
+    padding: 8px 14px; font-size: 13px; font-weight: 800;
+    border: var(--bw) solid var(--line); border-radius: 999px;
+    background: var(--card); box-shadow: var(--shadow);
+  }
+  .vhop svg { width: 15px; height: 15px; flex: none; display: block; color: var(--fg) }
+  .vhop::before {
+    content: ''; position: absolute; inset: -5px; border-radius: 999px; border: 2px solid var(--cyan);
+    opacity: calc(min((var(--mid, 1) - var(--at)) / .05, (var(--at) + .16 - var(--mid, 1)) / .08));
+  }
+  .hop-lock  { top: 28%; --at: .28 }
+  .hop-cloud { top: 72%; --at: .72 }
+
+  /* ── 场景三：边走边看的人 ──────────────────────────────── */
+  /* 导线再往下探一截，末端就是包落下来的地方——不接这一截的话，
+     镜头一进这一幕，上面那条线就凭空断在屏幕外 */
+  .rail-tail {
+    position: absolute; top: 0; left: 50%; margin-left: -2px; z-index: 0;
+    width: 4px; height: calc(34% * var(--land, 1)); border-radius: 2px; background: var(--cyan);
+  }
+  .rail-tail::after {
+    content: ''; position: absolute; left: 50%; bottom: 0; box-sizing: border-box;
+    width: 17px; height: 17px; margin: 0 0 -8.5px -8.5px; border-radius: 50%;
+    background: var(--cyan); border: var(--bw) solid var(--line);
+    opacity: calc(min(var(--land, 1) / .04, (1.02 - var(--land, 1)) / .06));
+  }
+  .walkset { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; width: 100% }
+  .walker { width: clamp(158px, 39vw, 224px); height: auto; flex: none }
+  /* 手机接在抬起来那只手上：卡片的左边缘对着手，再往上提一点对齐手的高度 */
+  .handphone {
+    width: min(220px, 49vw); margin: 0 0 24px -42px; flex: none;
+    opacity: calc((var(--land, 1) - .66) / .22);
+    transform: translateY(calc((1 - var(--land, 1)) * 10px));
+  }
+  .handphone .vdev-bar { gap: 8px }
+  .handphone .vdev-bar img { display: block }
+  .handphone .vdev-bar strong { color: var(--fg); font-size: 12px; letter-spacing: .04em }
+  .handphone .vdev-scr { min-height: 0; padding: 10px }
+  .handphone .vdev-bar { padding: 6px 9px; font-size: 10px }
+  .hp-msg {
+    border: var(--bw) solid var(--line); border-radius: 12px; background: var(--mint);
+    color: var(--on-bright); padding: 8px 10px; font-size: 12px; line-height: 1.5;
+  }
+  .hp-msg em { font-style: normal; font-weight: 800; letter-spacing: .1em }
+  .hp-from { display: block; font-size: 10px; font-weight: 700; opacity: .7; margin-bottom: 3px }
   .bn-copy {
-    flex: none; width: auto; font-size: 12px; padding: 7px 12px; border-radius: 999px;
+    margin-top: 8px; width: auto; font-size: 12px; padding: 7px 12px; border-radius: 999px;
     background: var(--cyan); color: var(--on-bright); box-shadow: 2px 2px 0 var(--line);
   }
   .bn-copy[data-done] { background: var(--mint) }
 
-  /* 状态梯：方案里的 ○ 收到 / ○ 加密 / ○ 送达。
-     它替代了一整段「我们如何保护你的数据」的文字——三个点依次点亮就够了。 */
-  .vladder { display: flex; gap: 20px; list-style: none; margin: 0; padding: 0;
-            font-size: 12px; font-weight: 700; color: var(--muted) }
-  .vladder li { display: flex; align-items: center; gap: 7px }
-  .vladder .vpipd { position: relative; display: block; width: 10px; height: 10px;
-                  border-radius: 50%; border: 2px solid var(--line); flex: none }
-  .vladder .vpipd::after {
-    content: ''; position: absolute; inset: 1px; border-radius: 50%; background: var(--cyan);
-    opacity: calc((var(--p, 1) - var(--at)) / .03);
+  /* ── 常驻：下滑提示 ── */
+  .stage-in::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 92px; z-index: 3;
+    background: linear-gradient(to bottom, transparent, var(--bg) 74%); pointer-events: none;
   }
-
+  html:not([data-motion="on"]) .stage-in::after { display: none }
   .stage-cue {
     position: absolute; left: 0; right: 0; bottom: 14px; z-index: 4;
     font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -223,35 +250,24 @@
   .stage-cue i { padding: 5px 8px; font-style: normal; animation: bob 1.8s var(--ease) infinite }
   @media (prefers-reduced-motion: reduce) { .stage-cue i { animation: none } }
 
-  /* 不跑 JS：--p 没人给，于是全篇的 var(--p, 1) 取默认值 1，
-     整条链路本来就是点亮的完成态。只需要把 sticky 的舞台摊平。 */
+  /* 不跑 JS：--p / --mid 没人给，全篇的 var(--…, 1) 取默认值，
+     于是三段都是完成态。把胶片摊开、取景框放平就行。 */
   html:not([data-motion="on"]) .stage { height: auto !important }
   html:not([data-motion="on"]) .stage-in {
-    position: static; height: auto; min-height: 0; padding: 32px 16px 8px;
+    position: static; height: auto; min-height: 0; overflow: visible;
   }
+  html:not([data-motion="on"]) .v2film { position: static; transform: none }
+  html:not([data-motion="on"]) .sc-a { height: auto; padding: 28px 16px 0 }
+  html:not([data-motion="on"]) .sc-mid { height: 190px; padding: 18px 16px }
+  html:not([data-motion="on"]) .sc-c { height: auto; padding: 24px 16px 8px }
+  html:not([data-motion="on"]) .scr-idle { display: none }
   html:not([data-motion="on"]) .stage-cue { display: none }
 
-  @media (min-width: 861px) {
-    .vchain { flex-direction: row; justify-content: center; align-items: center }
-    .vnode { gap: 10px }
-    .vwire { width: clamp(36px, 5.6vw, 92px); height: 2px }
-    .vwire i { left: 0; top: -1px; height: 4px;
-              width: clamp(0%, calc((var(--p, 1) - var(--a)) / var(--d) * 100%), 100%) }
-    .vwire i::after { left: auto; right: 0; top: 50%; bottom: auto; margin: -7.5px -7.5px 0 0 }
-    .vdev { width: 264px }
-    .vbanner { width: 300px }
-  }
   @media (max-width: 860px) {
-    .stage-in { padding: 58px 14px 26px }
-    .v2 { gap: clamp(10px, 2vh, 20px) }
-    .v2sub { font-size: 13px }
-    .vchain { margin-top: 10px }
-    .vwire { height: clamp(16px, 3.2vh, 56px) }
-    .vdev { width: min(320px, 84vw) }
-    .vhop { padding: 6px 11px; font-size: 11px }
-    .vdev-scr { padding: 11px 10px 12px }
+    .stage-in { min-height: 520px }
+    .vhop { padding: 7px 12px; font-size: 12px }
     .vmsg { font-size: 13px }
-    .vladder { gap: 14px; font-size: 11px }
+    .deskset { --legh: clamp(24px, 4.6vh, 42px) }
   }
 
   /* ── 第一屏 ────────────────────────────────────────────── */
@@ -568,93 +584,116 @@
   <a class="btnlink" href="/login"><button class="ghost sm">登录</button></a>
 </div></div>
 
-<!-- ══ 第一屏 v2：一条短信从家里那台走到你手上 ══
-  两台手机同框，家里那台一动不动，动的只有那个数据包。
-  由滚动进度 --p 驱动，见上面那段 CSS 与 welcome2.js。
-  关掉 JS 时它是一张已经点亮的静态链路图，正文一个字不少。
+<!-- ══ 第一屏 v2：镜头顺着一条短信下摇 ══
+  一条 316svh 的胶片在 100svh 的取景框里按 --p 上移：
+  桌上那台 → 数据包沿线走过加密与服务器 → 边走边看手机的人。
+  见上面那段 CSS 与 welcome2.js。关掉 JS 时三段摊开成静态插图，正文一字不少。
 -->
 <div class="stage" id="stage">
   <div class="stage-in">
-    <div class="v2">
+    <div class="v2film">
 
-      <p class="v2head"><small>一条短信的路线</small>卡留在家，<br>号跟着<em>你</em>走。</p>
-      <p class="v2sub">家里那台收到的短信，加密之后经服务器推到你手上这台。</p>
-
-      <div class="vchain">
-
-        <!-- ① 家里那台：不动的那一端 -->
-        <div class="vnode">
-          <div class="vdev-wrap"><div class="vdev">
-            <div class="vdev-bar"><span class="vlive"></span>在线 · 充电中<b id="v2_clock">22:16</b></div>
-            <div class="vdev-scr">
-              <div class="vmsg">
-                <b>95588</b>【招商银行】您的验证码是
-                <span class="vswap"><i class="plain">1357</i><i class="mask">••••</i></span>，5 分钟内有效。
+      <!-- ① 桌上那台：不动的那一端 -->
+      <section class="sc sc-a">
+        <p class="v2head"><small>一条短信的路线</small>卡留在家，<br>号跟着<em>你</em>走。</p>
+        <div class="deskset">
+          <div class="vdev-wrap">
+            <div class="vdev">
+              <div class="vdev-bar"><span class="vlive"></span>在线 · 充电中<b id="v2_clock">22:16</b></div>
+              <div class="vdev-scr">
+                <p class="scr-idle"><i></i>收到新消息<span>1 条未读</span></p>
+                <div class="vmsg">
+                  <b>95588</b>【招商银行】您的验证码是<span class="vswap"><i class="plain">1357</i><i class="mask">••••</i></span>，5 分钟内有效。
+                </div>
               </div>
             </div>
+            <span class="vding">叮</span>
+            <svg class="vhomi" viewBox="0 0 64 64" aria-hidden="true">
+              <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+                <path d="M30 52 L30 58 M38 52 L38 58"/>
+                <path fill="var(--cyan)" d="M20 52 C12 46 14 32 26 27 C36 23 46 26 49 34 C52 42 46 51 36 53 Z"/>
+                <path fill="var(--yellow)" d="M26 36 C31 31 39 32 43 38 C38 45 30 45 26 36 Z"/>
+                <circle cx="27" cy="21" r="9" fill="var(--cyan)"/>
+                <path fill="var(--orange)" d="M18 19 L9 22 L18 25 Z"/>
+              </g>
+              <circle cx="24" cy="18" r="2.5" fill="var(--line)"/>
+            </svg>
           </div>
-          <span class="vding">叮</span>
-          <svg class="vhomi" viewBox="0 0 64 64" aria-hidden="true">
-            <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
-              <path d="M30 52 L30 58 M38 52 L38 58"/>
-              <path fill="var(--cyan)" d="M20 52 C12 46 14 32 26 27 C36 23 46 26 49 34 C52 42 46 51 36 53 Z"/>
-              <path fill="var(--yellow)" d="M26 36 C31 31 39 32 43 38 C38 45 30 45 26 36 Z"/>
-              <circle cx="27" cy="21" r="9" fill="var(--cyan)"/>
-              <path fill="var(--orange)" d="M18 19 L9 22 L18 25 Z"/>
-            </g>
-            <circle cx="24" cy="18" r="2.5" fill="var(--line)"/>
-          </svg></div>
-          <p class="vtag">家里 · 安卓备用机</p>
+          <div class="desk"><i class="l"></i><i class="r"></i></div>
         </div>
+        <p class="vtag">家里 · 安卓备用机</p>
+      </section>
 
-        <div class="vwire vw1"><i></i></div>
-
-        <!-- ② 加密 -->
-        <div class="vnode">
-          <div class="vhop" style="--at:.36">
+      <!-- ② 路上：正文缩成一个包，沿线走过两站 -->
+      <section class="sc sc-mid">
+        <div class="rail">
+          <i class="rail-done"></i>
+          <div class="vhop hop-lock">
             <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8">
-              <path d="M4.5 7.2V5.3a3.5 3.5 0 0 1 7 0v1.9"/>
-              <rect x="2.7" y="7.2" width="10.6" height="6.8" rx="2"/>
+              <path d="M4.5 7.2V5.3a3.5 3.5 0 0 1 7 0v1.9"/><rect x="2.7" y="7.2" width="10.6" height="6.8" rx="2"/>
             </svg>加密
           </div>
-        </div>
-
-        <div class="vwire vw2"><i></i></div>
-
-        <!-- ③ 托管服务器 -->
-        <div class="vnode">
-          <div class="vhop" style="--at:.53">
+          <div class="vhop hop-cloud">
             <svg viewBox="0 0 18 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
               <path d="M4.7 12.4C2.5 12.4 1 10.8 1 9c0-1.8 1.4-3.3 3.2-3.4C4.6 3.1 6.8 1.3 9.4 1.3c2.6 0 4.7 1.8 5.1 4.3C15.9 6 17 7.3 17 8.8c0 1.9-1.5 3.6-3.7 3.6Z"/>
             </svg>托管服务器
           </div>
+          <i class="packet"></i>
         </div>
+      </section>
 
-        <div class="vwire vw3"><i></i></div>
-
-        <!-- ④ 你手上这台：会动的那一端 -->
-        <div class="vnode">
-          <div class="vbanner">
-            <img src="/logo.svg" alt="" width="30" height="30">
-            <div class="bn-t">
-              <b>Homing<i>刚刚</i></b>
-              <span>家里那台 · 验证码 <em id="v2_code">1357</em></span>
+      <!-- ③ 边走边看的人：会动的那一端 -->
+      <section class="sc sc-c">
+        <i class="rail-tail"></i>
+        <div class="walkset">
+          <svg class="walker" viewBox="0 0 160 250" aria-hidden="true">
+            <!-- 速度线：不画它，这个人就是站着的 -->
+            <g stroke="var(--line)" stroke-width="3" stroke-linecap="round" opacity=".3">
+              <path d="M10 104 L34 104"/><path d="M2 122 L26 122"/><path d="M14 140 L36 140"/>
+            </g>
+            <!-- 四肢：同一组路径描两遍，粗的那遍当轮廓、细的那遍当填色。
+                 直接用细线画的话是根火柴人，而这一版的其余部分都是「色块 + 硬描边」 -->
+            <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <g stroke="var(--line)" stroke-width="19">
+                <path d="M58 92 L46 126"/><path d="M62 146 C56 172 48 198 40 216"/>
+                <path d="M86 146 C96 170 106 192 114 208"/><path d="M88 90 C104 96 118 104 127 112"/>
+              </g>
+              <g stroke="var(--violet)" stroke-width="12">
+                <path d="M58 92 L46 126"/><path d="M62 146 C56 172 48 198 40 216"/>
+                <path d="M86 146 C96 170 106 192 114 208"/><path d="M88 90 C104 96 118 104 127 112"/>
+              </g>
+            </g>
+            <g stroke="var(--line)" stroke-width="3.4" stroke-linecap="round" fill="none">
+              <path d="M40 216 L25 221"/><path d="M114 208 L129 214"/>
+            </g>
+            <g stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round">
+              <path fill="var(--violet)" d="M54 74 C46 96 46 124 52 150 L94 150 C100 124 98 96 88 74 Z"/>
+              <circle cx="70" cy="48" r="24" fill="var(--card)"/>
+              <path fill="var(--yellow)" d="M46 50 A24 24 0 0 1 94 50 Z"/>
+            </g>
+            <circle cx="82" cy="56" r="3.4" fill="var(--line)"/>
+            <path d="M4 232 L156 232" stroke="var(--line)" stroke-width="3" stroke-linecap="round"
+                  stroke-dasharray="2 12" opacity=".35"/>
+          </svg>
+          <div class="vdev handphone">
+            <div class="vdev-bar">
+              <img src="/logo.svg" alt="" width="18" height="18"><strong>Homing</strong><b>刚刚</b>
             </div>
-            <button type="button" class="bn-copy" id="v2_copy">复制</button>
+            <div class="vdev-scr">
+              <div class="hp-msg">
+                <em class="hp-from">来自家里 · 安卓备用机</em>
+                【招商银行】您的验证码是 <em id="v2_code">1357</em>
+              </div>
+              <button type="button" class="bn-copy" id="v2_copy">复制</button>
+            </div>
           </div>
-          <p class="vtag">你 · <span id="v2_where">地铁上</span></p>
         </div>
-
-      </div>
-
-      <ol class="vladder">
-        <li style="--at:.22"><i class="vpipd"></i>收到</li>
-        <li style="--at:.44"><i class="vpipd"></i>已加密</li>
-        <li style="--at:.88"><i class="vpipd"></i>已送达</li>
-      </ol>
+        <p class="vtag">你 · <span id="v2_where">在路上</span></p>
+      </section>
 
     </div>
-    <p class="stage-cue"><i>↓</i> <span id="stage_cue_t">往下滑</span></p>
+
+    <p class="stage-cue"><i>↓</i> <span id="stage_cue_t">下滑查看</span></p>
   </div>
 </div>
 
