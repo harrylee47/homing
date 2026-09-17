@@ -247,10 +247,26 @@ Node 20 起 `autoSelectFamily` 默认开启：按 RFC 8305，先连第一个地�
 「地址都试完了」抛 ETIMEDOUT，**连同那条还在握手、再过几毫秒就要成功的
 IPv4 连接一起掐掉**。
 
+**它不是并行竞速。** socket 全程只有一个 handle，同一时刻只有一次尝试在飞：
+计时器一到，Node 先把手里那条 close 掉、在它头上记一条合成的 ETIMEDOUT，
+**然后**才去试下一个地址。所以 attemptTimeout **不是保险丝，是这条链路唯一的
+开关**——没有「并发兜底」这回事，调回 250ms 就等于恢复那个失败率。
+
+三条反证（都实测过）：失败时 `cause.errors` 是
+`[ETIMEDOUT/<IPv4>, ENETUNREACH/<IPv6>]`，ETIMEDOUT 记在 **IPv4** 头上；
+成功时 `autoSelectFamilyAttemptedAddresses` 里**只有 IPv4**，AAAA 根本没被试过；
+**把死的 AAAA 排到第一位反而 10/10 成功**（它立刻失败，计时器压根不参与）——
+也就是说，把能用的地址排在前面恰恰是它被掐死的原因。
+
 250ms 是给同城/CDN 场景的建议值。实测东京的网关到 api.telegram.org（荷兰）
 建连 232–264ms，中位数正好压在 250 上——40 次新建连接失败 16 次，每次都卡在
-252ms；把 autoSelectFamily 关掉则 40/40 成功。`main.ts` 因此把 attemptTimeout
-调到 3 秒（不直接关掉：IPv4 真不通的机器还要靠它回退）。
+252ms；抬到 3 秒后 0 失败，且成功时的建连耗时不变。`main.ts` 因此调到 3 秒
+（不直接关掉 autoSelectFamily：关掉之后 Node **只试第一个地址**，
+多 A 记录的故障转移会一起没掉）。
+
+代价由谁付也要说清：**完全没有 IPv4 路由的机器一分不付**（connect 立刻拿到
+ENETUNREACH）。付这 3 秒的是「有 IPv4 地址、出口却被静默丢弃、同时 IPv6 可用」
+那一种。
 
 这个 bug 的所有表征都在把人往别处带：
 
@@ -263,6 +279,13 @@ IPv4 连接一起掐掉**。
 排查这类「时好时坏的出网故障」，别用 `fetch` 循环——那测的是连接池。
 直接压 `net.connect`，每次新建，统计失败率与失败耗时：**失败耗时集中在某个
 固定值上**（这里是 252ms）就说明是超时配置，不是网络。
+
+连带的一条通用规矩：**`fetch` 失败一律走 `core/neterror.ts` 的
+`describeFetchError()`，不要写 `String(e)`。** 顶层拒绝值恒是
+`TypeError: fetch failed`，真正的原因在 `cause` 里；多地址失败时还要把
+`cause.errors[]` 逐条带上**地址**——「哪个族失败」才是答案，只打 code
+仍然定位不了。超时是例外（`TimeoutError` 没有 cause），要回落到 message，
+否则反而把唯一能看出来的信息也抹成空。
 
 ## 网关自己的对外地址
 
