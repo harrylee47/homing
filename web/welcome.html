@@ -29,8 +29,8 @@
     border-bottom: var(--bw) solid var(--line); padding: 10px 0;
   }
   .top .wrap { display: flex; align-items: center; gap: 8px; }
-  .top img { width: 30px; height: 30px; flex: none; }
-  .top .name { font-weight: 800; font-size: 18px; letter-spacing: .02em; }
+  .top img { width: 38px; height: 38px; flex: none; }
+  .top .name { font-weight: 800; font-size: 20px; letter-spacing: .02em; }
   .top .sp { flex: 1 }
 
   /* ── 下滑进场 ──────────────────────────────────────────────
@@ -166,7 +166,9 @@
   /* ── 巡检三条 ────────────────────────────────────────────── */
   .watch3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
   .watch3 > div { padding: 16px; background: var(--card); border: var(--bw) solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
-  .watch3 b { display: block; margin-bottom: 6px; font-size: 15px; }
+  /* 只作用于标题那个 b。写成 .watch3 b 会连段落里的 <b> 一起变块级——
+     「走的是<b>别的</b>渠道」当场断成三行。和 .step 那处是同一个坑。 */
+  .watch3 > div > b { display: block; margin-bottom: 6px; font-size: 15px; }
   .watch3 p { margin: 0; font-size: 13px; line-height: 1.75; color: var(--muted); }
 
   /* style.css 把 h2 全局设成了 uppercase（控制台那些全大写小标题靠它）。
@@ -187,7 +189,21 @@
     .step b { font-size: 17px }
     h2.big { font-size: 25px }
     .sec { padding: 38px 0 }
-    .top .name { display: none }
+    /*
+      窄屏上**不再藏品牌名**——原来一藏，顶栏就只剩一只鸟和三个按钮，
+      在手机上打开这个站的人不知道自己在哪个网站。
+      让位的改成按钮：缩小内边距与字号，并把 logo 与名字的间距收紧。
+      三个按钮 + logo + 名字在 390px 下实测仍然排得下（量过，见下）。
+    */
+    .top .wrap { gap: 6px }
+    .top img { width: 32px; height: 32px }
+    .top .name { font-size: 17px; letter-spacing: 0 }
+    .top button { padding: 6px 9px; font-size: 12px }
+  }
+  /* 360px 以下（老 SE、折叠机外屏）确实排不下三个按钮：
+     「注册」让位——它在第一屏里有个更大的 CTA，顶栏少一个不影响任何人 */
+  @media (max-width: 380px) {
+    .top .reg { display: none }
   }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
@@ -343,7 +359,7 @@
   <span class="name">Homing</span>
   <span class="sp"></span>
   <a class="btnlink" href="#get-app"><button class="sm">下载 App</button></a>
-  <a class="btnlink" href="/register"><button class="ghost sm">注册</button></a>
+  <a class="btnlink reg" href="/register"><button class="ghost sm">注册</button></a>
   <a class="btnlink" href="/login"><button class="ghost sm">登录</button></a>
 </div></div>
 
@@ -354,7 +370,7 @@
       <div>
         <h1 data-reveal>卡留在家，<br>号跟着你走。</h1>
         <p class="lede" data-reveal style="--i:1">国内号码插在家里一台闲置安卓机上。它收到的短信、来电、App
-        通知，几秒之内出现在你身边这台手机上——验证码长按即复制。</p>
+        通知，在任意设备、任何地点随时查看。</p>
         <div class="btnrow" data-reveal style="--i:2">
           <a class="btnlink" href="#get-app"><button>下载 App</button></a>
           <a class="btnlink" href="/register"><button class="ghost">注册账号</button></a>
@@ -374,8 +390,8 @@
         「还得懂点网络」，那正是这一版要改掉的那个「门槛高」。
       -->
       <ol class="mini3">
-        <li data-reveal="scale"><span class="b">1</span><div><b>找一台备用安卓机</b><span>放家里，插电、连 WiFi</span></div></li>
-        <li data-reveal="scale" style="--i:1"><span class="b">2</span><div><b>只在这台上装 App</b><span>装完就不用再碰它</span></div></li>
+        <li data-reveal="scale"><span class="b">1</span><div><b>找一台备用安卓机</b><span>放家里，插卡、插电、连 WiFi</span></div></li>
+        <li data-reveal="scale" style="--i:1"><span class="b">2</span><div><b>安装配对 App</b><span>只装这一台，装完就不用再碰它</span></div></li>
         <li data-reveal="scale" style="--i:2"><span class="b">3</span><div><b>注册账号，扫码配对</b><span>之后随时随地在网页上收发</span></div></li>
       </ol>
     </div>
@@ -432,14 +448,15 @@
       <div>
         <b>只在这台手机上装 homing.apk</b>
         <p>装到<b>放在家里</b>的那台，不是你随身带的那台。装完给它短信和通知权限、
-        加进电池优化白名单，让系统别把它杀掉。</p>
+        加进电池优化白名单，<b>保持后台运行</b>——别从后台划掉它，让系统也别把它杀掉。</p>
       </div>
     </div>
     <div class="step" data-reveal style="--i:4">
       <div class="num">3</div>
       <div>
         <b>注册账号，扫码配对</b>
-        <p>在网页上注册，「设备」页生成一个二维码，用 App 扫一下。地址和配对码都不用手打。</p>
+        <p>在网页上注册并登录，「设备」页生成一个<b>配对二维码</b>，用安卓上的配对 App 扫一下。
+        地址和配对码都不用手打。</p>
       </div>
     </div>
   </div>
@@ -459,12 +476,12 @@
     <div class="link c1" data-reveal style="--i:1"></div>
     <div class="node" data-reveal="scale" style="--i:2">
       <span class="ic" style="background:var(--yellow)" aria-hidden="true">☁️</span>
-      <span><b>你自己的服务器</b><span>手机主动连上来，不用公网 IP、不用内网穿透，路由器也不用动</span></span>
+      <span><b>托管服务器</b><span>手机主动连上来，不用公网 IP、不用内网穿透，路由器也不用动</span></span>
     </div>
     <div class="link c2" data-reveal style="--i:3"></div>
     <div class="node" data-reveal="scale" style="--i:4">
       <span class="ic" style="background:var(--mint)" aria-hidden="true">📱</span>
-      <span><b>你身边这台手机</b><span>网页里看、通知栏里收，验证码长按即复制</span></span>
+      <span><b>你身边这台手机</b><span>网页随时看、通知栏推送、验证码识别可复制</span></span>
     </div>
   </div>
 </div></div>
@@ -600,24 +617,29 @@
   </div>
 </div></div>
 
-<!-- ══ 边界 ══ -->
+<!-- ══ 免责声明 ══ -->
+<!--
+  这一节整节不做进场动效，是全页唯一静止的一块。
+  它说的是最坏情况，硬邦邦地已经在那儿比滑进来更像一句实话；
+  而且读者一路滑下来遇到一块不动的内容会自然减速。
+-->
 <div class="sec"><div class="wrap">
-  <h2 class="big">先说清楚的几件事</h2>
+  <h2 class="big">使用须知</h2>
   <div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-    <div class="card"><b>短信在服务器上是明文可见的</b>
-      <p class="muted">正文、号码、渠道密钥在库里是 AES-256-GCM 加密的，但服务端必须解开正文才能判断
-      这是不是验证码、该按哪条规则发——所以做不到端到端，密钥也在同一台机器上。
-      持有这台机器的人能读到全部。这一点没法靠产品设计改变，所以别把它装在不属于你的机器上。</p></div>
-    <div class="card"><b>控制台是公网可达的</b>
-      <p class="muted">门后是你全部短信的明文。所以口令别和别处重复，两步验证建议开着；
-      5 次输错锁 15 分钟，陌生网段登录会给你推一条通知。</p></div>
-    <div class="card"><b>不保证不漏报</b>
-      <p class="muted">家里那台关机、断网、欠费停机的时候，验证码收不到。断网期间的短信存在手机本地，
-      恢复后自动补传；关机就没有了。掉线会告警，但告警也要网络。
-      <b>别把它当唯一的接收手段，尤其是涉及钱的操作。</b></p></div>
-    <div class="card"><b>不做的事</b>
-      <p class="muted">不做语音中继、不做主叫号码改写、不做接码平台、不提供托管服务。
-      这是个人自用的工具，代收验证码给陌生人不在范围内。</p></div>
+    <div class="card"><b>数据与安全</b>
+      <p class="muted">使用本服务时，你的短信内容经本服务器转发，数据加密入库。
+      密钥与数据位于同一服务器，运营方在技术上具备读取能力，
+      本服务<b>无法保证绝对的数据安全</b>。介意的话可自行部署一份。</p></div>
+    <div class="card"><b>可用性</b>
+      <p class="muted">消息送达依赖家中设备的供电、网络与系统状态，
+      本服务<b>不保证不产生遗漏通知</b>。请勿将其作为验证码的唯一接收手段，
+      涉及资金的操作尤其如此。</p></div>
+    <div class="card"><b>使用限制</b>
+      <p class="muted">仅限本人使用本人合法持有的号码。不得用于代收验证码、
+      账号注册与买卖，不得用于任何违法违规用途。由此产生的责任由使用者自行承担。</p></div>
+    <div class="card"><b>开源自托管</b>
+      <p class="muted">项目以 AGPL-3.0 开源。自行部署后，数据与密钥均在你自己的机器上，
+      不经过任何第三方。</p></div>
   </div>
 </div></div>
 

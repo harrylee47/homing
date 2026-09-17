@@ -717,10 +717,18 @@ function login() {
  * 服务端必须解开正文才能跑规则和转发；说「我们看不到你的短信」是假话。
  * 能说的只有真的：加密挡得住谁、挡不住谁，以及不放心就自己部署一份。
  */
+/**
+ * 注册页上那段勾选前必须看到的话。
+ *
+ * 写法上刻意收敛：它是**声明**，不是劝说，也不是科普。原来那版
+ * （「会存下你手机收到的全部短信，包括银行验证码」）把同一件事说得
+ * 过于直白，读起来像在吓唬人，而该说清的责任边界反而没说全。
+ * 现在三句各管一件事：数据、可用性、使用限制。
+ */
 const PRIVACY_SUMMARY = [
-  '这台服务器会存下你手机收到的全部短信，包括银行验证码。',
-  '数据加密入库，但密钥在同一台服务器上——运营者在技术上能读到。',
-  '想要谁都读不到，唯一的办法是自己部署一份（项目开源）。',
+  '使用本服务时，你的短信内容经本服务器转发，数据加密入库。密钥与数据位于同一服务器，运营方在技术上具备读取能力。',
+  '本服务**无法保证绝对的数据安全，也不保证不产生遗漏通知**。请勿将其作为验证码的唯一接收手段。',
+  '仅限本人使用本人合法持有的号码，不得用于任何违法违规用途。',
 ]
 
 const PRIVACY_TEXT = [
@@ -852,8 +860,8 @@ async function register() {
       </div>
       <label style="display:flex;gap:9px;align-items:flex-start;text-transform:none;letter-spacing:0;font-size:14px;line-height:1.6;margin-top:10px">
         <input type="checkbox" id="agree" style="width:auto;margin-top:3px">
-        <span>我已读完<a href="/privacy">《隐私与风险声明》</a>并同意。我理解：这台服务器会保存我的短信正文与验证码，
-        本服务<b>做不到端到端加密</b>，也<b>不保证不漏报</b>。</span>
+        <span>我已阅读并同意<a href="/privacy">《隐私与风险声明》</a>，
+        知悉本服务<b>无法保证绝对的数据安全及消息送达</b>，并承诺仅将其用于本人合法用途。</span>
       </label>
       <div class="btnrow"><button id="go">创建账号</button></div>
       <div id="err" class="err-text"></div>
