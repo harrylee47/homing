@@ -457,7 +457,9 @@ const routes = [
   [/^\/sent\/(.+)$/, sentDetail],
   [/^\/sent$/, sent],
   [/^\/rules$/, rules],
-  [/^\/tasks$/, tasks],
+  // 计划任务并进了发送页的下半部分。旧地址不删——通知里、书签里、
+  // 自己的笔记里都可能还留着 /tasks，落到 404 比多一行改写糟得多
+  [/^\/tasks$/, () => { history.replaceState({}, '', '/compose'); return compose() }],
   [/^\/channels$/, channels],
   [/^\/devices\/(.+)\/logs$/, deviceLogs],
   [/^\/devices$/, devices],
@@ -506,9 +508,10 @@ async function route(restore = false) {
     if (m) {
       nav.hidden = PUBLIC_PAGES.has(path)
       for (const a of nav.querySelectorAll('a')) {
-        // 会话和消息是同一件事的两种看法，导航上归到「消息」
+        // 会话和消息是同一件事的两种看法，导航上归到「消息」；
+        // 发送记录与计划任务都归到「发送」——计划任务的页面就在那一页里
         const group = path.startsWith('/events') || path.startsWith('/threads') ? '/events'
-          : path.startsWith('/sent') ? '/compose' : path
+          : path.startsWith('/sent') || path.startsWith('/tasks') ? '/compose' : path
         a.classList.toggle('active', a.dataset.nav === group)
       }
       await view(m[1])
@@ -1549,7 +1552,11 @@ async function compose() {
   const p = new URLSearchParams(location.search)
   render('<div class="loading">加载中…</div>')
   try {
-    const { devices: ds } = await api('/devices')
+    // 两件事一起取。任务那半用 catch 兜住：它挂了不该连累发送表单
+    const [{ devices: ds }, tk] = await Promise.all([
+      api('/devices'),
+      api('/tasks').catch(() => null),
+    ])
     const online = ds.filter((d) => d.status === 'online')
 
     // 从消息详情点「回复」过来时预选原设备：多卡场景下必须从收到短信的
@@ -1577,7 +1584,11 @@ async function compose() {
         <div class="btnrow"><button id="send" ${online.length ? '' : 'disabled'}>发送</button></div>
         <div id="err" class="err-text"></div>
       </div>
-      <div id="status"></div>`)
+      <div id="status"></div>
+
+      ${taskSection(tk, ds)}`)
+
+    bindTasks(tk, ds)
 
     // 回复时预选原来那张卡：多卡场景下从别的卡发回去，对方看到的是陌生号码
     const prefSim = p.get('sim') === null ? null : Number(p.get('sim'))
@@ -3293,7 +3304,11 @@ function paintAgentLogs(LV) {
 async function devices() {
   render('<div class="loading">加载中…</div>')
   try {
-    const { devices: ds } = await api('/devices')
+    // 两件事一起取。任务那半用 catch 兜住：它挂了不该连累发送表单
+    const [{ devices: ds }, tk] = await Promise.all([
+      api('/devices'),
+      api('/tasks').catch(() => null),
+    ])
     const online = ds.filter((d) => d.status === 'online')
     render(`
       <h1>设备</h1>
@@ -4606,9 +4621,9 @@ async function settings() {
     <div class="card tight row">
       <div class="col grow">
         <span>定时发送短信</span>
-        <span class="muted">保号、提醒等。每张卡各建一个任务。</span>
+        <span class="muted">保号、提醒等。每张卡各建一个任务，在「发送」页的下半部分。</span>
       </div>
-      <a href="/tasks"><button class="ghost sm">管理</button></a>
+      <a href="/compose"><button class="ghost sm">去发送页</button></a>
     </div>
 
     <div id="retention"></div>
@@ -5280,48 +5295,64 @@ async function paintBattery() {
 
 // ── 计划任务 ────────────────────────────────────────────────
 
-async function tasks() {
-  render('<div class="loading">加载中…</div>')
-  try {
-    const [{ tasks: ts, timezone }, { devices: devs }] = await Promise.all([
-      api('/tasks'), api('/devices'),
-    ])
-    const activeDevs = devs.filter((d) => d.status !== 'revoked')
-    const fmtTs = (t) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—')
-    const devName = (id) => (id ? (activeDevs.find((d) => d.id === id)?.name || id) : '任意在线设备')
-    // 列表里也要标出用哪张卡：两条「保号」任务只差一张卡，不标就分不清
-    const simName = (t) => {
-      const sims = simsOf(activeDevs.find((d) => d.id === t.device_id))
-      const one = sims.find((x) => x.slot === t.sim_slot)
-      return one ? ` · ${simText(one)}` : ''
-    }
-
-    render(`
-      <h1>计划任务</h1>
-      <p class="muted">定时发送短信。最常见的用法是<b>保号</b>——国内号码长期零消费加异地漫游可能被停机，
-      而停机不会有任何提示。每张卡各建一个任务：保号针对的是具体号码，用别的卡发等于没保。</p>
-      ${ts.length ? `<div class="card list">${ts.map((t) => `
-        <div class="item" data-id="${esc(t.id)}">
-          <div class="row">
-            <div class="col grow">
-              <b>${esc(t.name)}</b>
-              <span class="muted">${esc(t.schedule_text)} · ${esc(devName(t.device_id))}${esc(simName(t))} → ${esc(t.to || '未设置')}</span>
-              <span class="muted">下次 ${t.enabled ? fmtTs(t.next_run_at) : '未启用'}</span>
-            </div>
-            <div class="col" style="align-items:flex-end;gap:4px">
-              <span class="badge ${t.enabled ? 'ok' : ''}">${t.enabled ? '启用' : '停用'}</span>
-              ${t.fail_count > 0 ? `<span class="badge err">失败 ${t.fail_count} 次</span>` : ''}
-            </div>
+/**
+ * 计划任务这一段。
+ *
+ * 它不再是一个单独的 tab——**计划任务就是发送，只是时间由服务端定**。
+ * 原来底部七个格子里「发送」和「任务」各占一个，而两页做的是同一件事，
+ * 反倒把「渠道」这个每个人装完都要配一次的东西挤进了设置页的二级入口。
+ *
+ * 拆成 section/bind 两半是因为渲染的时机变了：发送页一次 render 画完整页，
+ * 不能让这一段自己再 render 一次把上半部分的表单连同用户刚敲的字一起抹掉。
+ */
+function taskSection(tk, devs) {
+  const activeDevs = devs.filter((d) => d.status !== 'revoked')
+  const fmtTs = (t) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—')
+  const devName = (id) => (id ? (activeDevs.find((d) => d.id === id)?.name || id) : '任意在线设备')
+  // 列表里也要标出用哪张卡：两条「保号」任务只差一张卡，不标就分不清
+  const simName = (t) => {
+    const sims = simsOf(activeDevs.find((d) => d.id === t.device_id))
+    const one = sims.find((x) => x.slot === t.sim_slot)
+    return one ? ` · ${simText(one)}` : ''
+  }
+  // 任务取不着不该连累上半部分：发送表单是这一页的主业，
+  // 而用户此刻可能正要发一条验证码出去
+  if (!tk) {
+    return `<h2>计划任务</h2>
+      <div class="card muted">任务列表没取到。刷新试试，上面的发送不受影响。</div>`
+  }
+  const ts = tk.tasks
+  return `
+    <h2>计划任务</h2>
+    <p class="muted">到点自动发一条短信。最常见的用法是<b>保号</b>——国内号码长期零消费加异地漫游可能被停机，
+    而停机不会有任何提示。每张卡各建一个任务：保号针对的是具体号码，用别的卡发等于没保。</p>
+    ${ts.length ? `<div class="card list">${ts.map((t) => `
+      <div class="item" data-task="${esc(t.id)}">
+        <div class="row">
+          <div class="col grow">
+            <b>${esc(t.name)}</b>
+            <span class="muted">${esc(t.schedule_text)} · ${esc(devName(t.device_id))}${esc(simName(t))} → ${esc(t.to || '未设置')}</span>
+            <span class="muted">下次 ${t.enabled ? fmtTs(t.next_run_at) : '未启用'}</span>
           </div>
-        </div>`).join('')}</div>` : '<div class="card muted">还没有任务。</div>'}
-      <div class="btnrow"><button id="add">新建任务</button></div>
-      <div class="muted" style="margin-top:8px">时区：${esc(timezone)}（在设置页修改）</div>`)
+          <div class="col" style="align-items:flex-end;gap:4px">
+            <span class="badge ${t.enabled ? 'ok' : ''}">${t.enabled ? '启用' : '停用'}</span>
+            ${t.fail_count > 0 ? `<span class="badge err">失败 ${t.fail_count} 次</span>` : ''}
+          </div>
+        </div>
+      </div>`).join('')}</div>` : '<div class="card muted">还没有任务。</div>'}
+    <div class="btnrow"><button id="t_add">新建任务</button></div>
+    <div class="muted" style="margin-top:8px">时区：${esc(tk.timezone)}（在设置页修改）</div>`
+}
 
-    $('#add').onclick = () => taskEditor(null, activeDevs)
-    for (const el of app.querySelectorAll('.item')) {
-      el.onclick = () => taskEditor(ts.find((t) => t.id === el.dataset.id), activeDevs)
-    }
-  } catch (e) { fail(e) }
+/** 上面那段的事件。`data-task` 不叫 `data-id`——发送页上半部分也有 .item */
+function bindTasks(tk, devs) {
+  if (!tk) return
+  const activeDevs = devs.filter((d) => d.status !== 'revoked')
+  const add = $('#t_add')
+  if (add) add.onclick = () => taskEditor(null, activeDevs)
+  for (const el of app.querySelectorAll('[data-task]')) {
+    el.onclick = () => taskEditor(tk.tasks.find((t) => t.id === el.dataset.task), activeDevs)
+  }
 }
 
 function taskEditor(task, devs) {
@@ -5475,7 +5506,7 @@ function taskEditor(task, devs) {
     return { type, time, month: Number($('#s_month').value), day: Number($('#s_day').value) }
   }
 
-  $('#t_back').onclick = () => go('/tasks')
+  $('#t_back').onclick = () => go('/compose')
 
   $('#t_save').onclick = async () => {
     try {
@@ -5493,7 +5524,7 @@ function taskEditor(task, devs) {
         },
       })
       toast('已保存')
-      go('/tasks')
+      go('/compose')
     } catch (e) { $('#t_err').textContent = e.message }
   }
 
@@ -5514,7 +5545,7 @@ function taskEditor(task, devs) {
       if (!confirm(`删除任务「${t.name}」？`)) return
       await api(`/tasks/${t.id}`, { method: 'DELETE' })
       toast('已删除')
-      go('/tasks')
+      go('/compose')
     }
   }
 }

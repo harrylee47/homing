@@ -208,12 +208,28 @@
   @media (prefers-color-scheme: dark) { .ddesk-pool { opacity: .06 } }
 
   .ddesk-phone {
-    position: absolute; left: 50%; top: 24%; width: min(170px, 40vw, 31%); z-index: 2;
+    position: absolute; left: 50%; top: 24%; width: min(184px, 46vw, 36%); z-index: 2;
     transform: translate(-50%, 0) perspective(880px) rotateX(31deg) rotateZ(-13deg);
     transform-origin: 50% 75%;
   }
   .ddesk-phone .vdev { width: 100%; border-radius: 20px }
   .ddesk-phone .vdev-scr { min-height: 0; padding: 0 }
+  /* 这台手机只有画幅的三分之一宽，状态栏那一排（信号 + 运营商 + WiFi +
+     时间 + 电池）按默认字号排不下，右边的电池会被 overflow: hidden 直接裁掉。
+     把这一台的状态栏整体缩一档，而不是去掉「中国移动」——那几个字是
+     「这是一台插在家里的国内号卡」这句话的全部。 */
+  .ddesk-phone .vdev-bar { font-size: 9px; gap: 4px; padding: 5px 6px }
+  .ddesk-phone .sig i { width: 2.6px }
+  .ddesk-phone .wifi { width: 11px; height: 11px }
+  .ddesk-phone .batt { width: 18px; height: 9px; border-width: 1.6px }
+  .ddesk-phone .batt::after { right: -3px; top: 2.4px; height: 4px }
+  /* 小屏（360 这一档）上再降一档。量的是 .vdev-bar 的 scrollWidth 有没有
+     超过 clientWidth——overflow: hidden 把超出的部分直接吃掉，肉眼只看得见
+     「电池不见了」，看不出是溢出。 */
+  @media (max-width: 400px) {
+    .ddesk-phone .vdev-bar { font-size: 8px; gap: 3px; padding: 5px 5px }
+    .ddesk-phone .batt { width: 16px; height: 8px }
+  }
 
   /* ── 锁屏 ────────────────────────────────────────────────
      大时间 + 日期，下面一张通知卡。这是手机放在桌上、你走过去瞥一眼时
@@ -227,8 +243,13 @@
     background: var(--card); border: var(--bw) solid var(--line);
     border-radius: 12px; box-shadow: var(--shadow);
   }
-  .nf-head { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 800 }
-  .nf-head span.when { margin-left: auto; font-weight: 700; color: var(--muted) }
+  /* white-space: nowrap 是必须的：这台手机只有 31% 宽（402 的屏上约 134px），
+     不加的话「信息」和「现在」会各自被压成一列单字竖着排下来。
+     状态栏同理——挤不下宁可裁掉右边，也不能让它换行把机身撑高。 */
+  .nf-head { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 800;
+             white-space: nowrap }
+  .nf-head span.when { margin-left: auto; font-weight: 700; color: var(--muted); flex: none }
+  .nf-head .appicon { flex: none }
   /* 通知卡里那两截叠在一起：收起时一行「1 条新消息」，下滑才展开成正文。
      叠着放而不是前后排，是为了机身高度不随内容跳动——一跳，
      斜着压在桌上的那张卡片和它底下的桌子就都跟着动了。 */
@@ -459,35 +480,52 @@
     font-size: .76em; font-weight: 800; color: var(--fg); white-space: nowrap; flex: none;
   }
   .vbub-bar b { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums }
-  .vbub-scr { flex: 1; display: grid; place-items: center; padding: 0 .7em 2.6em; min-height: 0 }
-  /* 通知卡：压在桌面底色（--bg）上的一张 --card，和控制台里那套一致 */
-  .nfcard {
-    width: 100%; box-sizing: border-box; text-align: center;
+  /* 屏幕里是**锁屏**，不是一张居中的卡。照着真机来：
+     日期在上、时间在下（iOS 的顺序——家里那台是安卓，时间在上、日期在下，
+     两台正好区分得开），通知贴在屏幕下半部分，上面留白。
+     通知本身是「图标在左、标题一行带时间、正文在右边整块折行」，
+     不是把每一行都居中——居中排版的那版看起来是海报，不是通知。 */
+  .vbub-scr {
+    flex: 1; min-height: 0; display: flex; flex-direction: column;
+    padding: .5em .7em .9em; text-align: center;
+  }
+  .bub-date { font-size: .82em; font-weight: 700; color: var(--muted) }
+  .bub-time {
+    font-size: 3.3em; font-weight: 800; line-height: 1.02; letter-spacing: -.03em;
+    font-variant-numeric: tabular-nums; margin-top: .04em;
+  }
+  /* margin-top: auto —— 通知在锁屏上是**贴着下面**的，上面那块空白是时间的地方 */
+  .bub-nf {
+    margin-top: auto; text-align: left;
+    display: grid; grid-template-columns: auto 1fr; gap: .34em .5em; align-items: start;
     border: var(--bw) solid var(--line); border-radius: .9em;
-    background: var(--card); box-shadow: var(--shadow); padding: .8em .7em .9em;
+    background: var(--card); box-shadow: var(--shadow); padding: .62em .66em;
   }
-  .nf-top {
-    margin: 0; display: flex; align-items: center; gap: .36em;
-    font-size: .76em; font-weight: 800; text-align: left;
+  /* 应用图标：圆角方块，和手机桌面上那颗一致 */
+  .bub-ic {
+    grid-row: 1 / span 2; align-self: center;
+    width: 2.3em; height: 2.3em; border-radius: .62em; flex: none;
+    border: 1.5px solid var(--line); background: var(--cyan);
+    display: grid; place-items: center;
   }
-  .nf-top img { display: block; flex: none; width: 1.5em; height: 1.5em }
-  .nf-top span { margin-left: auto; font-weight: 700; color: var(--muted) }
-  .nf-src { margin: .3em 0 .8em; font-size: .7em; font-weight: 700; color: var(--muted); text-align: left }
-  .nf-txt { margin: 0; font-size: .82em; font-weight: 700; line-height: 1.45 }
-  .nf-code {
-    margin: .12em 0 0; font-size: 2em; font-weight: 800; letter-spacing: .16em; line-height: 1.15;
+  .bub-ic img { display: block; width: 1.75em; height: 1.75em }
+  .bub-t {
+    margin: 0; display: flex; align-items: baseline; gap: .4em;
+    font-size: .78em; font-weight: 800; min-width: 0;
   }
-  .nf-ok {
-    margin: .5em 0 0; font-size: .68em; font-weight: 700; color: var(--muted);
-    display: flex; align-items: center; justify-content: center; gap: .4em;
+  .bub-t b { font-weight: 800; white-space: nowrap }
+  .bub-t em {
+    font-style: normal; font-weight: 700; color: var(--muted);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .nf-ok i {
-    width: 1.25em; height: 1.25em; border-radius: 50%; background: var(--mint);
-    border: 1.5px solid var(--line); display: grid; place-items: center;
-    font-style: normal; font-size: .82em; line-height: 1; color: var(--on-bright); flex: none;
-  }
+  .bub-t span { margin-left: auto; font-weight: 700; color: var(--muted); flex: none }
+  .bub-b { margin: 0; font-size: .8em; font-weight: 600; line-height: 1.5 }
+  .bub-code { font-weight: 800; font-size: 1.22em; letter-spacing: .1em }
+  /* 通知下面那条动作行。安卓的通知本来就长这样，iOS 上是长按才出来——
+     画成一条整行的按钮，是因为「长按即复制」这件事没法画出来 */
   .bn-copy {
-    margin: .7em 0 0; width: auto; font-size: .78em; padding: .45em 1em; border-radius: 999px;
+    grid-column: 1 / -1; width: 100%; margin: .3em 0 0;
+    font-size: .76em; padding: .5em; border-radius: .7em;
     background: var(--cyan); color: var(--on-bright); box-shadow: 2px 2px 0 var(--line);
   }
   .bn-copy[data-done] { background: var(--mint) }
@@ -948,9 +986,21 @@
                 <path fill="var(--violet)" stroke-width="2.6" d="M382 284 L436 276 L437 285 L383 293 Z"/>
                 <path fill="var(--line)" stroke-width="2.2" d="M436 276 L448 276 L449 285 L437 285 Z"/>
 
-              <!-- 充电线：从画外的插座绕过来，插在手机近端那条边上 -->
-              <path fill="none" stroke="var(--line)" stroke-width="4" stroke-linecap="round"
-                    d="M0 296 C52 306 96 300 138 292 C176 285 208 286 232 292"/>
+              <!-- 充电线：从画外的插座绕过来，插在手机近端那条边上。
+                   原来是一根 4px 的秃线，在桌面上看起来像一道裂缝而不是线缆。
+                   三处改动：**双描边**（外圈 --line、里面 --card 当白色线身）、
+                   中间**盘一个圈**（谁的充电线都不是笔直的），以及末端那颗
+                   **接头**——线钻进手机底下这件事，只有接头能说清楚。 -->
+              <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path stroke="var(--line)" stroke-width="9"
+                      d="M0 308 C30 318 54 320 70 310 C88 298 74 282 58 288 C44 294 48 310 70 314 C100 320 124 314 146 306"/>
+                <path stroke="var(--card)" stroke-width="4.4"
+                      d="M0 308 C30 318 54 320 70 310 C88 298 74 282 58 288 C44 294 48 310 70 314 C100 320 124 314 146 306"/>
+              </g>
+              <!-- 接头：压在线的末端上，一半藏进手机底下 -->
+              <rect x="142" y="294" width="34" height="21" rx="5"
+                    fill="var(--card)" stroke="var(--line)" stroke-width="3.4"
+                    transform="rotate(-14 159 304)"/>
             </svg>
 
             <!-- 手机：斜着躺在桌上。整张卡片一起做 3D 变换，屏幕里仍然是活的 HTML -->
@@ -1123,14 +1173,13 @@
             <g stroke="var(--line)" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round">
               <!-- 身体：帽衫。先画，头和手压在它上面 -->
               <path fill="var(--violet)" d="M4 360 C4 264 30 210 72 188 C80 206 106 206 114 188 C156 210 182 264 182 360 Z"/>
-              <!-- 帽子的领口 + 两根抽绳 -->
-              <path fill="none" stroke-width="3.2" d="M66 182 C76 210 110 210 120 182"/>
-              <path fill="none" stroke-width="3" d="M84 208 V246 M102 208 V242"/>
-              <circle cx="84" cy="250" r="4" fill="var(--card)"/>
-              <circle cx="102" cy="246" r="4" fill="var(--card)"/>
-              <!-- 背包带 -->
-              <path fill="none" stroke-width="15" d="M40 204 C50 264 52 322 50 360"/>
-              <path fill="none" stroke-width="9" stroke="var(--mint)" d="M40 204 C50 264 52 322 50 360"/>
+              <!-- 帽子：堆在脖子后面那一卷。原来这里只有一道弧线，
+                   看起来像衣服上随便画了一笔 -->
+              <path fill="var(--violet)" d="M58 208 C58 182 70 172 92 172 C114 172 126 182 126 208 C112 196 72 196 58 208 Z"/>
+              <!-- 右肩的袖缝。左边那条被胳膊挡住，不画 -->
+              <path fill="none" stroke-width="3" d="M146 214 C156 240 160 274 160 306"/>
+              <!-- 前兜。胳膊压在它上面，正好只露出右半边 -->
+              <path fill="none" stroke-width="3" d="M40 312 C56 336 128 336 146 312"/>
               <!-- 脖子 -->
               <path fill="var(--card)" stroke="none" d="M79 152 H107 V190 H79 Z"/>
               <path fill="none" stroke-width="3.4" d="M79 158 V186 M107 158 V186"/>
@@ -1166,14 +1215,23 @@
             <path fill="none" stroke="var(--line)" stroke-width="3.2" stroke-linecap="round"
                   d="M84 146 C89 152 95 152 100 146"/>
 
-            <!-- 举起手机的那条手臂。粗描边当轮廓、细描边当填色 -->
+            <!-- 举起手机的那条前臂。两处都改过：
+                 ① 原来从 (40,330) 起笔，圆头正好落在帽衫中间，看起来像胸口
+                    鼓了一块紫色。现在从画幅外起笔，只露出斜上来的那一段。
+                 ② 袖子换成薄荷色。和身上同色的时候，这条胳膊在帽衫上只剩
+                    一道黑边，和前兜的弧线搅在一起谁也认不出——**撞色的套头衫
+                    本来就是常见款**，而它顺手把「这是一条胳膊」说清楚了。 -->
             <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <path stroke="var(--line)" stroke-width="32" d="M40 330 C46 300 62 276 84 264"/>
-              <path stroke="var(--violet)" stroke-width="24" d="M40 330 C46 300 62 276 84 264"/>
+              <path stroke="var(--line)" stroke-width="32" d="M6 360 C22 336 54 306 106 286"/>
+              <path stroke="var(--mint)" stroke-width="24" d="M6 360 C22 336 54 306 106 286"/>
+              <!-- 袖口 -->
+              <path stroke="var(--line)" stroke-width="3" d="M74 296 C80 306 84 314 86 324"/>
             </g>
-            <!-- 手掌 -->
+            <!-- 手掌。原来它是一团横跨 x=64..136 的白色，一半探在手机左边，
+                 读不出是手——现在把掌心藏到手机后面，只在机身**下方**露出
+                 掌根那一截，那正是单手握手机时看得见的部分。 -->
             <path fill="var(--card)" stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round"
-                  d="M80 238 C66 248 64 278 78 292 C92 306 120 302 128 288 C136 272 130 246 116 238 Z"/>
+                  d="M98 250 C88 260 88 288 100 298 C112 308 136 306 144 294 C152 280 148 254 136 246 Z"/>
             <!-- 手机。机身用 --card + 粗描边，屏幕给一块青色——
                  直接 fill="var(--line)" 的话深色主题下会是一台薄荷绿的手机 -->
             <g stroke="var(--line)" stroke-width="3.5" stroke-linejoin="round">
@@ -1185,11 +1243,17 @@
               <rect x="109" y="214" width="18" height="4" rx="2"/>
               <rect x="109" y="230" width="22" height="7" rx="3.5"/>
             </g>
-            <!-- 压在机身上的那几根手指 -->
+            <!-- 单手握手机时前面只看得见**一根拇指**，其余四指都在机身背后。
+                 原来画的是三根手指横搭在屏幕上，加上左边那团掌心，
+                 合起来认不出是一只手。现在：拇指压在机身左缘，
+                 另一侧露两个指尖，说明手是从背后绕过来的。 -->
             <g fill="var(--card)" stroke="var(--line)" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
-              <rect x="80" y="206" width="36" height="15" rx="7.5"/>
-              <rect x="78" y="226" width="38" height="15" rx="7.5"/>
-              <rect x="80" y="246" width="36" height="14" rx="7"/>
+              <rect x="146" y="218" width="18" height="14" rx="7"/>
+              <rect x="146" y="238" width="16" height="13" rx="6.5"/>
+            </g>
+            <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <path stroke="var(--line)" stroke-width="22" d="M104 288 C102 272 106 258 112 250"/>
+              <path stroke="var(--card)" stroke-width="15.5" d="M104 288 C102 272 106 258 112 250"/>
             </g>
           </svg>
 
@@ -1210,12 +1274,12 @@
               <span class="batt"><i></i></span>
             </div>
             <div class="vbub-scr">
-              <div class="nfcard">
-                <p class="nf-top"><img src="/logo.svg" alt="" width="17" height="17">Homing<span>刚刚</span></p>
-                <p class="nf-src">来自「家里 · 安卓备用机」</p>
-                <p class="nf-txt">【招商银行】您的验证码是</p>
-                <p class="nf-code" id="v2_code">1357</p>
-                <p class="nf-ok"><i>✓</i>已送到你手上这台</p>
+              <div class="bub-date" id="v2_date2">9 月 18 日 周五</div>
+              <div class="bub-time" id="v2_big2">0:48</div>
+              <div class="bub-nf">
+                <span class="bub-ic"><img src="/logo.svg" alt="" width="17" height="17"></span>
+                <p class="bub-t"><b>Homing</b><em>家里 · 安卓备用机</em><span>现在</span></p>
+                <p class="bub-b">【招商银行】您的验证码是 <b class="bub-code" id="v2_code">1357</b>，5 分钟内有效。</p>
                 <button type="button" class="bn-copy" id="v2_copy">复制验证码</button>
               </div>
             </div>

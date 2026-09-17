@@ -222,13 +222,16 @@
       var a = document.getElementById(bars[i])
       if (a) a.textContent = t
     }
-    var big = document.getElementById('v2_big')
-    if (big) big.textContent = t
-    // 锁屏上的日期也取读者自己的。写死一个日期和写死一个时间是同一种不真
-    var day = document.getElementById('v2_date')
-    if (day) {
-      var W = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-      day.textContent = (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日 ' + W[d.getDay()]
+    // 两块锁屏：家里那台（安卓，时间在上）、他手上那台（iOS，日期在上）
+    var W = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+    var day = (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日 ' + W[d.getDay()]
+    var locks = [['v2_big', 'v2_date'], ['v2_big2', 'v2_date2']]
+    for (var j = 0; j < locks.length; j++) {
+      var big = document.getElementById(locks[j][0])
+      if (big) big.textContent = t
+      // 锁屏上的日期也取读者自己的。写死一个日期和写死一个时间是同一种不真
+      var dy = document.getElementById(locks[j][1])
+      if (dy) dy.textContent = day
     }
   }
 
