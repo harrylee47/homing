@@ -455,7 +455,9 @@
   }
   /* 360px 以下（老 SE、折叠机外屏）确实排不下三个按钮：
      「注册」让位——它在第一屏里有个更大的 CTA，顶栏少一个不影响任何人 */
-  @media (max-width: 380px) {
+  @media (max-width: 480px) {
+    /* 顶栏放不下五颗按钮。收「注册」不收「通知」：注册在正文与通知页里都有入口，
+       而通知页除了这里没有别的门 */
     .top .reg { display: none }
   }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
