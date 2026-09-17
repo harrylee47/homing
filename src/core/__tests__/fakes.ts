@@ -173,7 +173,13 @@ export class MemoryStore implements Store {
   async listRules(userId: string) {
     return [...this.rules.values()].filter((r) => r.user_id === userId).sort((a, b) => a.priority - b.priority)
   }
-  async upsertRule(r: RuleRecord) { this.rules.set(r.id, r) }
+  // 和 SQLite 那边一致：撞到别人的 id 一行都不动、返回 false（见 store.upsertRule）
+  async upsertRule(r: RuleRecord) {
+    const old = this.rules.get(r.id)
+    if (old && old.user_id !== r.user_id) return false
+    this.rules.set(r.id, r)
+    return true
+  }
   async deleteRule(id: string, userId: string) {
     if (this.rules.get(id)?.user_id === userId) this.rules.delete(id)
   }
@@ -256,8 +262,11 @@ export class MemoryStore implements Store {
   }
   async upsertTask(t: TaskRecord) {
     const old = this.tasks.get(t.id)
+    // 撞到别人的 id 一行都不动（见 store.upsertTask）
+    if (old && old.user_id !== t.user_id) return false
     // 与 SQLite 的 upsert 一致：只覆盖配置字段，执行状态保持不变
     this.tasks.set(t.id, old ? { ...t, last_run_at: old.last_run_at, last_status: old.last_status, fail_count: old.fail_count } : t)
+    return true
   }
   async deleteTask(id: string, userId: string) {
     if (this.tasks.get(id)?.user_id === userId) this.tasks.delete(id)

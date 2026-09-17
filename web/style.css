@@ -297,8 +297,17 @@ h2::before {
 /* 通话记录：号码一行，方向与时长一行，和手机上的通话 App 同构 */
 .arrow { display: inline-block; width: 16px; font-size: 14px; }
 /* 未接的号码标红，和手机上一致——扫一眼就知道哪几通没接到 */
-.missed { color: var(--pink); }
-b.missed { font-weight: 700; }
+/*
+ * 未接来电。
+ *
+ * **不给它上 --pink 当字色。** 粉是亮色块的颜色：压在卡片底上时
+ * 对比度只有 2.68（实测），远低于 4.5，而这一行恰恰是号码本身——
+ * 最需要读得清的东西。CLAUDE.md 那条「字色分两类」说的就是这件事：
+ * 压在亮色块上用 --on-bright，压在卡片底上用 --fg。
+ * 「未接」这个状态本来就有左侧色带和 .badge 在表达，不必再靠字色喊一遍。
+ */
+.missed { color: var(--fg); }
+b.missed { font-weight: 800; }
 
 /* ── 状态点与标签 ────────────────────────────────────────── */
 
@@ -595,6 +604,8 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 3px; 
 .brand {
   display: flex; align-items: center; gap: 12px;
   margin: 2px 0 18px;
+  /* 它现在是个 <a>（点它去落地页），要把链接的默认样式压回去 */
+  text-decoration: none; color: inherit;
 }
 .brand img { flex: none; }
 .brand b {

@@ -31,6 +31,8 @@
     border-bottom: var(--bw) solid var(--line); padding: 10px 0;
   }
   .top .wrap { display: flex; align-items: center; gap: 8px; }
+  /* 品牌区整块可点，去落地页——站内除此之外没有别的入口 */
+  .brandlink { display: flex; align-items: center; gap: 8px; text-decoration: none; color: inherit }
   .top img { width: 38px; height: 38px; flex: none; }
   .top .name { font-weight: 800; font-size: 20px; letter-spacing: .02em; }
   .top .sp { flex: 1 }
@@ -86,8 +88,10 @@
 <body>
 
 <div class="top"><div class="wrap">
-  <img src="/logo.svg" alt="">
-  <span class="name">Homing</span>
+  <a class="brandlink" href="/welcome">
+    <img src="/logo.svg" alt="">
+    <span class="name">Homing</span>
+  </a>
   <span class="sp"></span>
   <a class="btnlink" href="/welcome"><button class="ghost sm">返回首页</button></a>
   <a class="btnlink" href="/login"><button class="ghost sm">登录</button></a>

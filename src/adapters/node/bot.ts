@@ -10,6 +10,7 @@ import { COMMANDS, handleCallback, handleCommand, handleReply, handleText, type 
 import { log } from '../../core/logging.js'
 import { describeFetchError } from '../../core/neterror.js'
 import { threadKey } from '../../core/thread.js'
+import type { Cipher } from '../../core/crypto.js'
 import type { Store } from '../../core/store.js'
 
 export interface BotDeps {
@@ -20,6 +21,8 @@ export interface BotDeps {
   serviceToken: string
   /** 渠道属主。「回复」提示落 message_ref 时要按它归属 */
   userId: string
+  /** 发件人号码在 message_refs 里是加密落库的（见 MessageRefRecord.sender_enc） */
+  cipher: Cipher
 }
 
 interface TgUpdate {
@@ -72,13 +75,23 @@ export class TelegramBot {
    * 而这是每次启动只做一次的操作，值得重试几轮。
    */
   private async registerMenu(): Promise<void> {
+    // 三轮都失败时要说出原因。原来这个 catch 把错误整个吞了，最后那句
+    // log.warn 光秃秃一行——而它失败的原因与轮询失败往往是同一个（出网），
+    // 有 describeFetchError 挖出来的 code/地址才对得上号
+    let lastError = ''
     for (let attempt = 1; attempt <= 3; attempt++) {
       const ok = await fetch(`https://api.telegram.org/bot${this.botToken}/setMyCommands`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ commands: COMMANDS }),
         signal: AbortSignal.timeout(15_000),
-      }).then((r) => r.ok).catch(() => false)
+      }).then((r) => {
+        if (!r.ok) lastError = `HTTP ${r.status}`
+        return r.ok
+      }).catch((e: unknown) => {
+        lastError = describeFetchError(e)
+        return false
+      })
 
       if (ok) {
         log.info('Bot 命令菜单已注册', { count: COMMANDS.length })
@@ -86,7 +99,7 @@ export class TelegramBot {
       }
       if (attempt < 3) await sleep(2000 * attempt)
     }
-    log.warn('注册 Bot 命令菜单失败，不影响命令本身可用')
+    log.warn('注册 Bot 命令菜单失败，不影响命令本身可用', { error: lastError })
   }
 
   stop(): void {
@@ -258,7 +271,10 @@ export class TelegramBot {
         }),
         signal: AbortSignal.timeout(15_000),
       }).catch((e: unknown) => {
-        log.warn('Bot 回复失败', { error: String(e) })
+        // describeFetchError 不能省：fetch 的顶层拒绝值恒是 TypeError: fetch failed，
+        // 真正的原因（哪个地址族、什么 code）在 cause 里。Bot 是唯一一个长期
+        // 主动外连的组件，那次 Happy Eyeballs 的 ETIMEDOUT 就是这么被抹掉的
+        log.warn('Bot 回复失败', { error: describeFetchError(e) })
         return null
       })
       if (!res) return
@@ -276,7 +292,7 @@ export class TelegramBot {
         if (mid != null) {
           await this.deps.store.putMessageRef({
             channel_id: this.channelId, ref: String(mid), event_id: msg.replyTo.eventId,
-            user_id: this.deps.userId, sender: msg.replyTo.sender,
+            user_id: this.deps.userId, sender_enc: await this.deps.cipher.encrypt(msg.replyTo.sender),
             device_id: msg.replyTo.deviceId, sim_slot: msg.replyTo.simSlot,
             created_at: Date.now(),
           }).catch((e: unknown) => log.warn('记录回复映射失败', { error: String(e) }))
@@ -318,7 +334,8 @@ export class TelegramBot {
       }),
       signal: AbortSignal.timeout(15_000),
     }).catch((e: unknown) => {
-      log.warn('Bot 改写消息失败', { error: String(e) })
+      // 同上：String(e) 在这里永远只有 "fetch failed" 四个字
+      log.warn('Bot 改写消息失败', { error: describeFetchError(e) })
       return null
     })
     // 内容一字未变时 Telegram 回 400 message is not modified，那不是故障；
@@ -409,8 +426,13 @@ export class TelegramBot {
       // 映射查询没有对应的 REST 接口，且它是 Bot 传输层自己的状态，
       // 不涉及业务逻辑，直接读存储不会造成两端逻辑漂移
       lookupRef: async (ref) => {
-        const r = await store.getMessageRef(channelId, ref)
-        return r ? { sender: r.sender, device_id: r.device_id, event_id: r.event_id, sim_slot: r.sim_slot } : null
+        const r = await this.deps.store.getMessageRef(channelId, ref)
+        if (!r) return null
+        // 密文优先；加密之前落的那些老行只有明文列（七天后自然清掉）
+        const sender = r.sender_enc.length > 0
+          ? await this.deps.cipher.decrypt(r.sender_enc)
+          : (r.sender_legacy ?? '')
+        return { sender, device_id: r.device_id, event_id: r.event_id, sim_slot: r.sim_slot }
       },
 
       /**

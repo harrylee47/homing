@@ -153,15 +153,19 @@ function deviceClass(id) {
  * 品牌头。只出现在三个地方：登录、首次配置、总览。
  *
  * 其余页面不放——那是日常高频操作的地方，每页顶一个 logo 是纯粹的占地方。
+ *
+ * **它是可点的，去落地页。** 不然整站除了手打网址，没有任何一个地方能到
+ * `/welcome`——而那是唯一一张讲「这是什么」的页面，也是唯一一张给
+ * 还没有账号的人看的页面。点 logo 回首页是通用习惯，这里正好补上这个口子。
  */
 const brand = (sub = '') => `
-  <div class="brand">
+  <a class="brand" href="/welcome">
     <img src="/logo.svg" alt="" width="52" height="52">
     <div class="col">
       <b>Homing</b>
       ${sub ? `<span class="muted">${esc(sub)}</span>` : ''}
     </div>
-  </div>`
+  </a>`
 
 /** 列表项左侧色带的类别。与 style.css 的 .s-* 对应。 */
 const stripeOf = (kind, direction) =>
@@ -410,7 +414,9 @@ const rememberScroll = () => scrollMem.set(curPath, window.scrollY)
 const go = (path) => {
   rememberScroll()
   navDepth++
-  history.pushState({}, '', path)
+  // 深度记进这一条历史记录本身：浏览器自己的前进/后退键不经过 go()/goBack()，
+  // 光靠一个变量加加减减迟早会对不上（见 popstate 那段）
+  history.pushState({ d: navDepth }, '', path)
   curPath = path
   route()
 }
@@ -423,7 +429,10 @@ const go = (path) => {
  * 才退到给定的地址。
  */
 const goBack = (fallback) => {
-  if (navDepth > 0) { navDepth--; history.back() } else go(fallback)
+  // 这里不减 navDepth：history.back() 会触发 popstate，深度在那里按落地的
+  // 那条历史记录重算，减两次的话「返回」会以为已经到头了
+  if (navDepth > 0) history.back()
+  else go(fallback)
 }
 
 // 事件委托：视图重绘后不需要重新绑定
@@ -435,12 +444,34 @@ document.addEventListener('click', (e) => {
   }
   const a = e.target.closest('a[href^="/"]')
   if (a && !a.target) {
+    /*
+     * 站上还有几张**不进 SPA 的独立静态页**（/welcome、/notice）。
+     * 它们不在 routes 表里，被这里截下来的结果是落到兜底的 overview()：
+     * 地址栏写着 /notice、画面却是总览，底部导航还整条消失（nav.hidden
+     * 只在匹配到路由的分支里恢复），只能刷新页面才能回来。
+     * 「了解这是什么」那颗按钮更糟——它存在的全部意义是给还没有账号的人
+     * 看落地页，而截下来之后这些人被直接送进登录表单。
+     *
+     * 所以：认不出的路径一概不拦，让浏览器整页跳过去（静态层会去找
+     * 同名的 .html）。
+     */
+    if (!isSpaPath(a.getAttribute('href'))) return
     e.preventDefault()
     go(a.getAttribute('href'))
   }
 })
-window.addEventListener('popstate', () => {
+window.addEventListener('popstate', (e) => {
   rememberScroll()
+  /*
+   * 深度以落地的那条历史记录为准。
+   *
+   * 原来只在 go() 里加、在 goBack() 里减，浏览器自己的后退键两边都不经过，
+   * 于是这个数只增不减。深链进来（Bark 通知就是这条路）点几下再用后退键
+   * 退到会话开头之后，navDepth 仍然大于 0，详情页的「← 返回」照旧去调
+   * history.back()，而前面已经没有可退的了——表现是**点了没反应**。
+   * 首条记录没有 state，算 0，正好走 data-back 给的上级地址。
+   */
+  navDepth = e.state?.d ?? 0
   curPath = location.pathname + location.search
   route(true)
 })
@@ -470,6 +501,9 @@ const routes = [
   [/^\/register$/, register],
   [/^\/setup$/, setup],
 ]
+
+/** 这个地址由 SPA 自己渲染吗？独立静态页（/welcome、/notice）走浏览器整页跳转 */
+const isSpaPath = (href) => routes.some(([re]) => re.test(href.split(/[?#]/)[0]))
 
 async function route(restore = false) {
   const path = location.pathname
@@ -525,7 +559,16 @@ async function route(restore = false) {
       return
     }
   }
-  overview()
+  /*
+   * 一条路由都没匹配上：当成总览，**地址也一并改写回 /**。
+   *
+   * 不改写的话地址栏停在一个不存在的路径上，刷新一次还是落在这里；
+   * 更要命的是上面把 nav 整条藏起来了，只有匹配到路由的那一支才会恢复——
+   * 用户看到的是「点了个链接，底部导航栏没了」，得刷新页面才回得来。
+   * 不会递归：/ 一定命中 routes 的第一条。
+   */
+  history.replaceState(null, '', '/')
+  return route()
 }
 
 const render = (html) => { app.innerHTML = html }
@@ -1474,9 +1517,19 @@ async function events() {
     for (const el of $('#list').querySelectorAll('.item')) {
       el.onclick = () => go(`/events/${el.dataset.id}`)
     }
-    $('#f_limit').onchange = (e) => apply({ limit: Number(e.target.value), offset: 0 })
-    const prev = $('#p_prev'); if (prev) prev.onclick = () => apply({ offset: Math.max(0, offset - limit) })
-    const next = $('#p_next'); if (next) next.onclick = () => apply({ offset: offset + limit })
+    /*
+     * 翻页、换每页条数都要把 deep 带上。
+     *
+     * deep 是「这一次请求放宽扫描预算」，服务端不记状态；而 buildQuery 是从
+     * 表单重新拼查询串的，不显式带上就丢了。丢了的表现是：刚点过
+     * 「继续往更早搜」拿到一批几个月前的结果，翻到第二页又退回默认的浅预算，
+     * 结果变少甚至是空的——看起来像数据丢了。
+     * （「应用筛选」不带：换了条件本来就该从浅的重来。）
+     */
+    const deepNow = p.get('deep') ? { deep: 1 } : {}
+    $('#f_limit').onchange = (e) => apply({ ...deepNow, limit: Number(e.target.value), offset: 0 })
+    const prev = $('#p_prev'); if (prev) prev.onclick = () => apply({ ...deepNow, offset: Math.max(0, offset - limit) })
+    const next = $('#p_next'); if (next) next.onclick = () => apply({ ...deepNow, offset: offset + limit })
 
     const deep = $('#deep')
     if (deep) deep.onclick = () => {
@@ -2362,8 +2415,14 @@ function ruleEditor(rule, chs, devs = []) {
     })
   }
   tpl.oninput = paintPreview
-  // spoiler 点一下展开：CSP 不让写内联 onclick，事件在这里挂
-  app.addEventListener('click', (e) => {
+  /*
+   * spoiler 点一下展开：CSP 不让写内联 onclick，事件在这里挂。
+   *
+   * 挂在预览容器上，不能挂在 #app 上——#app 活得比这个视图久，每打开一次
+   * 编辑器就多一个监听，同一次点击于是被 toggle 两次、三次：展开又立刻折回，
+   * 看起来像预览坏了。`#tplpv` 跟着 render() 一起被换掉，监听自然跟着走。
+   */
+  $('#tplpv').addEventListener('click', (e) => {
     if (e.target.classList?.contains('spoiler')) e.target.classList.toggle('show')
   })
   /**
@@ -2419,8 +2478,19 @@ function ruleEditor(rule, chs, devs = []) {
         content_contains: contentTags.values(),
         content_excludes: excludeTags.values(),
         content_regex: m.content_regex ?? null,
-        device_ids: [...app.querySelectorAll('[data-dev]')].filter((c) => c.checked).map((c) => c.dataset.dev),
-        sim_slot: [...app.querySelectorAll('[data-sim]')].filter((c) => c.checked).map((c) => Number(c.dataset.sim)),
+        /*
+         * 界面上没渲染这两组勾选框时（只剩一台未吊销的设备 / 没有双卡）保留原值。
+         *
+         * 和下面 action.bark 是同一条教训，只是落在 match 这半边：没显示就不回传
+         * 等于静默清空。表现是「进去只改了个规则名，这条规则突然对所有设备、
+         * 所有卡都生效了」——多设备分流和按卡分流一起失效，而且不报任何错。
+         */
+        device_ids: app.querySelector('[data-dev]')
+          ? [...app.querySelectorAll('[data-dev]')].filter((c) => c.checked).map((c) => c.dataset.dev)
+          : (m.device_ids || []),
+        sim_slot: app.querySelector('[data-sim]')
+          ? [...app.querySelectorAll('[data-sim]')].filter((c) => c.checked).map((c) => Number(c.dataset.sim))
+          : (m.sim_slot || []),
         direction: $('#direction').value ? [$('#direction').value] : [],
         // 只填了一半的时段是无意义的，当没填处理
         time_window: from && to ? { from, to } : null,

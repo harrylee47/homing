@@ -277,26 +277,52 @@ const CODE_KEYWORDS = [
   'code', 'otp', 'pin', 'password', 'passcode',
 ]
 
+/** 纯 ASCII 字母的关键词（code / otp / pin …），只有这些有「词」可言。 */
+const ASCII_KEYWORD = /^[a-z]+$/
+/** 词内字符：字母与数字。下划线不算——短信正文里基本不出现，不值得为它多一条规则。 */
+const WORD_CHAR = /[a-z0-9]/
+
+/**
+ * 英文关键词必须独立成词，中文/日文关键词不判边界。
+ *
+ * 不判的话，`code` 会命中 barcode / zipcode，`pin` 会命中 shipping——
+ * 一条英文物流短信就足以把追踪号、邮编当成验证码提出来。代价不是显示难看：
+ * Bark 的 copy/autoCopy 会把它直接塞进剪贴板，人粘贴出去的是个错号码，
+ * 而他多半到粘贴完才发现不对。
+ *
+ * 反过来，中文里根本没有空白分词（「验证码：123456」前后都不是空格），
+ * 一视同仁地加边界等于把中文这一路整个关掉——验证码的主场恰恰是中文。
+ */
+function wordBounded(lower: string, idx: number, kw: string): boolean {
+  if (!ASCII_KEYWORD.test(kw)) return true
+  const before = idx > 0 ? lower[idx - 1]! : ''
+  const after = lower[idx + kw.length] ?? ''
+  return !WORD_CHAR.test(before) && !WORD_CHAR.test(after)
+}
+
 export function extractCode(content: string): string | null {
   const lower = content.toLowerCase()
 
   for (const kw of CODE_KEYWORDS) {
-    let idx = lower.indexOf(kw.toLowerCase())
+    const needle = kw.toLowerCase()
+    let idx = lower.indexOf(needle)
     while (idx !== -1) {
-      // 关键词后 30 字符内找 4–8 位数字，这个窗口覆盖「验证码是 123456」
-      // 以及「验证码：123456，5分钟内有效」这类常见写法。
-      // 前后的数字边界不可省略：否则 13 位的订单号会被截成 8 位当作验证码，
-      // 而通知标题里放一个错的验证码比不放更糟。
-      const after = content.slice(idx + kw.length, idx + kw.length + 30)
-      const m = after.match(/(?<!\d)\d{4,8}(?!\d)/)
-      if (m) return m[0]
+      if (wordBounded(lower, idx, needle)) {
+        // 关键词后 30 字符内找 4–8 位数字，这个窗口覆盖「验证码是 123456」
+        // 以及「验证码：123456，5分钟内有效」这类常见写法。
+        // 前后的数字边界不可省略：否则 13 位的订单号会被截成 8 位当作验证码，
+        // 而通知标题里放一个错的验证码比不放更糟。
+        const after = content.slice(idx + needle.length, idx + needle.length + 30)
+        const m = after.match(/(?<!\d)\d{4,8}(?!\d)/)
+        if (m) return m[0]
 
-      // 少数模板把数字放在关键词前面，如「123456 是您的验证码」
-      const before = content.slice(Math.max(0, idx - 20), idx)
-      const mb = before.match(/(?<!\d)\d{4,8}(?!\d)(?!.*(?<!\d)\d{4,8}(?!\d))/)
-      if (mb) return mb[0]
+        // 少数模板把数字放在关键词前面，如「123456 是您的验证码」
+        const before = content.slice(Math.max(0, idx - 20), idx)
+        const mb = before.match(/(?<!\d)\d{4,8}(?!\d)(?!.*(?<!\d)\d{4,8}(?!\d))/)
+        if (mb) return mb[0]
+      }
 
-      idx = lower.indexOf(kw.toLowerCase(), idx + 1)
+      idx = lower.indexOf(needle, idx + 1)
     }
   }
   return null

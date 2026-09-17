@@ -7,7 +7,7 @@
  *  - 单个 Provider 故障不得阻塞其他渠道（并发发送，独立超时）
  */
 import { log } from './logging.js'
-import { shouldAlert, type AlertWindowStore } from './alertwindow.js'
+import { ALERT_WINDOW_SETTING, shouldAlert, type AlertWindowStore } from './alertwindow.js'
 import { barkProvider } from './providers/bark.js'
 import { ntfyProvider } from './providers/ntfy.js'
 import { webpushProvider } from './providers/webpush.js'
@@ -172,9 +172,9 @@ export async function crossChannelAlert(
   }
 
   let suppressedNote = ''
+  // 键用「哪些渠道失败了」，不用事件 id：同一个渠道连续失败 50 次是一件事
+  const key = [...failedIds].sort().join(',')
   if (window) {
-    // 键用「哪些渠道失败了」，不用事件 id：同一个渠道连续失败 50 次是一件事
-    const key = [...failedIds].sort().join(',')
     const d = await shouldAlert(window.store, window.userId, key, window.now ?? Date.now())
       .catch((e: unknown) => {
         // 压制状态读写失败不能挡住告警本身
@@ -216,5 +216,44 @@ export async function crossChannelAlert(
       context,
       channels: alertFailed.map((r) => `${r.channelType}(${r.channelId}): ${r.error}`),
     })
+    // 一条都没送出去，那刚才占上的窗口就不该算数——把它退回去
+    if (window) await releaseAlertWindow(window, key)
+  }
+}
+
+/**
+ * 告警一条都没发出去时，把压制窗口退回去。
+ *
+ * 这是 monitor.ts 那笔账的重演：设备离线告警原来把 `alerted.add` 排在
+ * `notify()` 之前，而 `dispatch` 从不抛，于是渠道故障时那台设备在进程活着的
+ * 几周里再也不会告警。这里一样——`shouldAlert` 在**发之前**就把窗口推进了，
+ * 备用渠道也全挂时用户一条都没收到，窗口却结结实实占满 10 分钟，
+ * 而「连备用渠道都发不出去」恰恰是最该吵醒你的那一次。
+ *
+ * 退回的方式是把这个键的 `at` 抹成 0（「从没有一条告警真的送出去过」），
+ * 下一条失败立刻重试；`n` 加一而不是清零——这一条没送达的也该算进
+ * 「还有 N 条同样失败」，压制期间要记数这条不能因为退回就丢了。
+ *
+ * 状态就是 alertwindow.ts 存的那个 JSON，这里直接改其中一个键：
+ * 期间别的键可能也被推进过，覆盖它们最多让那边多发一条告警，
+ * 与 alertwindow.ts 里认下的那个竞态同向——宁可吵一次，不可静默。
+ */
+async function releaseAlertWindow(
+  w: { store: AlertWindowStore; userId: string },
+  key: string,
+): Promise<void> {
+  try {
+    const raw = await w.store.getUserSetting(w.userId, ALERT_WINDOW_SETTING)
+    let all: Record<string, { at: number; n: number }> = {}
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      all = parsed as Record<string, { at: number; n: number }>
+    }
+    const n = typeof all[key]?.n === 'number' ? all[key]!.n : 0
+    all[key] = { at: 0, n: n + 1 }
+    await w.store.setUserSetting(w.userId, ALERT_WINDOW_SETTING, JSON.stringify(all))
+  } catch (e) {
+    // 退不回去最多是这 10 分钟内少一条告警，不能反过来把主链路弄挂
+    log.warn('告警压制窗口回退失败', { error: String(e) })
   }
 }

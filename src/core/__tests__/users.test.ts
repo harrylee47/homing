@@ -175,7 +175,7 @@ describe('到期后后台循环也停', () => {
     })
     store.users.set('u1', user({ expires_at: NOW - 1 }))
     await tick({
-      store, timezoneFor: async () => 'UTC', onlineDevices: () => ['dev_jp'],
+      store, timezoneFor: async () => 'UTC', onlineDevices: async () => ['dev_jp'],
       send: async (_u, d) => { sent.push(d); return true },
       alert: async () => {}, now: () => NOW,
     }, async (e) => new TextDecoder().decode(e))

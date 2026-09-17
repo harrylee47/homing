@@ -74,14 +74,34 @@ function loadOrCreateAdminToken(dataDir: string): string {
  * 两者同时泄露等于未加密。
  */
 function loadOrCreateDek(dataDir: string): Uint8Array {
+  const path = join(dataDir, 'dek.key')
   const fromEnv = process.env.GW_DEK
   if (fromEnv) {
     const k = fromHex(fromEnv)
     if (k.length !== 32) throw new Error('GW_DEK 必须是 64 位 hex（32 字节）')
+    /*
+     * **两把不一样就拒绝启动。**
+     *
+     * 长期以来 docker-compose.yml 根本没把 GW_DEK 传进容器，于是真正在用的是
+     * 这里自动生成的 data/dek.key，而文档一直教人在 .env 里生成一把、单独抄进
+     * 密码管理器。补上传参之后就出现了一个新的坏路径：老部署里两把不一样，
+     * 而环境变量优先——容器照常启动、零报错，**全部历史消息当场解不开**，
+     * 界面上表现为消息列表里一片空白或乱码。
+     * 这种错必须在启动时就拦住：起不来有人看，解不开没人看得出来。
+     */
+    if (existsSync(path)) {
+      const onDisk = readFileSync(path, 'utf8').trim().toLowerCase()
+      if (onDisk && onDisk !== fromEnv.trim().toLowerCase()) {
+        throw new Error(
+          `GW_DEK 与 ${path} 里的密钥不一致。这台机器的历史数据是用文件里那把加密的，`
+          + '用环境变量这把启动会让全部历史解不开。要么把 .env 里的 GW_DEK 换成文件里那把，'
+          + '要么确认这是一台全新机器后删掉那个文件。',
+        )
+      }
+    }
     return k
   }
 
-  const path = join(dataDir, 'dek.key')
   if (existsSync(path)) return fromHex(readFileSync(path, 'utf8'))
 
   const dek = generateDek()

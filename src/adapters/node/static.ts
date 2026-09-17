@@ -27,7 +27,23 @@ const TYPES: Record<string, string> = {
 
 export function serveStatic(root: string, req: IncomingMessage, res: ServerResponse): boolean {
   const url = new URL(req.url ?? '/', 'http://localhost')
-  let pathname = decodeURIComponent(url.pathname)
+  /**
+   * 解码失败要当场回 400，不能让 URIError 冒出去。
+   *
+   * `new URL()` 不解百分号转义，`/%` 这种畸形转义一路活到这里，
+   * `decodeURIComponent` 抛 URIError——而调用方是
+   * `void handleApi(...).then(() => serveStatic(...))`，没有 catch：
+   * 异常变成一条未处理的 Promise 拒绝，**响应永远不写**，socket 一直挂着
+   * 直到超时。也就是任何人 `curl 'https://<网关>/%'` 就占住一个连接，
+   * 连着发就能把连接数耗光，而日志里只有一句看不出所以然的未捕获异常。
+   */
+  let pathname: string
+  try {
+    pathname = decodeURIComponent(url.pathname)
+  } catch {
+    res.writeHead(400).end()
+    return true
+  }
   if (pathname === '/') pathname = '/index.html'
 
   /**

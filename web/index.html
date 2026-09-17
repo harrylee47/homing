@@ -3,7 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="robots" content="noindex, nofollow">
+  <!--
+    控制台本身**绝不进索引**——门后是全部短信明文含银行验证码。
+    但 follow 要留着：站点根 / 就是这个文件，而这个站上唯一希望被搜到的页面
+    是落地页 /welcome。写成 nofollow 且页面里一条链接都没有的话，爬虫从根
+    进来拿不到任何可跟随的入口，「落地页要能被搜到」在真实抓取路径上就是空话。
+  -->
+  <meta name="robots" content="noindex, follow">
   <title>Homing</title>
   <link rel="icon" type="image/svg+xml" href="/logo.svg">
   <!--
@@ -28,7 +34,16 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div id="app"><div class="loading">加载中…</div></div>
+  <!--
+    这条链接是留给爬虫的唯一入口（理由见上面 robots 那段）。
+    它在 SPA 第一次 render() 时就被换掉，用户几乎看不到；
+    而脚本没跑起来时它还在——那时站在根页面上的人至少有个地方可去。
+  -->
+  <div id="app">
+    <div class="loading">加载中…
+      <div style="margin-top:14px"><a href="/welcome">Homing — 卡留在家，号跟着你走</a></div>
+    </div>
+  </div>
   <nav id="nav" hidden>
     <a href="/" data-nav="/">总览</a>
     <a href="/events" data-nav="/events">消息</a>

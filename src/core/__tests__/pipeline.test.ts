@@ -296,8 +296,19 @@ describe('时区：规则时段与 {time} 占位符', () => {
   )
 
   it('时段按设置的时区算，不是 UTC', async () => {
-    await store.setSetting('timezone', 'Asia/Tokyo')
+    await store.setUserSetting('u1', 'timezone', 'Asia/Tokyo')
     // 东京 07:00–09:00：UTC 时刻 22:30 落在窗口外，东京时间 07:30 落在窗口内
+    winRule()
+    await processEvent({ store, cipher }, 'evt_tz', evt({ occurred_at: AT }))
+    expect(sent[0]!.body).toBe('命中时段规则')
+  })
+
+  it('时区是**按用户**取的 —— 全局 settings 里那一份不算数', async () => {
+    // 曾经 pipeline 读的是全局 settings.timezone，而 POST /api/timezone 写的是
+    // user_settings：于是用户在设置页改的时区对推送里的 {time} 和规则时段
+    // 完全不生效，而计划任务那一侧是对的 —— 同一条规则试跑通了、真事件却不命中
+    await store.setSetting('timezone', 'UTC')
+    await store.setUserSetting('u1', 'timezone', 'Asia/Tokyo')
     winRule()
     await processEvent({ store, cipher }, 'evt_tz', evt({ occurred_at: AT }))
     expect(sent[0]!.body).toBe('命中时段规则')
@@ -312,14 +323,14 @@ describe('时区：规则时段与 {time} 占位符', () => {
   })
 
   it('显式传入的时区优先于设置', async () => {
-    await store.setSetting('timezone', 'Asia/Tokyo')
+    await store.setUserSetting('u1', 'timezone', 'Asia/Tokyo')
     winRule()
     await processEvent({ store, cipher, tz: 'UTC' }, 'evt_tz', evt({ occurred_at: AT }))
     expect(sent[0]!.body).not.toBe('命中时段规则')
   })
 
   it('{time} 渲染成设置时区的墙上时间，而不是 ISO 串', async () => {
-    await store.setSetting('timezone', 'Asia/Tokyo')
+    await store.setUserSetting('u1', 'timezone', 'Asia/Tokyo')
     addRule('r_t', {}, { channels: ['ch_1'], template: '{time} {content}', stop_processing: true })
     await processEvent({ store, cipher }, 'evt_tz', evt({ occurred_at: AT }))
     expect(sent[0]!.body).toContain('2026-09-16 07:30')
@@ -327,7 +338,7 @@ describe('时区：规则时段与 {time} 占位符', () => {
   })
 
   it('时区名写错时退回 UTC，而不是整条推送断掉', async () => {
-    await store.setSetting('timezone', '火星/奥林匹斯')
+    await store.setUserSetting('u1', 'timezone', '火星/奥林匹斯')
     addRule('r_t', {}, { channels: ['ch_1'], template: '{time}', stop_processing: true })
     await processEvent({ store, cipher }, 'evt_tz', evt({ occurred_at: AT }))
     expect(sent[0]!.body).toBe('2026-09-15 22:30')

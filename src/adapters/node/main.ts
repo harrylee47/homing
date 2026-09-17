@@ -165,37 +165,44 @@ async function backfillSeedRulesFor(userId: string): Promise<void> {
         match_json: JSON.stringify(r.match), action_json: JSON.stringify(r.action), created_at: t,
       })
     }
-    // 补齐后加字段的默认值（见 missingDirection 的注释）
+    /*
+     * 补方向限制与换老模板**必须在同一趟里写完**。
+     *
+     * 原来是两个串行的循环，都遍历函数开头读出的同一份 `existing` 快照，
+     * 而 upsertRule 是整行替换：第一趟把 direction 写进 match_json，
+     * 第二趟为同一批行写 `match_json: row.match_json`——那是同一份陈旧快照，
+     * 里面没有 direction，于是第一趟白做了。
+     * 后果正是 missingDirection 存在的全部理由（见 seeds.ts）：老规则没有
+     * direction 键时，一条**自己发出去的**、正文带「验证码」三个字的短信会先
+     * 命中 priority 10 的「验证码」规则（stop_processing + 高优先级 + 穿透专注
+     * 模式），于是升级之后「自己发出去的验证码」会被高优先级推回给自己。
+     */
     const fixed: string[] = []
-    for (const row of existing) {
-      let match: Record<string, unknown>
-      try { match = JSON.parse(row.match_json) as Record<string, unknown> } catch { continue }
-      const dir = missingDirection(row.name, match)
-      if (!dir) continue
-      await store.upsertRule({
-        id: row.id, user_id: userId, name: row.name, priority: row.priority, enabled: row.enabled,
-        match_json: JSON.stringify({ ...match, direction: dir }),
-        action_json: row.action_json, created_at: row.created_at,
-      })
-      fixed.push(row.name)
-    }
-
-    // 老默认模板把发件人拼进了正文，而渠道本身就在显示发件人——
-    // 同一个号码在一条通知里出现两三次。只改一模一样的，用户写过的不动
     const retemplated: string[] = []
     for (const row of existing) {
-      let action: Record<string, unknown>
-      try { action = JSON.parse(row.action_json) as Record<string, unknown> } catch { continue }
-      if (typeof action.template !== 'string') continue
-      const next = migratedTemplate(action.template)
-      if (next === null) continue
+      let match: Record<string, unknown> | null = null
+      let action: Record<string, unknown> | null = null
+      try { match = JSON.parse(row.match_json) as Record<string, unknown> } catch { /* 存坏了就不动它 */ }
+      try { action = JSON.parse(row.action_json) as Record<string, unknown> } catch { /* 同上 */ }
+
+      const dir = match ? missingDirection(row.name, match) : null
+      // 老默认模板把发件人拼进了正文，而渠道本身就在显示发件人——
+      // 同一个号码在一条通知里出现两三次。只改一模一样的，用户写过的不动
+      const nextTpl = action && typeof action.template === 'string'
+        ? migratedTemplate(action.template)
+        : null
+      if (!dir && nextTpl === null) continue
+
       await store.upsertRule({
         id: row.id, user_id: userId, name: row.name, priority: row.priority, enabled: row.enabled,
-        match_json: row.match_json,
-        action_json: JSON.stringify({ ...action, template: next }),
+        match_json: dir && match ? JSON.stringify({ ...match, direction: dir }) : row.match_json,
+        action_json: nextTpl !== null && action
+          ? JSON.stringify({ ...action, template: nextTpl })
+          : row.action_json,
         created_at: row.created_at,
       })
-      retemplated.push(row.name)
+      if (dir) fixed.push(row.name)
+      if (nextTpl !== null) retemplated.push(row.name)
     }
     if (retemplated.length > 0) {
       log.info('已把仍是老默认值的通知模板换成只含正文', { names: retemplated })
@@ -387,16 +394,27 @@ async function listFingerprints(
 }
 
 /**
- * 断开全部设备，迫使它们重连并拉取新配置。
+ * 断开**这个用户自己的**设备，迫使它们重连并拉取新配置。
  *
  * 配置只在握手时下发，改完不重连就要等到下次断线才生效——
  * 用户改了设置却看不到效果，会以为坏了。断开后 Agent 1 秒内就会重连。
+ *
+ * **必须按用户过滤**。它的两个调用点（通知捕获开关、短信指令设置）都是
+ * 按用户存的设置，而原来这里无差别关掉 hub 里的每一条连接：一个普通用户
+ * 点一下自己的开关，别人家的手机就断线重连、别人的连接日志里多出一对
+ * 「离线 / 上线」，反复点即可持续骚扰所有其他用户的设备。
  */
-function reconnectDevices(): void {
-  for (const id of hub.onlineDevices()) {
-    hub.get(id)?.close(1000, 'config changed')
-  }
-  log.info('已断开全部设备以应用新配置')
+function reconnectDevices(userId: string): void {
+  void (async () => {
+    const mine = new Set((await store.listDevices(userId)).map((d) => d.id))
+    let n = 0
+    for (const id of hub.onlineDevices()) {
+      if (!mine.has(id)) continue
+      hub.get(id)?.close(1000, 'config changed')
+      n++
+    }
+    log.info('已断开该用户的设备以应用新配置', { user_id: userId, count: n })
+  })().catch((e: unknown) => log.error('重连设备失败', { error: String(e) }))
 }
 
 const apiDeps = {
@@ -641,7 +659,7 @@ async function syncBotsInner(): Promise<void> {
     const serviceToken = await botTokenFor(store, w.owner)
     if (!serviceToken) { log.warn('Bot 渠道找不到归属用户，已跳过', { channel_id: id }); continue }
     const bot = new TelegramBot(
-      { store, apiBase: `http://127.0.0.1:${cfg.port}`, serviceToken, userId: w.owner },
+      { store, cipher, apiBase: `http://127.0.0.1:${cfg.port}`, serviceToken, userId: w.owner },
       w.token, new Set([w.chat]), id,
     )
     bot.start()
@@ -730,9 +748,25 @@ const taskDeps = async () => ({
   store,
   // 时区按用户存，调度器逐条任务现取（见 TaskDeps.timezoneFor）
   timezoneFor: (userId: string) => timezone(store, userId),
-  onlineDevices: () => hub.onlineDevices(),
+  // 全局在线表与「这个人自己的设备」求交集。少了这一步，没绑设备的任务
+  // 会挑到别人的手机（见 TaskDeps.onlineDevices 的注释）
+  onlineDevices: async (userId: string) => {
+    const mine = new Set((await store.listDevices(userId)).map((d) => d.id))
+    return hub.onlineDevices().filter((id) => mine.has(id))
+  },
   deviceName: (id: string) => deviceNameCache.get(id) ?? id,
   send: async (userId: string, deviceId: string, to: string, text: string, simSlot: number | null = null) => {
+    /*
+     * 归属在这里再核一次。上面挑设备那步已经过滤过，但这条 send 也被
+     * 「立即测试」复用，而任务本身的 device_id 可能是历史遗留（早期的
+     * POST /api/tasks 不校验归属，库里可能存着别人的 device_id）。
+     * 发短信是不可撤销的对外动作，宁可多查一次。
+     */
+    const owner = await store.getDevice(deviceId)
+    if (!owner || owner.user_id !== userId) {
+      log.warn('计划任务指向了不属于该用户的设备，已拒绝', { user_id: userId, device_id: deviceId })
+      return false
+    }
     const id = `cmd_${crypto.randomUUID()}`
     const t = Date.now()
     await store.createOutbound({

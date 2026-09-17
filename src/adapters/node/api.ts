@@ -96,7 +96,7 @@ export interface ApiDeps {
   listFingerprints?: ((deviceId: string, since: number | null, limit: number) =>
     Promise<{ ok: boolean; items?: { fp: string; at: number }[]; truncated?: boolean; error?: string }>) | undefined
   /** 断开全部设备连接，迫使它们重连并拉取新配置 */
-  reconnectDevices?: (() => void) | undefined
+  reconnectDevices?: ((userId: string) => void) | undefined
   /** 可信反代网段。未配置时一律采用连接地址，不采信 X-Forwarded-For。 */
   trustedProxy?: string | null
 }
@@ -367,6 +367,35 @@ async function withPasswordSlot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * 凭证校验失败的统一记账：计数 → 锁定 → 审计 → 告警。
+ *
+ * 抽出来是因为**登录不是唯一一条验口令的路**。`/api/account/renew` 与
+ * `/api/auth/recover/finish` 的动态码分支同样能拿一次尝试换一个「对不对」的信号，
+ * 而它们原来只挂了注册那套 20 次/15 分钟的 IP 限速——不锁定、不写审计、不告警，
+ * 速率还宽了四倍。CLAUDE.md 把这几层写成一组：「这道门现在真正靠的是它前面那
+ * 几层——5 次失败锁定 15 分钟、口令运算并发闸、失败即告警、陌生网段登录告警。
+ * 它们是一组：谁要再放宽其中一项，先看看另外几项还在不在。」
+ */
+function credentialLockedOut(ip: string): boolean {
+  const rec = loginFails.get(ip)
+  return !!rec && now() < rec.until
+}
+
+async function noteCredentialFail(
+  deps: ApiDeps, ip: string, opts: { userId: string | null | undefined; detail: string },
+): Promise<void> {
+  const c = (loginFails.get(ip)?.count ?? 0) + 1
+  loginFails.set(ip, { count: c, until: c >= LOGIN_MAX_ATTEMPTS ? now() + LOGIN_LOCKOUT_MS : 0 })
+  await deps.store.audit({
+    user_id: opts.userId ?? null, actor: null, action: 'auth.fail',
+    // 不写「用户不存在」：那等于告诉爆破者哪些用户名是真的
+    detail: `第 ${c} 次，${opts.detail}`, ip, created_at: now(),
+  })
+  log.warn('凭证校验失败', { ip, attempt: c })
+  if (c >= LOGIN_MAX_ATTEMPTS) void deps.onLoginLockout?.(ip, c)
+}
+
 route('POST', '/api/auth/login', async ({ user, req, res, body, deps, ip }) => {
   const rec = loginFails.get(ip)
   if (rec && now() < rec.until) {
@@ -426,18 +455,7 @@ route('POST', '/api/auth/login', async ({ user, req, res, body, deps, ip }) => {
   }
 
   if (!acct || !okPw || !okTotp) {
-    const c = (rec?.count ?? 0) + 1
-    loginFails.set(ip, {
-      count: c,
-      until: c >= LOGIN_MAX_ATTEMPTS ? now() + LOGIN_LOCKOUT_MS : 0,
-    })
-    await deps.store.audit({
-      user_id: acct?.id ?? null, actor: null, action: 'auth.fail',
-      // 不写「用户不存在」：那等于告诉爆破者哪些用户名是真的
-      detail: `第 ${c} 次，${okPw ? 'TOTP' : '口令'}不正确`, ip, created_at: now(),
-    })
-    log.warn('登录失败', { ip, attempt: c })
-    if (c >= LOGIN_MAX_ATTEMPTS) void deps.onLoginLockout?.(ip, c)
+    await noteCredentialFail(deps, ip, { userId: acct?.id, detail: `${okPw ? 'TOTP' : '口令'}不正确` })
     // 不区分口令错还是 TOTP 错，避免为逐项爆破提供反馈
     return json(res, 401, { error: '口令或验证码不正确' })
   }
@@ -806,6 +824,10 @@ route('POST', '/api/auth/totp/disable', async ({ user, res, body, deps, ip }) =>
  * 两条路都**不告诉界面这个账号有没有绑验证器**：那会连带确认账号存在。
  * 界面一律把两个选项都摆出来，选错了就在这一步告诉他。
  */
+/** 动态码这条路的失败文案。账号不存在时也回它——两者必须一字不差 */
+const TOTP_RECOVER_FAIL = '动态码不正确。请确认认证器里选的是这个账号那一条，'
+  + '并检查手机时间是否准确——动态码对时间很敏感，差一分钟就会一直失败。'
+
 const RECOVERY_TTL_MS = 10 * 60 * 1000
 const RECOVERY_MAX_TRIES = 5
 const S_RECOVERY = 'recovery_pending'
@@ -860,24 +882,40 @@ route('POST', '/api/auth/recover/finish', async ({ res, body, deps, ip }) => {
   const pwCheck = validatePassword(b?.password ?? '')
   if (!pwCheck.ok) return json(res, 400, { error: pwCheck.error })
 
-  const fail = { error: '验证码不正确或已失效' }
-  const acct = await deps.store.getUserByName((b?.name ?? '').trim())
-  if (!acct || !userActive(acct, now())) return json(res, 401, fail)
-
   const input = (b?.code ?? '').trim()
   const method = b?.method === 'totp' ? 'totp' : 'channel'
-  if (!input) return json(res, 401, fail)
+
+  /*
+   * **账号不存在时要回「这条路上该有的那句话」，不是另一句。**
+   *
+   * 这个路由自己的注释写着「两条路都不告诉界面这个账号有没有绑验证器：
+   * 那会连带确认账号存在」。前半句做到了（没绑 TOTP 时也回同一段长文案），
+   * 后半句漏了：账号不存在时回的是一句不带 method 的短文案，而账号存在时
+   * 一定带 method，三种响应体互不相同——于是这个免鉴权接口成了「哪些用户名
+   * 是真的」的查询器，而用户名正是口令爆破的前置输入。
+   */
+  const notFound = method === 'totp'
+    ? { error: TOTP_RECOVER_FAIL, method: 'totp' }
+    : { error: '找回码已失效，请重新发送一个', method: 'channel', resend: true }
+  const acct = await deps.store.getUserByName((b?.name ?? '').trim())
+  if (!acct || !userActive(acct, now())) {
+    await noteCredentialFail(deps, ip, { userId: null, detail: '找回：账号不存在或不可用' })
+    return json(res, 401, notFound)
+  }
+  if (!input) return json(res, 401, notFound)
 
   let ok = false
   if (method === 'totp') {
-    // 认证器这条无状态，错了也不消耗渠道码的次数
+    /*
+     * 动态码这条**只要六位数字就能改口令**，比登录那条还短一截（登录至少
+     * 还要口令），所以它必须挂登录那套闸：原来只有注册的 20 次/15 分钟 IP 限速，
+     * 不锁定、不审计、不告警，等于同时放宽了三项（见 noteCredentialFail）。
+     */
+    if (credentialLockedOut(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
     ok = acct.totp_secret !== '' && (await verifyTotp(acct.totp_secret, input))
     if (!ok) {
-      return json(res, 401, {
-        error: '动态码不正确。请确认认证器里选的是这个账号那一条，'
-          + '并检查手机时间是否准确——动态码对时间很敏感，差一分钟就会一直失败。',
-        method: 'totp',
-      })
+      await noteCredentialFail(deps, ip, { userId: acct.id, detail: '找回：动态码不正确' })
+      return json(res, 401, { error: TOTP_RECOVER_FAIL, method: 'totp' })
     }
   } else {
     const raw = await deps.store.getUserSetting(acct.id, S_RECOVERY)
@@ -903,7 +941,7 @@ route('POST', '/api/auth/recover/finish', async ({ res, body, deps, ip }) => {
     }
     ok = true
   }
-  if (!ok) return json(res, 401, fail)
+  if (!ok) return json(res, 401, notFound)
 
   await deps.store.setUserSetting(acct.id, S_RECOVERY, '')
   await deps.store.upsertUser({
@@ -1454,6 +1492,9 @@ route('POST', '/api/register', async ({ res, body, deps, ip }) => {
  *  - 续期从**原到期时刻**往后接，没到期的部分不会被抹掉。
  */
 route('POST', '/api/account/renew', async ({ res, body, deps, ip }) => {
+  // 这条路要验口令 + 动态码，所以挂的是**登录那套闸**，不是注册的 IP 限速：
+  // 只挂后者等于给爆破者一条 20 次/15 分钟、不锁定不告警的旁路（见 noteCredentialFail）
+  if (credentialLockedOut(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
   if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
 
   const b = body as { name?: string; password?: string; code?: string; invite?: string }
@@ -1462,7 +1503,10 @@ route('POST', '/api/account/renew', async ({ res, body, deps, ip }) => {
   const okPw = !!acct
     && (await withPasswordSlot(async () => verifyPassword(b?.password ?? '', acct.password_hash)))
   const okTotp = okPw && (!acct!.totp_secret || (await verifyTotp(acct!.totp_secret, b?.code ?? '')))
-  if (!acct || !okPw || !okTotp) return json(res, 401, { error: '口令或验证码不正确' })
+  if (!acct || !okPw || !okTotp) {
+    await noteCredentialFail(deps, ip, { userId: acct?.id, detail: `续期：${okPw ? 'TOTP' : '口令'}不正确` })
+    return json(res, 401, { error: '口令或验证码不正确' })
+  }
 
   if (acct.disabled) {
     // 停用是人做的决定，不该被一个邀请码推翻
@@ -2147,6 +2191,25 @@ route('GET', '/api/backup/config', async ({ user, res, deps }) => {
  * 渠道只恢复出一个壳（密钥不在文件里），而且**一律建成停用**：
  * 一条配置不全的渠道被规则选中，表现是推送静默失败。
  */
+/**
+ * 备份里的一条设置能不能写进库。
+ *
+ * 判据是「读取方能不能读回来」——每种设置各有自己的读取函数，
+ * 这里就按那份形状校一遍，而不是另外维护一套 schema（两套必然漂移）。
+ */
+function settingImportable(key: string, val: string): boolean {
+  if (key === 'timezone') {
+    try { new Intl.DateTimeFormat('en-US', { timeZone: val }); return true } catch { return false }
+  }
+  // 其余三项都是 JSON 落库的，读取方一律 JSON.parse
+  try {
+    const o: unknown = JSON.parse(val)
+    return !!o && typeof o === 'object' && !Array.isArray(o)
+  } catch {
+    return false
+  }
+}
+
 route('POST', '/api/backup/config', async ({ user, res, body, deps, ip }) => {
   const v = validateBackup(body)
   if (!v.ok) return json(res, 400, { error: v.error })
@@ -2204,8 +2267,25 @@ route('POST', '/api/backup/config', async ({ user, res, body, deps, ip }) => {
     stat.channels++
   }
 
+  /*
+   * **导进来的设置要按各自的 schema 校验，不能原样写库。**
+   *
+   * 原来是拿到什么写什么，而每条设置路由（/api/timezone、/api/notify-capture、
+   * /api/sms-command、/api/battery-alerts）各自都有校验，这条路把它们全绕过了。
+   * 最狠的一个是 sms_command：它的读取方 loadSmsCommand 会 JSON.parse，
+   * 喂进一个非 JSON 的字符串之后，这个账号名下**所有设备都握不上手**
+   * （握手要下发配置 → 解析抛异常 → 不回 hello_ack → Agent 90 秒看门狗 →
+   * 重连 → 再失败，短信全积在手机本地），而自救路径也断了：
+   * GET/POST /api/sms-command 同样先 loadSmsCommand，一起 500。
+   */
   for (const [k, val] of Object.entries(f.settings)) {
     if (!EXPORTABLE_USER_SETTINGS.includes(k)) continue
+    if (typeof val !== 'string') { stat.skipped++; continue }
+    if (!settingImportable(k, val)) {
+      log.warn('备份里的设置格式不对，已跳过', { user_id: user.id, key: k })
+      stat.skipped++
+      continue
+    }
     await deps.store.setUserSetting(user.id, k, val)
     stat.settings++
   }
@@ -2311,13 +2391,20 @@ route('POST', '/api/rules', async ({ user, res, body, deps, ip }) => {
     return json(res, 400, { error: '规则校验失败', detail: issues.map((i) => `${i.path.join('.')}: ${i.message}`) })
   }
   const id = b.id ?? newId('rule')
-  await deps.store.audit({ actor: 'admin', action: b.id ? 'rule.update' : 'rule.create', detail: `${id}:${b.name ?? ''}`, ip, created_at: now() })
-  await deps.store.upsertRule({
+  /*
+   * id 来自请求体，所以「撞上的这条是不是我的」必须判。upsertRule 的冲突
+   * 分支现在带 `WHERE user_id = excluded.user_id`，撞到别人的一行都不动、
+   * 返回 false——这里把它翻译成 404「不存在」，不回 403：
+   * 回 403 等于告诉对方「这条规则真的存在，只是不归你」。
+   */
+  const okWrite = await deps.store.upsertRule({
     id, user_id: user.id, name: b.name ?? '未命名规则', priority: b.priority ?? 100,
     enabled: b.enabled ?? true,
     match_json: JSON.stringify(m.data), action_json: JSON.stringify(a.data),
     created_at: now(),
   })
+  if (!okWrite) return json(res, 404, { error: '规则不存在' })
+  await deps.store.audit({ actor: 'admin', action: b.id ? 'rule.update' : 'rule.create', detail: `${id}:${b.name ?? ''}`, ip, created_at: now() })
   json(res, 200, { id })
 })
 
@@ -2523,13 +2610,21 @@ route('POST', '/api/tasks', async ({ user, res, body, deps, ip }) => {
   if (enabled && !to) return json(res, 400, { error: '启用时必须填目标号码' })
 
   const deviceId = String(b.device_id ?? '')
-  if (deviceId && !(await deps.store.getDevice(deviceId))) {
+  /*
+   * **ownedDevice 而不是 getDevice**：原来只判设备存在，于是任何登录用户都能
+   * 把一条「每天 9 点」的任务绑在别人的手机上，长期用别人的号码对外发短信，
+   * 而受害者在控制台里既看不到这个任务（listTasks 按 user_id 过滤）、
+   * 也看不到这些发送记录（outbound 的 user_id 是发起者）。
+   * 比 /api/outbound 那条更重：那条是一次性的，这条是反复执行的。
+   */
+  if (deviceId && !(await ownedDevice(deps, user.id, deviceId))) {
     return json(res, 400, { error: '指定的设备不存在' })
   }
 
   const id = String(b.id ?? '') || newId('task')
   const existing = await deps.store.getTask(id, user.id)
-  await deps.store.upsertTask({
+  // 和 /api/rules 同一条理由：id 来自请求体，撞到别人的一行都不动，回 404
+  const okWrite = await deps.store.upsertTask({
     id, user_id: user.id,
     name: String(b.name ?? '').trim() || '未命名任务',
     enabled, device_id: deviceId, to_number: to,
@@ -2541,6 +2636,7 @@ route('POST', '/api/tasks', async ({ user, res, body, deps, ip }) => {
     fail_count: existing?.fail_count ?? 0,
     created_at: existing?.created_at ?? now(),
   })
+  if (!okWrite) return json(res, 404, { error: '任务不存在' })
   await deps.store.audit({
     actor: 'admin', action: existing ? 'task.update' : 'task.create',
     detail: `${id} ${describeSchedule(sched.data)}`, ip, created_at: now(),
@@ -2625,7 +2721,7 @@ route('POST', '/api/notify-capture', async ({ user, res, body, deps, ip }) => {
     ip, created_at: now(),
   })
   // 配置变更后立刻重连设备，让新配置马上生效而不是等下次握手
-  if (deps.reconnectDevices) deps.reconnectDevices()
+  if (deps.reconnectDevices) deps.reconnectDevices(user.id)
   json(res, 200, { ok: true })
 })
 
@@ -2835,7 +2931,7 @@ route('POST', '/api/sms-command', async ({ user, res, body, deps, ip }) => {
     detail: `${cfg.enabled ? '启用' : '停用'}${b.regenerate ? '，已重置口令' : ''}，白名单 ${cfg.allow_numbers.length} 个`,
     ip, created_at: now(),
   })
-  if (deps.reconnectDevices) deps.reconnectDevices()
+  if (deps.reconnectDevices) deps.reconnectDevices(user.id)
   json(res, 200, cfg)
 })
 
@@ -3012,14 +3108,26 @@ route('GET', '/api/stats', async ({ user, res, deps }) => {
  * 这个接口能让设备真的发出短信，误用或凭证泄露的代价是实打实的话费与骚扰，
  * 所以即便已经过了鉴权也要限速（计划 §11.4 安全约束③）。
  */
-const outboundWindow: number[] = []
+/**
+ * **按用户各算各的。** 原来是一个模块级的全局窗口：A 的 Bot 一次回几条长会话
+ * 就把额度打满，B 在接下来一小时里点「回复」只拿得到 429「超出限速」，
+ * 而他自己一条都没发过、界面上也无从看出是别人占的。多用户的前提是
+ * 「每个用户一套完全独立的数据」，配额也该是。
+ */
+const outboundWindows = new Map<string, number[]>()
 const OUTBOUND_MAX_PER_HOUR = 20
 
-function outboundRateLimited(): boolean {
+function outboundRateLimited(userId: string): boolean {
   const cutoff = now() - 3600_000
-  while (outboundWindow.length > 0 && outboundWindow[0]! < cutoff) outboundWindow.shift()
-  if (outboundWindow.length >= OUTBOUND_MAX_PER_HOUR) return true
-  outboundWindow.push(now())
+  const w = (outboundWindows.get(userId) ?? []).filter((t) => t >= cutoff)
+  if (w.length >= OUTBOUND_MAX_PER_HOUR) {
+    outboundWindows.set(userId, w)
+    return true
+  }
+  w.push(now())
+  outboundWindows.set(userId, w)
+  // 窗口全空的用户不留在内存里——否则删号之后这张表只增不减
+  for (const [k, v] of outboundWindows) if (v.every((t) => t < cutoff)) outboundWindows.delete(k)
   return false
 }
 
@@ -3028,12 +3136,19 @@ route('POST', '/api/outbound', async ({ user, res, body, deps, ip }) => {
   if (!b.device_id || !b.to || !b.text) return json(res, 400, { error: '缺少 device_id / to / text' })
   if (b.text.length > 4096) return json(res, 400, { error: '内容过长' })
 
-  if (outboundRateLimited()) {
-    log.warn('发送请求超出限速', { ip })
+  if (outboundRateLimited(user.id)) {
+    log.warn('发送请求超出限速', { ip, user_id: user.id })
     return json(res, 429, { error: `超出限速（每小时 ${OUTBOUND_MAX_PER_HOUR} 条）` })
   }
 
-  const device = await deps.store.getDevice(b.device_id)
+  /*
+   * **必须走 ownedDevice**。原来这里是不带作用域的 getDevice，只判存在与吊销，
+   * 于是任何登录用户拿到一个 device_id 就能用别人的手机发短信：对方收件人看到的
+   * 是受害者的号码、话费记在受害者头上，而 outbound 那条记录的 user_id 写的是
+   * 发起者，受害者在自己的发送记录里查不到。
+   * 不属于自己的一律当「不存在」——回 403 等于告诉对方这台设备真的存在。
+   */
+  const device = await ownedDevice(deps, user.id, b.device_id)
   if (!device) return json(res, 404, { error: '设备不存在' })
   if (device.status === 'revoked') return json(res, 403, { error: '设备凭证已吊销' })
 
@@ -3494,7 +3609,21 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
 
   const m = match.pattern.exec(url.pathname)!
   const params: Record<string, string> = {}
-  match.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]!) })
+  /*
+   * **解码要自己兜住**。这一句原来在 try 外面：`new URL()` 不规范化非法
+   * 百分号转义，`decodeURIComponent('%')` 抛 URIError，于是 handleApi 返回的
+   * promise 被 reject——而调用方是 `void handleApi(...)`，没人接。
+   * 表现是**请求永远不返回**：控制台或 Bot 一直转圈、没有错误码，
+   * 日志里只有一条未捕获的 Promise rejection，指向完全错误的方向；
+   * 每条这样的请求还各占一个 socket 直到超时。
+   * 二十来条带 :id 的路由全中招。
+   */
+  try {
+    match.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]!) })
+  } catch {
+    json(res, 404, { error: 'not found' })
+    return true
+  }
 
   let body: unknown = null
   if (req.method === 'POST' || req.method === 'PUT') {

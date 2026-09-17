@@ -453,8 +453,17 @@ export const CmdPayload = z.object({
 export const LocationResult = z.object({
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
-  /** 水平精度，米 */
-  accuracy: z.number().nonnegative().nullable(),
+  /**
+   * 水平精度，米。
+   *
+   * 又是 nullish 而非 nullable（同 EventPayload.sim_slot，这是第三次）：
+   * Kotlin 侧 `accuracy: Float? = null` 配上 explicitNulls=false，
+   * ROM 不给精度时（`hasAccuracy()` 为假）这个字段会被**整个省略**。
+   * 只写 nullable 的话整条回执判为非法，`safeParse` 失败，
+   * 界面上看到的是「设备返回的位置格式不正确」——位置其实已经定到了，
+   * 是在这里被丢掉的，排查时极易往定位权限那边找。
+   */
+  accuracy: z.number().nonnegative().nullish().transform((v) => v ?? null),
   /** gps / network / passive / fused */
   provider: z.string().max(32),
   /** 定位时刻。可能明显早于回执时刻——那说明返回的是缓存位置 */

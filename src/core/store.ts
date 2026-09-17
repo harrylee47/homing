@@ -199,8 +199,18 @@ export interface MessageRefRecord {
   /** 渠道侧的消息标识，如 Telegram 的 message_id */
   ref: string
   event_id: string
-  /** 原始发件人，回复时作为收件人 */
-  sender: string
+  /**
+   * 原始发件人（**密文**），回复时作为收件人。
+   *
+   * 这一列原来是明文 TEXT，而同一条消息的发件人在 events 表里是加密的
+   * `sender_enc`——安全红线「敏感字段加密入库」在这张表上就成了空话：
+   * 只拷走 gw.db 的人不用 DEK 就能读出最近七天所有推送过的消息的发件人号码
+   * （银行、运营商、熟人号码）以及它们对应的 device_id。
+   * 老数据在 `sender` 那一列，读的时候兜底（七天后自然被清理掉）。
+   */
+  sender_enc: Uint8Array
+  /** 加密之前落的库留下来的明文列；新数据一律为 null */
+  sender_legacy?: string | null
   device_id: string
   /**
    * 原消息是哪张卡收到的。回复时必须用同一张卡。
@@ -402,7 +412,7 @@ export interface Store {
 
   // 规则
   listRules(userId: string): Promise<RuleRecord[]>
-  upsertRule(r: RuleRecord): Promise<void>
+  upsertRule(r: RuleRecord): Promise<boolean>
   deleteRule(id: string, userId: string): Promise<void>
 
   // 邀请码
@@ -468,7 +478,7 @@ export interface Store {
   /** 跨用户列出，给调度器用 */
   listAllTasks(): Promise<TaskRecord[]>
   getTask(id: string, userId: string): Promise<TaskRecord | null>
-  upsertTask(t: TaskRecord): Promise<void>
+  upsertTask(t: TaskRecord): Promise<boolean>
   deleteTask(id: string, userId: string): Promise<void>
   /** 只更新执行状态，不动配置——避免执行时把用户正在编辑的配置覆盖回去 */
   updateTaskRun(id: string, patch: { last_run_at: number; last_status: 'ok' | 'failed'; fail_count: number }): Promise<void>

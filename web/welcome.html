@@ -42,6 +42,8 @@
     border-bottom: var(--bw) solid var(--line); padding: 10px 0;
   }
   .top .wrap { display: flex; align-items: center; gap: 8px; }
+  /* 品牌区整块可点，去落地页——站内除此之外没有别的入口 */
+  .brandlink { display: flex; align-items: center; gap: 8px; text-decoration: none; color: inherit }
   .top img { width: 38px; height: 38px; flex: none; }
   .top .name { font-weight: 800; font-size: 20px; letter-spacing: .02em; }
   .top .sp { flex: 1 }
@@ -339,7 +341,7 @@
   .packet {
     position: absolute; left: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px;
     top: clamp(0%, calc(var(--mid, 1) * 100%), 100%);
-    opacity: calc(min(var(--mid, 1) / .012, (.14 - var(--land, 0)) / .1));
+    opacity: calc(min(var(--mid, 1) / .012, (.06 - var(--land, 0)) / .05));
   }
   .packet .load {
     position: absolute; left: 52px; top: 50%; transform: translateY(-50%);
@@ -416,22 +418,38 @@
   /* ── 场景三：边走边看的人 ──────────────────────────────── */
   /* 导线再往下探一截，末端就是包落下来的地方——不接这一截的话，
      镜头一进这一幕，上面那条线就凭空断在屏幕外 */
-  /* 落点是气泡的上边。气泡顶在 y=20，也就是插画高度的 5.56%；
-     导线在 x=210，而气泡的圆角到 x≈203 就走完了，所以鸟蹲在平的那一段上。
-     这一截必须量**插画自己**而不是 .sc-c：.vsub 在 .sc-c 里居中，
-     它离顶多远随视口高度变（720 高时 124px、820 高时 111px、900 高时 203px），
-     按 .sc-c 的百分比算，换个视口高度鸟就掉到画面外去了。
-     往上那 100vh 是把线接回上一幕：那一段和第二幕的导线同一个 x，叠上去看不出来。
-     z-index 要压过气泡（2），否则鸟有一半落在气泡里，被气泡的底色盖掉。 */
+  /*
+   * 最后一段导线。**起点是这一幕的上沿**（正好接上一幕的下沿），
+   * 终点是气泡的上边——而那个落点离上沿多远，是 welcome.js 量出来的
+   * `--landy`（px）。
+   *
+   * 为什么要量：气泡在 .sc-c 里是**居中**的，它离顶多远随视口高度变
+   * （720 高时 124px、820 高时 111px、900 高时 203px）。
+   * 按 .sc-c 的百分比写死，换个高度鸟就掉到画面外；
+   * 而按插画自己的百分比写（上一版），线就没法从这一幕的上沿开始长——
+   * 上一版用 `top: -100vh` 绕过去，代价是两个 bug：
+   *   ① 鸟还没走到，下面那一截**已经是实线**了（虚线是「路」，实线是
+   *      「走过的路」，这条约定在最后一幕破了）；
+   *   ② 鸟从上一幕交接过来时，位置从「这一幕的上沿」瞬移到「插画的上沿」，
+   *      差 100 到 200 像素，肉眼就是一跳。
+   * 量一次之后两个都没了：land=0 时线长为零、鸟就停在上沿，
+   * 和上一幕的 .packet 停的是同一个点。
+   */
+  .rail-track {
+    position: absolute; left: 50%; top: 0; width: 2px; margin-left: -1px; z-index: 1;
+    height: var(--landy, 0px);
+    background: repeating-linear-gradient(var(--line) 0 5px, transparent 5px 15px); opacity: .32;
+  }
   .rail-tail {
     position: absolute; left: 50%; margin-left: -2px; z-index: 4; width: 4px;
-    top: -100vh; height: calc(100vh + 5.56% * var(--land, 1));
+    top: 0; height: calc(var(--landy, 0px) * var(--land, 1));
     border-radius: 2px; background: var(--cyan);
   }
   /* 最后一段的那只鸟：和上面是同一只，交接处一个淡出一个淡入。
-     .packet 在 --land 到 .14 时淡完，这一只从 .14 才开始出现——
-     两个窗口不重叠，是因为它俩在屏幕上不在同一个位置，
-     同时可见的话就是两只鸟。（上一版重叠了 0…14，改过一次。）
+     交接发生在 --land 的 .02….06 之间，两只**短暂同时可见**——这是故意的：
+     land=0 时两只停在同一个点（这一幕的上沿），此刻交叉淡入淡出看不出接缝。
+     上一版让两个窗口完全不重叠，因为那时它俩落点差一百多像素，
+     同时可见就是两只鸟；现在落点重合了，反而是不重叠才会闪一下。
      这一只落下之后**不再淡出**：它停在气泡的上边，那就是「送到了」这句话本身。
      `margin-bottom` 这个数是量出来的，不是算出来的：按整只的一半（-26px）
      算，鸟有半个身子沉进气泡里、正好压住状态栏的信号格；而鸟的 svg 在 64
@@ -439,7 +457,7 @@
      悬在气泡上方一指高。-20px 是这两头之间，脚刚好踩在边上。 */
   .rail-tail .bird {
     position: absolute; left: 50%; bottom: 0; width: 52px; height: 52px; margin: 0 0 -20px -26px;
-    opacity: calc((var(--land, 1) - .14) / .05);
+    opacity: calc((var(--land, 1) - .02) / .04);
   }
   /* ── 收到的那一眼：人 + 放大镜 ────────────────────────────
      这一幕前后画了三版，前两版败在同一件事上：想让读者**站到人物的位置上**
@@ -567,30 +585,6 @@
   }
   .bn-copy[data-done] { background: var(--mint) }
 
-  /* 可选：速度线流动。不加这段也成立——静止时就是三条实线。
-
-     方向和人走的方向一致：dashoffset 走负值 = 虚线图案往 +x 跑。
-     周期 14（dasharray 9+5），所以走到 -14 正好接回原样，循环无缝；
-     写成别的值就会在每一轮开头顿一下。
-
-     只在 html[data-motion="on"] 下生效，和落地页其余动效同一个开关：
-     脚本没跑 / 被 CSP 拦掉 / 出错时，这里是三条普通实线，不是空白。 */
-  @keyframes wsideprofile-streak { to { stroke-dashoffset: -14 } }
-
-  html[data-motion="on"] .wsideprofile-speed path {
-    stroke-dasharray: 9 5;
-    animation: wsideprofile-streak .6s linear infinite;
-  }
-
-  /* 减少动效时是根本不动，不是动得慢一点——顺手把虚线也去掉，
-     否则留下的是三条断线，看着像画错了 */
-  @media (prefers-reduced-motion: reduce) {
-    html[data-motion="on"] .wsideprofile-speed path {
-      stroke-dasharray: none;
-      animation: none;
-    }
-  }
-
   /* ── 常驻：下滑提示 ── */
   /* 底部压暗带。它不只是为了好看——胶片是**从下往上**滑过取景框的，
      每一格的图注（.vtag）都必然要穿过下滑提示所在的那一条。74% 的时候
@@ -636,10 +630,6 @@
     .vmsg { font-size: 13px }
   }
 
-  .bridge { padding: 76px 0 4px; text-align: center }
-  .bridge p { margin: 0; font-size: clamp(19px, 3.6vw, 27px); font-weight: 800; line-height: 1.5; letter-spacing: -.01em }
-  .bridge .sub { margin-top: 10px; font-size: 15px; font-weight: 700; color: var(--muted); letter-spacing: 0 }
-  @media (max-width: 860px) { .bridge { padding: 54px 16px 0 } }
 
   /* ── 第一屏 ────────────────────────────────────────────── */
   .hero { padding: 54px 0 40px; }
@@ -800,7 +790,6 @@
     .top .reg { display: none }
   }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
   a.btnlink { text-decoration: none; }
   .foot { font-size: 12px; color: var(--muted); line-height: 1.9; }
   .foot a { color: var(--fg); }
@@ -819,95 +808,11 @@
   .shot img { display: block; width: 100%; height: auto; }
   .cap { font-size: 12px; color: var(--muted); padding: 7px 9px; border-top: var(--bw) solid var(--line); line-height: 1.5; }
   .hint { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+  /* 断点是 860：截图条在正文宽里就放不下六张卡，早于手机宽度就得提示能横滑。
+     这条规则原来被写过第二遍（跟着下面一段横滑卡片组，断点 720），排在后面就把
+     这里盖掉了——721–860 这一段宽度上提示凭空消失，而那恰好是需要它的宽度。 */
   .hint.narrow-only { display: none }
-  @media (max-width: 860px) { .hint.narrow-only { display: block } .grid2, .grid3 { grid-template-columns: 1fr } }
-
-  /* ── 手风琴 ──────────────────────────────────────────────
-     <details name="..."> 让同组只能展开一个，浏览器原生互斥，不需要一行 JS。
-     老浏览器不认 name，退化成「都能同时展开」——是可接受的降级，不是坏掉。 */
-  .fold {
-    background: var(--card); border: var(--bw) solid var(--line);
-    border-radius: var(--radius); box-shadow: var(--shadow);
-    margin-bottom: 10px; overflow: hidden;
-  }
-  .fold > summary {
-    display: flex; align-items: center; gap: 10px; cursor: pointer;
-    padding: 12px 14px; font-size: 14px; font-weight: 800;
-    list-style: none; color: var(--fg);
-  }
-  .fold > summary::-webkit-details-marker { display: none }
-  .fold > summary::before { content: none }   /* style.css 给 summary 加过 ▸，这里自绘编号球 */
-  .fold > summary::after {
-    content: "▸"; margin-left: auto; font-size: 12px; color: var(--muted);
-    transition: transform .15s var(--ease);
-  }
-  .fold[open] > summary { background: var(--yellow); color: var(--on-bright); border-bottom: var(--bw) solid var(--line); }
-  .fold[open] > summary::after { transform: rotate(90deg); color: var(--on-bright); }
-  .fold .n {
-    flex: none; width: 24px; height: 24px; border-radius: 50%;
-    border: var(--bw) solid var(--line); background: var(--yellow); color: var(--on-bright);
-    display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px;
-  }
-  .fold[open] .n { background: var(--card); color: var(--fg); }
-  .fold-body { padding: 12px 14px; }
-  .fold-body p { margin: 0 0 8px; line-height: 1.7; }
-  .fold-body p:last-child { margin-bottom: 0 }
-
-  /* ── 标签页 ──────────────────────────────────────────────
-     radio + label。不能用 display:none 藏 radio——那样键盘就焦点不到，
-     整组切不了。用绝对定位移出视觉流，保留可聚焦性。 */
-  .tabs > input { position: absolute; opacity: 0; width: 0; height: 0; }
-  .tabbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
-  /* style.css 里 label 是全局的小灰大写字，这里必须整条盖掉 */
-  .tabbar label {
-    display: inline-block; margin: 0; padding: 8px 14px;
-    font-size: 13px; font-weight: 800; letter-spacing: 0; text-transform: none;
-    color: var(--fg); background: var(--card);
-    border: var(--bw) solid var(--line); border-radius: var(--radius);
-    box-shadow: var(--shadow); cursor: pointer;
-    transition: transform .1s var(--ease), box-shadow .1s var(--ease);
-  }
-  .tabbar label:active { transform: translate(var(--sx), var(--sx)); box-shadow: none; }
-  /* n 格页签要写 n 条规则，纯 CSS 没有「第 i 个对第 i 个」的写法。
-     加一格就要在这三组里各补一行，漏了的表现是点了没反应 */
-  .tabs > input:nth-of-type(1):checked ~ .tabbar label:nth-of-type(1),
-  .tabs > input:nth-of-type(2):checked ~ .tabbar label:nth-of-type(2),
-  .tabs > input:nth-of-type(3):checked ~ .tabbar label:nth-of-type(3),
-  .tabs > input:nth-of-type(4):checked ~ .tabbar label:nth-of-type(4),
-  .tabs > input:nth-of-type(5):checked ~ .tabbar label:nth-of-type(5) {
-    background: var(--cyan); color: var(--on-bright);
-  }
-  /* 键盘聚焦时要看得见，否则用方向键切页签的人完全没有反馈 */
-  .tabs > input:focus-visible ~ .tabbar label { outline: none }
-  .tabs > input:nth-of-type(1):focus-visible ~ .tabbar label:nth-of-type(1),
-  .tabs > input:nth-of-type(2):focus-visible ~ .tabbar label:nth-of-type(2),
-  .tabs > input:nth-of-type(3):focus-visible ~ .tabbar label:nth-of-type(3),
-  .tabs > input:nth-of-type(4):focus-visible ~ .tabbar label:nth-of-type(4),
-  .tabs > input:nth-of-type(5):focus-visible ~ .tabbar label:nth-of-type(5) {
-    outline: var(--bw) dashed var(--line); outline-offset: 3px;
-  }
-  .pane { display: none }
-  .tabs > input:nth-of-type(1):checked ~ .panes > .pane:nth-of-type(1),
-  .tabs > input:nth-of-type(2):checked ~ .panes > .pane:nth-of-type(2),
-  .tabs > input:nth-of-type(3):checked ~ .panes > .pane:nth-of-type(3),
-  .tabs > input:nth-of-type(4):checked ~ .panes > .pane:nth-of-type(4),
-  .tabs > input:nth-of-type(5):checked ~ .panes > .pane:nth-of-type(5) { display: block }
-
-  /* ── 可横滑的卡片组 ──────────────────────────────────────
-     桌面两列铺开；手机上六张卡一列排下来是 1100px，等于三屏纯文字，
-     没人会读完。改成横滑一条，和上面截图条是同一套手势，一个字都不用删。 */
-  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  @media (max-width: 720px) {
-    .cards {
-      display: flex; gap: 12px; overflow-x: auto;
-      scroll-snap-type: x mandatory; padding-bottom: 8px;
-      /* 负边距让卡片贴着屏幕边缘滑出去——右边露一条缝，视觉上就是「还有」 */
-      margin-inline: -16px; padding-inline: 16px;
-    }
-    .cards > .card { flex: 0 0 82%; scroll-snap-align: start; margin: 0; }
-  }
-  .hint.narrow-only { display: none }
-  @media (max-width: 720px) { .hint.narrow-only { display: block } }
+  @media (max-width: 860px) { .hint.narrow-only { display: block } .grid2 { grid-template-columns: 1fr } }
 
   /* ── 下载弹窗 ──────────────────────────────────────────────
      纯 CSS 的 :target 弹窗，页面仍然零 JS。
@@ -949,8 +854,10 @@
 <body>
 
 <div class="top"><div class="wrap">
-  <img src="/logo.svg" alt="">
-  <span class="name">Homing</span>
+  <a class="brandlink" href="/welcome">
+    <img src="/logo.svg" alt="">
+    <span class="name">Homing</span>
+  </a>
   <span class="sp"></span>
   <a class="btnlink" href="#get-app"><button class="sm">下载 App</button></a>
   <a class="btnlink" href="/notice"><button class="ghost sm">通知</button></a>
@@ -1173,8 +1080,8 @@
 
       <!-- ③ 边走边看的人：会动的那一端 -->
       <section class="sc sc-c">
-        <div class="vsub">
-          <i class="rail-tail"><span class="bird"><svg viewBox="0 0 64 64" aria-hidden="true" style="transform:rotate(34deg)">
+        <i class="rail-track" aria-hidden="true"></i>
+        <i class="rail-tail"><span class="bird"><svg viewBox="0 0 64 64" aria-hidden="true" style="transform:rotate(34deg)">
               <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
                 <path fill="var(--cyan)" d="M44 26 C49 30 48 39 40 43 C32 47 21 45 17 40 L5 43 L12 32 C15 25 24 20 31 20 C37 20 42 22 44 26 Z"/>
                 <path class="wing" fill="var(--yellow)" d="M17 37 C19 27 28 23 36 29 C31 37 24 41 17 37 Z"/>
@@ -1183,6 +1090,7 @@
               </g>
               <circle cx="46" cy="18" r="2.4" fill="var(--line)"/>
             </svg></span></i>
+        <div class="vsub">
 
           <!-- ① 街景。只是一排楼和一盏路灯，压到几乎看不见——
                它要说的只有一句「他人在外面」，抢一点戏这一幕就散了。 -->
@@ -1363,15 +1271,6 @@
     <p class="stage-cue"><i>↓</i> <span id="stage_cue_t">下滑查看</span></p>
   </div>
 </div>
-
-<!-- ══ 从故事落到正文 ══
-  舞台是 sticky 的，走完那一刻它整块让开、正文直接顶上来，太硬。
-  中间垫一段安静的话：它既是刚才那一趟的收束，也是下面那一堆步骤的由头。
--->
-<div class="bridge"><div class="wrap">
-  <p data-reveal>刚才那一趟，每天都在发生。</p>
-  <p class="sub" data-reveal style="--i:1">下面是它需要你准备的东西——一共三件。</p>
-</div></div>
 
 <div class="wrap">
   <section class="hero">

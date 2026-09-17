@@ -7,6 +7,9 @@ services:
 
     # 只绑宿主机回环：公网入口由 1Panel 的 OpenResty 反代提供，
     # 容器端口不暴露在任何对外接口上。
+    # 宿主机侧是 2333、容器里才是 8070：反代必须指向 127.0.0.1:2333。
+    # 指到 8070 上什么都没有监听，表现是站点 502 —— 而两边配置看起来都「对」，
+    # 这是自建者最容易撞上的第一堵墙（docs/DEPLOY.md 按这个端口写）。
     ports:
       - "127.0.0.1:2333:8070"
 
@@ -14,10 +17,24 @@ services:
       - ./data:/data
 
     environment:
+      # DEK 必须在这里显式传进去。compose 会读同目录的 .env，但那只用于本文件内的
+      # ${} 插值，**不会注入容器** —— 少了这一行，.env 里那把 GW_DEK 从头到尾就没生效过，
+      # 真正在用的是 config.ts 自动生成的 data/dek.key：密钥和密文躺在同一个目录、
+      # 同一份备份里，而文档还在教人把 .env 那把单独抄进密码管理器（安全红线：
+      # GW_DEK 与 ./data 不要备份到同一处）。换一把新的也毫无反应，人以为自己轮换了密钥。
+      # 允许留空：空串会回落到 data/dek.key，老部署不会被这一行挡住启动。
+      # 但**已经跑过的部署要先对齐**：.env 里的 GW_DEK 与 data/dek.key 不是同一把时，
+      # 加上这行之后历史消息全部解不开（见 docs/DEPLOY.md「升级与备份」）。
+      GW_DEK: "${GW_DEK:-}"
       # 容器看到的来源是 Docker 网桥网关，不是宿主机回环 ——
       # OpenResty（host 网络）连 127.0.0.1:2333，Docker NAT 后在容器内呈现为网桥地址。
       # 不能写 0.0.0.0，否则 X-Forwarded-For 可伪造，限速与 IP 告警全部失效（计划 §11.6）。
-      GW_TRUSTED_PROXY: "172.27.0.0/16"
+      # 默认值必须与下面 networks 里钉住的网段一致：不钉网段的话，compose 的默认网段
+      # 由 Docker 按这台机器上已有多少网络现分配，在这里写死 172.27 就只是在猜。
+      # 猜错了不报错，表现是所有请求的来源都变成同一个网桥地址：限速按单一 IP 算、
+      # 陌生网段登录告警永不触发。反代在别的 compose 项目里时，可以在 .env 里给
+      # GW_TRUSTED_PROXY 写逗号分隔的多个网段（代码支持列表），GW_SUBNET 那一段要留着。
+      GW_TRUSTED_PROXY: "${GW_TRUSTED_PROXY:-172.27.0.0/16}"
       GW_BASE_URL: "${GW_BASE_URL:?请在 .env 里填对外访问地址}"
       # 自建 Bark 挂在网关自己的域名下（/bark/*），不必单独建站。
       # 必须用 compose 服务名：容器里的 127.0.0.1 指向网关自己。
@@ -59,3 +76,13 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+# 钉住本项目网络的网段，好让上面的 GW_TRUSTED_PROXY 有一个确定的值可写。
+# 这个网段被机器上别的网络占了时，docker compose up 会直接报 Pool overlaps 停下来
+# —— 这是好事：比静默地把信任网段配歪好得多。真占了就在 .env 里把 GW_SUBNET 与
+# GW_TRUSTED_PROXY 一起改成另一个空闲网段（两处要同一个值）。
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: "${GW_SUBNET:-172.27.0.0/16}"

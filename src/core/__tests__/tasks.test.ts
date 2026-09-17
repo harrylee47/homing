@@ -13,7 +13,7 @@ describe('计划任务', () => {
   let alert: ReturnType<typeof vi.fn<(u: string, t: string, b: string) => Promise<void>>>
 
   const deps = (now: number, online: string[] = ['dev_jp']) => ({
-    store, timezoneFor: async () => TZ, onlineDevices: () => online, send, alert,
+    store, timezoneFor: async () => TZ, onlineDevices: async () => online, send, alert,
     deviceName: (id: string) => ({ dev_jp: '日本卡', dev_cn: '国内卡' })[id] ?? id,
     now: () => now,
   })

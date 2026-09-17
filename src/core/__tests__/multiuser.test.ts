@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createCipher, generateDek, type Cipher } from '../crypto.js'
 import { processEvent } from '../pipeline.js'
+import { runTask, type ParsedTask, type TaskDeps } from '../tasks.js'
 import { MemoryStore } from './fakes.js'
 import type { DeviceRecord, StoredEvent } from '../store.js'
 
@@ -129,5 +130,61 @@ describe('推送不会走进别人的渠道', () => {
       occurred_at: 1000,
     })
     expect(sent.map((s) => s.channel)).toEqual(['ch_me'])
+  })
+
+  /*
+   * 下行方向的隔离。上线前审计在这里挖出一整组洞：
+   * POST /api/outbound 与 POST /api/tasks 用的是不带作用域的 getDevice，
+   * 而「任意在线设备」回落到 hub 的**全局**连接表——一个刚注册、一台设备都没有的
+   * 普通用户实测能用管理员的手机发短信、能把每天执行的任务绑在上面，
+   * 而受害者付话费、被冒名，且在自己的发送记录里看不到（记录归发起者）。
+   * 下面几条守的是 core 这一侧；路由那一侧靠 ownedDevice()。
+   */
+  describe('下行也要按人隔离', () => {
+    const task = (o: Partial<ParsedTask> = {}): ParsedTask => ({
+      id: 't1', user_id: ME, name: '保号', enabled: true, device_id: '',
+      to: '10086', text: '1', sim_slot: null,
+      schedule: { type: 'daily', time: '09:00' },
+      last_run_at: null, last_status: null, fail_count: 0, created_at: 0, ...o,
+    })
+    const deps = (online: string[], sent: string[]): TaskDeps => ({
+      store,
+      timezoneFor: async () => 'UTC',
+      // 真实实现（main.ts）在这里和「这个人自己的设备」求了交集
+      onlineDevices: async (userId: string) =>
+        online.filter((id) => (id === 'dev_me') === (userId === ME)),
+      send: async (_u, d) => { sent.push(d); return true },
+      alert: async () => {},
+      now: () => Date.parse('2026-09-16T09:01:00Z'),
+    })
+
+    it('没绑设备的任务只会挑到自己的手机，不会挑到别人的', async () => {
+      const sent: string[] = []
+      // 别人的设备排在前面：挑「第一台在线的」就会挑中它
+      await runTask(deps(['dev_you', 'dev_me'], sent), task(), true)
+      expect(sent).toEqual(['dev_me'])
+    })
+
+    it('自己一台都不在线时宁可不发，也不借别人的卡', async () => {
+      const sent: string[] = []
+      const r = await runTask(deps(['dev_you'], sent), task(), true)
+      expect(sent).toEqual([])
+      expect(r.sent).toBe(false)
+    })
+
+    it('撞到别人的 rule_id 时一行都不动，也不会把归属改到自己名下', async () => {
+      store.rules.set('r_x', {
+        id: 'r_x', user_id: HER, name: '别人的规则', priority: 10, enabled: true,
+        match_json: '{}', action_json: '{}', created_at: 0,
+      })
+      const ok = await store.upsertRule({
+        id: 'r_x', user_id: ME, name: '抢过来', priority: 1, enabled: false,
+        match_json: '{}', action_json: '{}', created_at: 0,
+      })
+      expect(ok).toBe(false)
+      const still = store.rules.get('r_x')!
+      expect(still.user_id).toBe(HER)
+      expect(still.name).toBe('别人的规则')
+    })
   })
 })

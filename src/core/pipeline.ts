@@ -84,8 +84,19 @@ export async function processEvent(
     // 三个渠道都已经在显示设备名了，多加一个字段要改三处
     const sim = simLabel(simsOf(device?.net_json), e.sim_slot)
 
-    // 时区取设置里的那一份，与计划任务共用同一个值，避免两处各按各的算
-    const tz = deps.tz ?? (await deps.store.getSetting('timezone').catch(() => null)) ?? DEFAULT_TIMEZONE
+    /*
+     * 时区**按用户取**，和计划任务、规则试跑共用同一个值。
+     *
+     * 原来读的是全局 `settings.timezone`——而全仓库没有任何一处写它：
+     * POST /api/timezone 写的是 `user_settings`（时区按用户存，两个人可能
+     * 不在同一个国家）。于是这里恒定拿到 null、回落到默认东京，用户在设置页
+     * 改的时区对推送里的 {time} 和规则的 time_window **完全不生效**，
+     * 而计划任务那一侧是对的——同一条规则试跑通了、真事件却不命中。
+     * CLAUDE.md：「试跑结果与真实行为不一致，比没有试跑更糟。」
+     */
+    const tz = deps.tz
+      ?? (await deps.store.getUserSetting(e.user_id, 'timezone').catch(() => null))
+      ?? DEFAULT_TIMEZONE
     const tzOffsetMin = safeOffsetMin(e.occurred_at, tz)
     const result = evaluate(rules, e, tzOffsetMin)
 
@@ -192,7 +203,8 @@ export async function processEvent(
       if (!r.ok || !r.ref) continue
       await deps.store.putMessageRef({
         channel_id: r.channelId, ref: r.ref, event_id: eventId, user_id: e.user_id,
-        sender: e.from, device_id: e.device_id, sim_slot: e.sim_slot ?? null,
+        // 发件人号码和 events 表一样加密落库（见 MessageRefRecord.sender_enc）
+        sender_enc: await deps.cipher.encrypt(e.from), device_id: e.device_id, sim_slot: e.sim_slot ?? null,
         created_at: Date.now(),
       }).catch((err: unknown) => log.warn('记录消息映射失败', { error: String(err) }))
     }

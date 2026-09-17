@@ -21,7 +21,18 @@ export interface TaskDeps {
    * 而「每天早上 9 点」指的显然是他自己那儿的 9 点。
    */
   timezoneFor(userId: string): Promise<string>
-  onlineDevices(): string[]
+  /**
+   * 这个用户**自己**在线的设备。
+   *
+   * 必须带 userId：原来这里是无参的 `onlineDevices()`，直接返回 hub 的全局
+   * 连接表，而 pickDevice 在任务没绑设备时取 `online[0]`——多用户网关上
+   * 那一台很可能是**别人的手机**。后果是 A 的保号短信从 B 的号码发出去、
+   * 话费记在 B 头上、收件人看到的是 B；而 outbound 那条记录写的 user_id 是 A，
+   * 所以 B 在自己的发送记录里永远看不到它。
+   * CLAUDE.md：「任何『挑一台在线设备』的写法都要警惕——收件人看到的号码
+   * 取决于用哪张卡，挑错等于用错身份。」
+   */
+  onlineDevices(userId: string): Promise<string[]>
   send(userId: string, deviceId: string, to: string, text: string, simSlot: number | null): Promise<boolean>
   deviceName?(id: string): string
   /** 告警发给任务的主人，不是发给所有人 */
@@ -71,7 +82,8 @@ export const describeTask = (task: ParsedTask): string => describe(task.schedule
 export interface RunResult { sent: boolean; reason?: string }
 
 /**
- * 挑执行设备。指定了就必须用它；没指定（单设备部署）才回落到任意在线设备。
+ * 挑执行设备。指定了就必须用它；没指定才回落到任意在线设备——
+ * 而这里的 `online` 必须已经按任务主人过滤过（见 TaskDeps.onlineDevices）。
  */
 function pickDevice(task: ParsedTask, online: string[]): string | null {
   if (task.device_id) return online.includes(task.device_id) ? task.device_id : null
@@ -90,7 +102,7 @@ export async function runTask(deps: TaskDeps, task: ParsedTask, force = false): 
     if (now < due) return { sent: false, reason: '未到执行时间' }
   }
 
-  const device = pickDevice(task, deps.onlineDevices())
+  const device = pickDevice(task, await deps.onlineDevices(task.user_id))
   if (!device) {
     const which = task.device_id ? (deps.deviceName?.(task.device_id) ?? task.device_id) : '任意设备'
     // 不推进排期：设备上线后会重试。漏一次比用错卡发一次好收拾

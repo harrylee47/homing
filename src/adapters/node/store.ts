@@ -257,6 +257,13 @@ const MIGRATIONS: string[] = [
   // 码加密落库，好让它**能再显示一次**。只存哈希的代价是：被邀请的人没当场注册、
   // 邀请人又没存下来，这个码就既没被用掉、也再也找不回来。见 core/store.ts 的说明
   `ALTER TABLE invites ADD COLUMN code_enc BLOB`,
+  // events.device_id 是 NOT NULL REFERENCES devices(id)，而「删设备但保留历史」
+  // 是默认路径——硬删那一行必然被外键打回来（实测 FOREIGN KEY constraint failed
+  // → 500）。留一个墓碑列：有历史挂着就只标记，不从表里拿走。
+  `ALTER TABLE devices ADD COLUMN deleted_at INTEGER`,
+  // message_refs.sender 原来是明文列，和 events.sender_enc 存的是同一个号码。
+  // 老行留在原地（七天后被 cleanupMessageRefs 清掉），新行只写密文。
+  `ALTER TABLE message_refs ADD COLUMN sender_enc BLOB`,
   `CREATE INDEX IF NOT EXISTS idx_invites_public ON invites(public, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_invites_creator ON invites(created_by, created_at DESC)`,
 ]
@@ -372,9 +379,19 @@ export class SqliteStore implements Store {
    */
   async deleteUser(id: string): Promise<Record<string, number>> {
     const n: Record<string, number> = {}
-    for (const t of ['events', 'outbound', 'message_refs', 'tasks', 'rules', 'channels', 'devices', 'pairing_codes', 'sessions', 'user_settings']) {
+    // device_logs 也带 user_id，原来漏在外面——它是「删号 = 数据一起走」
+    // 这条承诺上唯一一张没清的表，而且随部署时间无限增长
+    for (const t of ['events', 'outbound', 'message_refs', 'tasks', 'rules', 'channels', 'devices', 'pairing_codes', 'sessions', 'user_settings', 'device_logs']) {
       n[t] = Number(this.db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(id).changes)
     }
+    /*
+     * 他发出去**还没被用掉**的邀请码要一起作废。
+     * 留着的话，一个已经被删掉的账号仍然在给这台网关拉新人进来，
+     * 而管理员在邀请码列表里只看得到一个不存在的 created_by。
+     * 已经用掉的那些是历史（谁用什么码开的号），保留。
+     */
+    n['invites'] = Number(this.db.prepare('DELETE FROM invites WHERE created_by = ? AND used_at IS NULL')
+      .run(id).changes)
     this.db.prepare('DELETE FROM users WHERE id = ?').run(id)
     return n
   }
@@ -385,13 +402,14 @@ export class SqliteStore implements Store {
   }
 
   async listDevices(userId: string): Promise<DeviceRecord[]> {
-    const rows = this.db.prepare('SELECT * FROM devices WHERE user_id = ? ORDER BY created_at')
+    const rows = this.db.prepare('SELECT * FROM devices WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at')
       .all(userId) as unknown as RawDevice[]
     return rows.map(toDevice)
   }
 
   async listAllDevices(): Promise<DeviceRecord[]> {
-    const rows = this.db.prepare('SELECT * FROM devices ORDER BY created_at').all() as unknown as RawDevice[]
+    const rows = this.db.prepare('SELECT * FROM devices WHERE deleted_at IS NULL ORDER BY created_at')
+      .all() as unknown as RawDevice[]
     return rows.map(toDevice)
   }
 
@@ -423,7 +441,29 @@ export class SqliteStore implements Store {
     this.db.prepare(`UPDATE devices SET ${set} WHERE id = ? AND status != 'revoked'`).run(...vals, id)
   }
 
+  /**
+   * 删设备记录。
+   *
+   * **有历史消息挂着就只立墓碑，不真删。** `events.device_id` 是
+   * `NOT NULL REFERENCES devices(id)`，而「历史消息默认保留、要一起删得显式传
+   * `?purge=1`」是文档写明的默认路径——硬删那一行必然撞外键，SQLite 抛
+   * `FOREIGN KEY constraint failed`，handleApi 兜成 500「服务器出错」，
+   * 于是任何**收过消息**的设备都删不掉，而报错完全看不出原因。
+   *
+   * 墓碑行不会出现在任何列表里（listDevices / listAllDevices 都带
+   * `deleted_at IS NULL`），状态一并置成 revoked、凭证清空，
+   * 所以它也连不回来——对外表现和删掉一样，只是那些验证码还挂得住。
+   */
   async deleteDevice(id: string, userId: string): Promise<boolean> {
+    const mine = this.db.prepare('SELECT 1 FROM devices WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
+      .get(id, userId)
+    if (!mine) return false
+    const hasHistory = this.db.prepare('SELECT 1 FROM events WHERE device_id = ? LIMIT 1').get(id)
+    if (hasHistory) {
+      this.db.prepare(`UPDATE devices SET status = 'revoked', token_hash = '', deleted_at = ? WHERE id = ?`)
+        .run(Date.now(), id)
+      return true
+    }
     return Number(this.db.prepare('DELETE FROM devices WHERE id = ? AND user_id = ?')
       .run(id, userId).changes) > 0
   }
@@ -624,16 +664,28 @@ export class SqliteStore implements Store {
     return rows.map((r) => ({ ...r, enabled: r.enabled === 1 }))
   }
 
-  async upsertRule(r: RuleRecord): Promise<void> {
-    this.db
+  /**
+   * **冲突分支带 `WHERE user_id = excluded.user_id`，而且不改 user_id。**
+   *
+   * 原来写的是 `... user_id=excluded.user_id`——主键撞上时连归属列一起覆盖。
+   * 而 `POST /api/rules` 的 id 来自请求体，于是拿别人的 rule_id POST 一次，
+   * 就能把那条规则整个改写并划到自己名下：受害者的验证码转发规则可以被静默
+   * 改成不推送、或者改推到攻击者的渠道，而他那边的表现只是「规则不见了」。
+   * 现在撞上别人的 id 会**一行都不动**（DO UPDATE 的 WHERE 不成立），
+   * 调用方拿 changes 判断即可。
+   */
+  async upsertRule(r: RuleRecord): Promise<boolean> {
+    const info = this.db
       .prepare(
         `INSERT INTO rules (id, user_id, name, priority, enabled, match_json, action_json, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, priority=excluded.priority,
            enabled=excluded.enabled, match_json=excluded.match_json,
-           action_json=excluded.action_json, user_id=excluded.user_id`,
+           action_json=excluded.action_json
+         WHERE rules.user_id = excluded.user_id`,
       )
       .run(r.id, r.user_id, r.name, r.priority, r.enabled ? 1 : 0, r.match_json, r.action_json, r.created_at)
+    return Number(info.changes) > 0
   }
 
   async deleteRule(id: string, userId: string): Promise<void> {
@@ -852,18 +904,21 @@ export class SqliteStore implements Store {
     return row ? { ...row, enabled: row.enabled === 1, sim_slot: row.sim_slot ?? null } : null
   }
 
-  async upsertTask(t: TaskRecord): Promise<void> {
-    this.db
+  /** 和 upsertRule 同一条理由：撞到别人的 task_id 时一行都不动 */
+  async upsertTask(t: TaskRecord): Promise<boolean> {
+    const info = this.db
       .prepare(
         `INSERT INTO tasks (id, user_id, name, enabled, device_id, to_number, content_enc, sim_slot, schedule_json, last_run_at, last_status, fail_count, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, enabled=excluded.enabled,
            device_id=excluded.device_id, to_number=excluded.to_number,
            content_enc=excluded.content_enc, sim_slot=excluded.sim_slot,
-           schedule_json=excluded.schedule_json, user_id=excluded.user_id`,
+           schedule_json=excluded.schedule_json
+         WHERE tasks.user_id = excluded.user_id`,
       )
       .run(t.id, t.user_id, t.name, t.enabled ? 1 : 0, t.device_id, t.to_number, t.content_enc, t.sim_slot,
         t.schedule_json, t.last_run_at, t.last_status, t.fail_count, t.created_at)
+    return Number(info.changes) > 0
   }
 
   async deleteTask(id: string, userId: string): Promise<void> {
@@ -889,17 +944,21 @@ export class SqliteStore implements Store {
   async putMessageRef(r: MessageRefRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO message_refs (channel_id, ref, event_id, user_id, sender, device_id, sim_slot, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO message_refs (channel_id, ref, event_id, user_id, sender, sender_enc, device_id, sim_slot, created_at)
+         VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)
          ON CONFLICT(channel_id, ref) DO UPDATE SET event_id=excluded.event_id,
-           sender=excluded.sender, sim_slot=excluded.sim_slot, user_id=excluded.user_id`,
+           sender='', sender_enc=excluded.sender_enc, sim_slot=excluded.sim_slot, user_id=excluded.user_id`,
       )
-      .run(r.channel_id, r.ref, r.event_id, r.user_id, r.sender, r.device_id, r.sim_slot, r.created_at)
+      .run(r.channel_id, r.ref, r.event_id, r.user_id, r.sender_enc, r.device_id, r.sim_slot, r.created_at)
   }
 
   async getMessageRef(channelId: string, ref: string): Promise<MessageRefRecord | null> {
     const row = this.db.prepare('SELECT * FROM message_refs WHERE channel_id = ? AND ref = ?').get(channelId, ref)
-    return row ? ({ sim_slot: null, ...(row as object) } as unknown as MessageRefRecord) : null
+    if (!row) return null
+    const r = { sim_slot: null, ...(row as object) } as unknown as
+      MessageRefRecord & { sender?: string | null }
+    // 加密之前落的那些行只有明文 sender，原样带出去给调用方兜底
+    return { ...r, sender_enc: r.sender_enc ?? new Uint8Array(), sender_legacy: r.sender || null }
   }
 
   async cleanupMessageRefs(before: number): Promise<void> {

@@ -28,6 +28,7 @@ import org.smsgateway.agent.util.NetStatus
 import org.smsgateway.agent.util.Prefs
 import org.smsgateway.agent.util.SimInfo
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
@@ -39,6 +40,15 @@ sealed interface ConnState {
     /** 不可恢复：凭证无效 / 被吊销 / 协议版本不支持。停止重连，等人工处理。 */
     data class Fatal(val code: String, val message: String) : ConnState
 }
+
+/**
+ * 握手超时：发出 hello 之后等 hello_ack 的上限。
+ *
+ * OkHttp 的 connectTimeout（15s）只管到 TCP/TLS 建好为止，之后就再没有
+ * 任何东西会喊停——心跳看门狗只看「多久没收到任何帧」，而一条刚被 accept
+ * 的连接在它眼里完全是活的。
+ */
+private const val HANDSHAKE_TIMEOUT_MS = 30_000L
 
 /**
  * 与服务端的长连接。
@@ -73,6 +83,19 @@ class WsClient(
     private var heartbeatJob: Job? = null
     private var lastInboundAt = 0L
     private var running = false
+
+    /**
+     * 本条连接上已发出、还没收到 event_ack 的事件 id。
+     *
+     * 服务端对每条事件**单独**回一个 event_ack（session.ts 的 ackEvent），
+     * 而 ack 处理里会再调一次 drain()。不记「已经发过」的话，第 k 个 ack
+     * 会把队列里剩下的 50-k 条重发一遍，总帧数是 O(n²)：一批 50 条放大成
+     * 上千帧，撞上服务端 200 帧的积压上限直接被踢断，重连后再放大一轮。
+     *
+     * 断开时清空（cleanup）：没等到 ack 的那些下次连上重发——
+     * 「收到 event_ack 才出队」的语义一点没变，变的只是同一条连接上不重复发。
+     */
+    private val inflight = ConcurrentHashMap.newKeySet<String>()
 
     fun start() {
         if (running) return
@@ -139,7 +162,19 @@ class WsClient(
             val closed = CompletableDeferred<Unit>()
             openSocket(connected, closed)
 
-            val ok = runCatching { connected.await() }.getOrDefault(false)
+            // 握手必须有超时。服务端 accept 了连接却不回 hello_ack（正在重启、
+            // 数据库锁住、处理 hello 时抛异常被吞）时，连接本身是通的，心跳看门狗
+            // 因此也不会介入，这里会永远停在 await 上——表现是「手机连着但一条都
+            // 不报」，最难排查的那一类。和 onClosing 那一课是同一个教训。
+            val ok = runCatching {
+                withTimeout(HANDSHAKE_TIMEOUT_MS) { connected.await() }
+            }.getOrElse {
+                if (it is TimeoutCancellationException) {
+                    Log.w("握手超时 ${HANDSHAKE_TIMEOUT_MS}ms 未收到 hello_ack，主动断开重连")
+                    ws?.cancel()
+                }
+                false
+            }
             if (ok) {
                 // 连上了就在这里停住，直到对端断开再走重连——
                 // 否则循环会立刻开出第二条连接，与自己互踢。
@@ -209,6 +244,8 @@ class WsClient(
 
     private fun cleanup() {
         heartbeatJob?.cancel()
+        // 连接没了，「已发出」也就不作数了：下次连上这些要重发
+        inflight.clear()
         ws = null
         if (_state.value !is ConnState.Fatal) _state.value = ConnState.Idle
     }
@@ -295,6 +332,7 @@ class WsClient(
                 val ids = p.acks.map { it.id }
                 p.acks.filter { it.status == "rejected" }
                     .forEach { Log.e("事件被拒 id=${it.id} error=${it.error}") }
+                ids.forEach { inflight.remove(it) }
                 dao.delete(ids)
                 refreshPending()
                 drain()
@@ -532,6 +570,8 @@ class WsClient(
                         dao.delete(listOf(e.id))
                         continue
                     }
+                    // 这条连接上已经发过、还在等 ack 的不再重发，理由见 inflight
+                    if (!inflight.add(e.id)) continue
                     socket.send(frame("event", e.toPayload(deviceId)))
                 }
                 refreshPending()
@@ -592,8 +632,29 @@ class WsClient(
     }
 }
 
+/**
+ * 服务端 protocol.ts 的 `from: z.string().max(64)`。**改一端要改两端。**
+ *
+ * 超长时整帧被判 PROTOCOL_MALFORMED 静默丢掉，服务端不回 event_ack，
+ * 而 Agent 只在收到 ack 后才出队——这条事件于是永远卡在本地队列里，
+ * 每次重连重发一次、再被丢一次，占着补传的位置把后面真正的验证码顶在后面。
+ * 应用通知的 from 取的是通知标题（新闻推送、长群名的群消息随手就超 64），
+ * 是唯一一个长度不受控的来源。
+ *
+ * 钳制放在「上线」这一步而不是采集那一步：这里是所有事件通往协议的唯一出口，
+ * 顺带能把老版本已经攒进队列、否则永远解不开的那些一起放行。
+ */
+private const val MAX_FROM_LEN = 64
+
+private fun String.clampTo(max: Int): String {
+    if (length <= max) return this
+    // 别切在代理对中间：半个 emoji 到了 UTF-8 编码那里会变成一个 '?'
+    val end = if (Character.isHighSurrogate(this[max - 1])) max - 1 else max
+    return substring(0, end)
+}
+
 private fun PendingEvent.toPayload(deviceId: String) = EventPayload(
-    id = id, deviceId = deviceId, kind = kind, from = from, content = content,
+    id = id, deviceId = deviceId, kind = kind, from = from.clampTo(MAX_FROM_LEN), content = content,
     occurredAt = occurredAt, simSlot = simSlot,
     extra = EventExtra(
         callType = callType, `package` = pkg, truncated = truncated.takeIf { it },

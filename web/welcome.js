@@ -232,7 +232,35 @@
     }
   }
 
-  function boot() { start(); nudge(); stage2(); copy(); clock() }
+  /**
+   * 量出最后一幕里「鸟该落在哪儿」，写成 --landy（px）。
+   *
+   * 气泡在那一幕里是**居中**的，离幕顶多远随视口高度变（720 高时 124px、
+   * 820 高时 111px、900 高时 203px），CSS 里没有任何写法能表达这个距离。
+   * 不量的话只能退回上一版那种「从插画顶上往上兜 100vh」的写法，
+   * 而那会带来两个 bug：没走到的那一截提前变成实线、以及交接时鸟瞬移一百多像素。
+   *
+   * 5.56% 是气泡上边在插画里的位置（viewBox 360 里的 y=20），
+   * 改插画的时候这两个数要一起改。
+   */
+  function landing() {
+    var sc = document.querySelector('.sc-c')
+    var vs = document.querySelector('.vsub')
+    if (!sc || !vs) return
+    var a = sc.getBoundingClientRect()
+    var b = vs.getBoundingClientRect()
+    if (!b.height) return
+    var y = (b.top - a.top) + b.height * 0.0556
+    document.documentElement.style.setProperty('--landy', Math.round(y) + 'px')
+  }
+
+  function boot() {
+    start(); nudge(); stage2(); copy(); clock(); landing()
+    // 字体回来、图片解码完都会改变高度，量早了就偏
+    setTimeout(landing, 300)
+    var t = 0
+    addEventListener('resize', function () { clearTimeout(t); t = setTimeout(landing, 120) })
+  }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot)
   else boot()
 })()

@@ -151,7 +151,24 @@ export function createWsServer(deps: WsServerDeps): WebSocketServer {
     ws.on('close', () => {
       clearInterval(timer)
       const id = session.authenticatedDeviceId
+      /**
+       * 这条连接已经被新连接顶掉的话，**不能**再写 offline。
+       *
+       * 换网、切 WiFi 时 Agent 会带着同一个 device_id 重连，hub.register 先
+       * `prev.close()` 踢掉旧的再登记新的；而 close 事件是异步来的，往往落在
+       * 新连接握手写完 online 之后。于是最后落库的是旧连接这条 offline——
+       * 设备明明在线、事件照常上报，控制台却显示离线，离线告警跟着误报。
+       *
+       * 和吊销那条竞态是同一个模式（onDisconnect 把 revoked 覆盖成 offline），
+       * 只是这次覆盖掉的是 online。判断必须在 unregister **之前**做：
+       * unregister 会把自己那条删掉，之后 get() 恒为 undefined，再比就永远相等。
+       */
+      const replaced = !!id && deps.hub.get(id) !== conn
       if (id) deps.hub.unregister(id, conn)
+      if (replaced) {
+        log.info('旧连接关闭时设备已被新连接接管，不写 offline', { device_id: id })
+        return
+      }
       void session.onDisconnect()
     })
 

@@ -178,6 +178,13 @@ step "生成配置"
 
 run "mkdir -p '$DIR/data' '$DIR/bark-data' '$DIR/caddy-data'"
 
+# 镜像里是以 uid 10001（非 root）跑的，而这里是 root 在建目录。
+# 不改属主的话，bind mount 进去的 /data 一个字节都写不进去：容器起来就
+# EACCES / SQLITE_CANTOPEN 反复重启，而下面的健康检查会把锅甩给
+# 「安全组没放行 80/443」——人会去改安全组、改防火墙，怎么改都没用。
+# Dockerfile 里那句 chown 只作用于镜像内的 /data，被挂载整个盖掉了。
+run "chown -R 10001:10001 '$DIR/data'"
+
 # 数据密钥。短信正文与渠道凭证都用它加密，丢了等于历史全部作废，
 # 所以只生成一次；已存在就原样保留。
 ENV_FILE="$DIR/.env"
@@ -214,9 +221,11 @@ services:
       GW_PORT: "8070"
       GW_DATA_DIR: /data
       GW_BARK_UPSTREAM: http://bark:8080
-      # 只信任同一个 docker 网络里的反代传来的 X-Forwarded-For。
+      # 只信任同一个 docker 网络里的反代（Caddy）传来的 X-Forwarded-For。
       # 写成 0.0.0.0/0 的话，任何人都能伪造来源 IP，限速与登录告警同时失效。
-      GW_TRUSTED_PROXY: 172.16.0.0/12
+      # 写成字面量的话 .env 里改它没有任何反应（environment 覆盖 env_file），
+      # 而「改了没反应」比「不能改」更难查，所以留一个可覆盖的默认值。
+      GW_TRUSTED_PROXY: ${GW_TRUSTED_PROXY:-172.16.0.0/12}
     volumes:
       - ./data:/data
     depends_on:
@@ -275,7 +284,15 @@ if [[ $DRY_RUN == 0 ]]; then
       break
     fi
     sleep 4
-    [[ $i == 30 ]] && c_warn "还没通。多半是安全组没放行 80/443，放行后等一两分钟会自己好。"
+    # 「连不上」有两个完全不同的原因，提示只写一个就会把人带向错误的方向：
+    # 容器压根没起来的时候，安全组怎么放行都没用。所以先把网关日志摆出来。
+    if [[ $i == 30 ]]; then
+      c_warn "还没通。有两种原因，先分清是哪一种："
+      c_info "1) 容器没起来 —— 下面是网关最近的日志。出现 EACCES / SQLITE_CANTOPEN"
+      c_info "   就是 $DIR/data 的属主不对：chown -R 10001:10001 $DIR/data"
+      (cd "$DIR" && docker compose -f docker-compose.deploy.yml logs --tail 20 gateway 2>&1 | sed 's/^/     /') || true
+      c_info "2) 容器在跑、只是外面连不上 —— 多半是安全组没放行 80/443，放行后一两分钟会自己好"
+    fi
   done
 fi
 
