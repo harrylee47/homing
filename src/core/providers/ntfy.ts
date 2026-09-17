@@ -15,7 +15,7 @@
  * 能自建就自建，或者用受保护的主题加 token。
  */
 import { z } from 'zod'
-import { ProviderError, retryAfterMsOf, type Provider } from './types.js'
+import { clipBytes, ProviderError, retryAfterMsOf, type Provider } from './types.js'
 import { describeFetchError } from '../neterror.js'
 import { copyText, deepLink } from './deeplink.js'
 
@@ -88,7 +88,8 @@ export const ntfyProvider: Provider<NtfyConfig> = {
     const body: Record<string, unknown> = {
       topic: cfg.topic,
       title,
-      message: msg.body,
+      // ntfy 默认 message-size-limit 是 4096 **字节**，超了直接 4xx 且不可重试
+      message: clipBytes(msg.body, 3800),
       priority,
       ...(o.tags.length ? { tags: o.tags } : {}),
       // click 与 view 按钮指向同一处：点通知本体和点按钮都该去那儿

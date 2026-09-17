@@ -88,8 +88,36 @@ export async function dispatch(
   opts: DispatchOptions = {},
 ): Promise<DeliveryResult[]> {
   const targets = channels.filter((c) => c.enabled)
-  // 并发：一个渠道慢或挂掉，不能拖住其他渠道
-  return Promise.all(targets.map((c) => sendWithRetry(c, msg, opts)))
+  // 渠道之间并发：一个渠道慢或挂掉，不能拖住其他渠道。
+  // 渠道内部串行：见下面 onChannelChain。
+  return Promise.all(targets.map((c) => onChannelChain(c.id, () => sendWithRetry(c, msg, opts))))
+}
+
+/**
+ * 每个渠道一条串行链。
+ *
+ * **顺序保证属于渠道，不属于设备。** 原来它挂在 session.ts 的「每台设备一条链」
+ * 上，于是一个进了黑洞的渠道会把整台设备的推送全占住——实测三次尝试各 15 秒
+ * 超时加上退避是 48 秒一条；哪怕是最乐观的「立刻拒绝」，退避的 1+2 秒也让
+ * 补传里每条验证码平白多等 3 秒，一批 50 条就是两分半。而那条卡住大家的渠道
+ * 恰恰是已经不工作的那个。
+ *
+ * 挪到这里之后，两条原来的理由一条没丢：同一个 Telegram 私聊仍然一条发完再发
+ * 下一条（按时间排、不吃 429），而健康渠道不再替挂掉的那个等。
+ *
+ * 这是进程内状态，沿用 session.ts 那条队列已经写明的例外理由：它是纯粹的调度、
+ * 随进程消亡、且不需要重建——进程重启后没有待发推送，与重启前语义一致
+ * （事件本身已经落库）。表的大小等于渠道数，天然有界。
+ */
+const chains = new Map<string, Promise<unknown>>()
+
+function onChannelChain<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = chains.get(channelId) ?? Promise.resolve()
+  // 前一条成功或失败都要接着往下走：用同一个 fn 接住两侧，
+  // 否则一条发失败就把这个渠道之后的推送全断掉，而且悄无声息
+  const next = prev.then(fn, fn)
+  chains.set(channelId, next.then(() => {}, () => {}))
+  return next
 }
 
 async function sendWithRetry(ch: ChannelConfig, msg: NotifyMessage, opts: DispatchOptions): Promise<DeliveryResult> {

@@ -30,16 +30,27 @@ import java.util.UUID
 class CallLogObserver(private val ctx: Context) {
 
     private var lastId: Long = -1
+    @Volatile private var registered = false
 
     private val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) = scan()
     }
 
+    /**
+     * **可以反复调用。**
+     *
+     * 第一次调用发生在 Application.onCreate，那一刻权限一个都还没给。
+     * 授予运行时权限不会重启进程，所以权限到手之后必须有人再喊一次
+     * （MainActivity 的 permLauncher 回调与 onResume）。没有这一下，
+     * lastId 永远停在 -1，scan() 全程空转——「打出去的电话从来不进控制台」，
+     * 零报错，唯一的线索是开机那一行 warn，早被日志环挤掉了。
+     */
     fun start() {
         if (!hasPermission()) {
-            Log.w("没有通话记录权限，去电不会被捕获")
+            Log.w("没有通话记录权限，去电不会被捕获（授予后会自动重试）")
             return
         }
+        if (registered) return   // 已经在跑了，别重复注册（会收到重复回调）
         // 查不到最大 id 说明这个库根本读不了（个别 ROM 会这样）。
         // 此时宁可不启动，也不能按 0 起步——那会把手机上多年的通话历史一次性补报上去。
         val start = maxId()
@@ -52,6 +63,7 @@ class CallLogObserver(private val ctx: Context) {
         lastId = start
         runCatching {
             ctx.contentResolver.registerContentObserver(CallLog.Calls.CONTENT_URI, true, observer)
+            registered = true
         }.onFailure { Log.e("注册通话记录监听失败", it) }
         Log.i("已开始监听通话记录，起始 id=$lastId")
     }

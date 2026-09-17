@@ -40,6 +40,16 @@ sealed interface ConnState {
     data class Waiting(val retryInSec: Int) : ConnState
     /** 不可恢复：凭证无效 / 被吊销 / 协议版本不支持。停止重连，等人工处理。 */
     data class Fatal(val code: String, val message: String) : ConnState
+
+    /**
+     * 会一直重试，但**有个说得出口的原因**。
+     *
+     * 典型是时钟偏差：手机时间和服务端差超过 5 分钟就握手被拒，而凭证、网络、
+     * 域名全都是对的。原来这种情况只会退回 Waiting——界面和常驻通知上写着
+     * 「等待重连 60 秒」，永远重连、永远失败，两头都看不出为什么。
+     * 而这恰恰是站在手机跟前的人**唯一能自己修好**的那一类问题。
+     */
+    data class Blocked(val code: String, val message: String) : ConnState
 }
 
 /**
@@ -60,6 +70,10 @@ fun ConnState.label(ctx: Context, paired: Boolean): String = when (this) {
     is ConnState.Connected -> ctx.getString(R.string.state_connected)
     is ConnState.Waiting -> ctx.getString(R.string.state_waiting, retryInSec)
     is ConnState.Fatal -> ctx.getString(R.string.state_stopped, code)
+    // 时钟偏差自己出一句本地化的、照着能做的话；其余原因把服务端那句带上
+    is ConnState.Blocked ->
+        if (code == "CLOCK_SKEW") ctx.getString(R.string.state_clock_skew)
+        else ctx.getString(R.string.state_blocked, message)
 }
 
 /**
@@ -342,6 +356,17 @@ class WsClient(
                 if (p.code in ErrorCodes.FATAL) {
                     // 不可重试：继续重连只会刷日志，停下来等人处理
                     _state.value = ConnState.Fatal(p.code, p.message)
+                } else {
+                    /*
+                     * 可重试的拒绝也要说出来。
+                     *
+                     * 原来这里什么都不做，于是状态退回 Waiting，界面与常驻通知
+                     * 只写「等待重连 N 秒」——而真正的原因（多半是手机时间不对）
+                     * 只存在于内存里的日志环，要读它得先有一条连得上的连接。
+                     * 下一轮重连开始时 Connecting 会自然覆盖掉这个状态，
+                     * 所以它不会赖着不走。
+                     */
+                    _state.value = ConnState.Blocked(p.code, p.message)
                 }
                 if (!connected.isCompleted) connected.complete(false)
             }

@@ -9,7 +9,7 @@
  * 不需要自备证书。
  */
 import { z } from 'zod'
-import { ProviderError, retryAfterMsOf, type Provider } from './types.js'
+import { clipBytes, ProviderError, retryAfterMsOf, type Provider } from './types.js'
 import { describeFetchError } from '../neterror.js'
 import { copyText, deepLink } from './deeplink.js'
 
@@ -87,7 +87,8 @@ export const barkProvider: Provider<BarkConfig> = {
 
     const body: Record<string, unknown> = {
       title: from,
-      body: msg.body,
+      // APNs 单条载荷 4KB，超了 Bark 服务端会直接拒掉（不可重试）
+      body: clipBytes(msg.body, 3500),
       // high 的规则统一升级为可穿透专注模式：银行验证码半夜也得响
       level: msg.priority === 'high' && o.level === 'active' ? 'timeSensitive' : o.level,
       group,

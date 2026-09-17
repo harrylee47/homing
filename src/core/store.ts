@@ -500,6 +500,13 @@ export interface Store {
   // 然后发一条短信查别人手机的定位。开放注册之后这就不是理论路径了。
   getSetting(key: string): Promise<string | null>
   setSetting(key: string, value: string): Promise<void>
+  /**
+   * 库里随便一条密文，用来在启动时验证手里这把 DEK 对不对。
+   *
+   * 只在「库里已有数据、但还没记下密钥指纹」的老库上调一次（见 main.ts 的
+   * assertDekMatchesDb）。空库返回 null——那才是真的全新安装。
+   */
+  firstEncryptedSample(): Promise<Uint8Array | null>
   getUserSetting(userId: string, key: string): Promise<string | null>
   /**
    * 某个用户的全部设置。**只给配置导出用，且导出方必须按白名单过一遍**——
@@ -584,6 +591,16 @@ export interface Store {
   countEvents(f: EventFilter): Promise<number>
   /** 记录命中的规则 id，事件已入库后回填 */
   setMatchedRules(eventId: string, ruleIds: string[]): Promise<void>
+  /**
+   * 已经入库、但**从未进过 pipeline** 的事件。
+   *
+   * 判据是 `matched_rules IS NULL`，而 `setMatchedRules` 排在派发之前——
+   * 所以 NULL 严格等于「派发根本没开始」，补跑不会把已经推过的再推一遍。
+   *
+   * 这是跨用户的读取（启动时补处理，不面向界面），和 listAllDevices 同一类，
+   * 新增这类方法要非常小心。
+   */
+  listUnprocessedEvents(sinceReceivedAt: number, limit: number): Promise<StoredEvent[]>
   /** 删除单条。返回是否真的删掉了（不存在或不属于这个用户时为 false） */
   deleteEvent(id: string, userId: string): Promise<boolean>
   /**

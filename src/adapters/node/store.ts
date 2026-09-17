@@ -616,6 +616,15 @@ export class SqliteStore implements Store {
     return Number(r.changes)
   }
 
+  async listUnprocessedEvents(sinceReceivedAt: number, limit: number): Promise<StoredEvent[]> {
+    return this.db.prepare(
+      `SELECT * FROM events
+        WHERE matched_rules IS NULL AND received_at >= ?
+        ORDER BY occurred_at ASC, id ASC
+        LIMIT ?`,
+    ).all(sinceReceivedAt, limit) as unknown as StoredEvent[]
+  }
+
   async setMatchedRules(eventId: string, ruleIds: string[]): Promise<void> {
     this.db.prepare('UPDATE events SET matched_rules = ? WHERE id = ?').run(JSON.stringify(ruleIds), eventId)
   }
@@ -1013,6 +1022,19 @@ export class SqliteStore implements Store {
   async getSetting(key: string): Promise<string | null> {
     const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value?: string } | undefined
     return row?.value ?? null
+  }
+
+  async firstEncryptedSample(): Promise<Uint8Array | null> {
+    // 先拿事件，没有就拿渠道配置——一台刚装好、只配了渠道还没收到短信的机器
+    // 同样需要被拦住：渠道凭证解不开的表现是「测试一按就是 internal error」。
+    for (const sql of [
+      'SELECT content_enc AS b FROM events ORDER BY created_at LIMIT 1',
+      'SELECT config_enc AS b FROM channels LIMIT 1',
+    ]) {
+      const row = this.db.prepare(sql).get() as { b?: Uint8Array } | undefined
+      if (row?.b && row.b.length > 0) return new Uint8Array(row.b)
+    }
+    return null
   }
 
   async setSetting(key: string, value: string): Promise<void> {

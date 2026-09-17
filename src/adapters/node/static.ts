@@ -148,6 +148,20 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
   if (pathname === '/sw.js') headers['service-worker-allowed'] = '/'
 
   res.writeHead(200, headers)
-  createReadStream(file).pipe(res)
+  /*
+   * **`.pipe()` 不会在下载被取消时关掉文件。**
+   *
+   * 客户端中途断开（手机上点了取消、切走、网断了——2.8MB 的 APK 上这很常见）时，
+   * `res` 关闭而读流还开着，那个 fd 就永久留在进程里。实测 300 次「收到首块即断开」
+   * 之后进程多出 300 个指向同一个文件的 fd 且永不释放；攒到 ulimit 之后
+   * 每个请求都抛 EMFILE，被全局 uncaughtException 兜住——**进程还活着，
+   * 但连 /api/health 都建不起连接了**，这是最难查的一种「死而不僵」。
+   *
+   * 两端互相销毁即可：读流出错就掐掉响应，响应一关就掐掉读流。
+   */
+  const stream = createReadStream(file)
+  stream.on('error', () => { res.destroy() })
+  res.on('close', () => { stream.destroy() })
+  stream.pipe(res)
   return true
 }

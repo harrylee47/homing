@@ -15,6 +15,18 @@ const IV_LEN = 12
 const buf = (u: Uint8Array): ArrayBuffer =>
   u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength) as ArrayBuffer
 
+/**
+ * 密钥指纹：不可逆，用来在启动时回答「这个库是不是用手里这把加的密」。
+ *
+ * 落进 settings 表存明文也不泄漏密钥本身（HMAC 的单向性），
+ * 而它能把「密钥换了一把」从一种**静默**故障变成一次启动失败。
+ */
+export async function dekFingerprint(dek: Uint8Array): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', buf(dek), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf(new TextEncoder().encode('homing/dek-fingerprint/v1'))))
+  return [...sig.slice(0, 16)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 export interface Cipher {
   encrypt(plain: string): Promise<Uint8Array>
   decrypt(blob: Uint8Array): Promise<string>

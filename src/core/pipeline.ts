@@ -37,6 +37,17 @@ export interface PipelineDeps {
 /**
  * 处理一条已入库事件。永不抛异常——通知失败不应影响采集链路。
  */
+/**
+ * 让调用方知道「数据库那一段做完了、开始发网络请求了」。
+ *
+ * session.ts 的设备推送队列用它决定什么时候放下一条进来：规则匹配、回声判定、
+ * 模板渲染这些本地活儿要按事件顺序串着做（回声去重依赖前一条已经落库），
+ * 但网络投递不该继续占着队列——一个挂掉的渠道会连累这台设备上所有人的验证码。
+ */
+export interface ProcessHooks {
+  onDispatchStart?: (() => void) | undefined
+}
+
 export async function processEvent(
   deps: PipelineDeps,
   eventId: string,
@@ -54,6 +65,7 @@ export async function processEvent(
      */
     imported?: boolean | undefined
   },
+  hooks: ProcessHooks = {},
 ): Promise<void> {
   try {
     // 用 allSettled 而非 all：all 在第一个 Promise 失败后，其余 Promise 的
@@ -153,6 +165,23 @@ export async function processEvent(
       // 区分「规则本就不推送」与「推送目标丢失」：前者是设计，后者是故障
       if (targetIds.length > 0) {
         log.error('事件命中规则但无有效推送目标', { event_id: eventId, matched: matchedIds })
+        /*
+         * **故障就要响一声。**
+         *
+         * 原来这里只写 stdout 与审计，而这两样恰恰是「收不到验证码」的人
+         * 不会去看的。这条路径的表现是：事件入库了、规则命中了、控制台上
+         * 一切正常，就是没人收到——静默漏报里最难查的一种。
+         *
+         * 借跨渠道告警从**还活着的**渠道说出来，并沿用它那个 10 分钟压制窗口：
+         * 补传一批 50 条时不会变成 50 条一样的告警。
+         */
+        await crossChannelAlert(
+          channels,
+          dangling.map((id) => ({ channelId: id, channelType: '已删除', ok: false, attempts: 0, error: '规则指向的渠道不存在' })),
+          `规则「${matchedIds.join('、')}」指向的渠道已不存在，命中的消息推不出去`,
+          { retryBaseMs: deps.retryBaseMs },
+          { store: deps.store, userId: e.user_id },
+        )
       } else {
         log.info('事件无推送目标，仅归档', { event_id: eventId, matched: matchedIds })
       }
@@ -194,6 +223,13 @@ export async function processEvent(
           } }
         : {}),
     }
+
+    /*
+     * 从这一行往后全是网络。**设备推送队列到此为止**——
+     * 再往下等就等于让这条事件的收件人替别的渠道排队（见 session.ts 那条链）。
+     * 渠道内部的顺序由 notifier 的每渠道串行链保证，不需要设备队列再兜一层。
+     */
+    hooks.onDispatchStart?.()
 
     const results = await dispatch(targets, msg, { retryBaseMs: deps.retryBaseMs })
     const failed = results.filter((r) => !r.ok)

@@ -355,10 +355,25 @@ export class DeviceSession {
   ): void => {
     const deps = { store: this.deps.store, cipher: this.deps.cipher, baseUrl: this.deps.baseUrl ?? null }
     this.pushQueue = this.pushQueue
-      .then(() => processEvent(deps, eventId, { ...e, user_id: this.userId }))
-      // processEvent 内部已经把异常全兜住了，这里只是防止一条把整条链炸断——
-      // 链一断，这台设备**之后所有**的推送都不会再发，而且悄无声息
-      .catch((err: unknown) => log.error('推送队列异常', { event_id: eventId, error: String(err) }))
+      .then(() => new Promise<void>((release) => {
+        /*
+         * **队列串到「开始发网络请求」为止，不串到「发完」。**
+         *
+         * 要按序做的是本地那一段：规则匹配、回声判定（它要查同设备 30 秒内
+         * 有没有对应的短信，依赖前一条已经落库）、模板渲染。
+         * 网络投递继续占着队列没有好处，坏处却很实在——一个进了黑洞的渠道
+         * 会把这台设备**所有**的推送按 48 秒一条往后压，而真正要紧的验证码
+         * 正排在后面。渠道内部的顺序改由 notifier 的每渠道串行链保证，
+         * 那才是「同一个聊天窗口按时间排」真正的落点。
+         */
+        void processEvent(deps, eventId, { ...e, user_id: this.userId }, { onDispatchStart: release })
+          // processEvent 内部已经把异常全兜住了，这里只是防止一条把整条链炸断——
+          // 链一断，这台设备**之后所有**的推送都不会再发，而且悄无声息
+          .catch((err: unknown) => log.error('推送队列异常', { event_id: eventId, error: String(err) }))
+          // 没走到投递那一步（被规则挡掉、判成短信回声、只归档）也要放行，
+          // 否则这条链就停在这里了
+          .finally(release)
+      }))
   }
 
   /**
@@ -421,6 +436,18 @@ export class DeviceSession {
 
   private reject(code: ErrorCode, message: string): SessionAction {
     this.state = 'closed'
+    /*
+     * **拒绝要留下痕迹。**
+     *
+     * 原来这里一行日志都不写，于是握手被拒在服务端是完全看不见的：
+     * 设备一直 offline、stdout 干干净净、连接日志里也没有。而 Agent 那头
+     * 唯一写明原因的那条日志躺在内存环形缓冲里，要取它得先有一条连得上的
+     * 连接——恰恰是现在没有的东西。两头都不说话，人就只能猜。
+     *
+     * 最典型的是时钟偏差（CLOCK_SKEW）：翻出来的备用机没插卡、没开自动校时，
+     * 凭证网络域名全对，就是连不上。
+     */
+    log.warn('握手被拒', { device_id: this.deviceId ?? '(未知)', code, message })
     // 用 protocol.ts 那一份，别在这里再抄一遍：两份清单迟早分叉，
     // 而分叉的表现是「某个错误码这边判可重试、那边判不可重试」
     const retryable = !FATAL_ERROR_CODES.includes(code)

@@ -4,8 +4,9 @@
 import { setDefaultResultOrder } from 'node:dns'
 import { createServer } from 'node:http'
 import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net'
-import { createCipher } from '../../core/crypto.js'
+import { createCipher, dekFingerprint } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
+import { processEvent } from '../../core/pipeline.js'
 import { DEFAULT_AGENT_CONFIG, ErrorCode, type CmdAction } from '../../core/protocol.js'
 import { CLOSE_AUTH_FAILED } from '../../core/session.js'
 import { toSvg } from '../../core/qr.js'
@@ -87,8 +88,59 @@ setDefaultAutoSelectFamilyAttemptTimeout(3000)
 const cfg = loadConfig()
 const store = new SqliteStore(cfg.dbPath)
 await store.migrate()
+await assertDekMatchesDb()
 await migrateSingleUser()
 await backfillSeedRules()
+
+/**
+ * **这个库是不是用手里这把密钥加的密。**
+ *
+ * config.ts 里已经拦住了「环境变量与 data/dek.key 两把不一样」那一种，但那只是
+ * 一半——而且是走得最少的那一半。真正会被撞上的是「密钥凭空少了一把」：
+ *
+ * - 一键路径下 GW_DEK 只存在于 `.env`，`data/dek.key` 根本不存在。把 `data/`
+ *   备份恢复到一台新 VPS 再跑一遍 install.sh，脚本只看 `.env` 里有没有 GW_DEK，
+ *   于是生成一把全新的——旁边那个装满密文的 gateway.db 它压根没看。
+ * - 反过来，用文件那把的老部署一旦 dek.key 丢了，这里会当成全新机器再生成一把。
+ *
+ * 两种的表现一模一样且毫无提示：容器正常启动、控制台能登录、渠道名字类型
+ * 全在（那几列没加密），但每条历史消息的发件人和正文都是空的，渠道一测就是
+ * 一句 internal error。**起不来有人看，解不开没人看得出来**——config.ts 那段
+ * 注释写下的正是这个理由，只是当时防的方向反了。
+ *
+ * 指纹是 HMAC(dek, 固定串) 的前 16 字节 hex：不可逆，落在 settings 里不怕看。
+ */
+async function assertDekMatchesDb(): Promise<void> {
+  const fp = await dekFingerprint(cfg.dek)
+  const saved = await store.getSetting('dek_fp')
+  if (!saved) {
+    // 老库（指纹这一项是后加的）不能直接认领：它可能正是解不开的那一种。
+    // 拿库里现成的一条密文实际试解一次，解得开才落指纹。
+    const probe = await store.firstEncryptedSample()
+    if (probe) {
+      const cipher = await createCipher(cfg.dek)
+      const ok = await cipher.decrypt(probe).then(() => true, () => false)
+      if (!ok) {
+        throw new Error(
+          '这个库里的数据是用另一把密钥加密的，当前这把解不开。'
+          + '继续启动会让全部历史消息与渠道凭证静默读不出来，所以这里直接停下。'
+          + '请把原来那把密钥填回 GW_DEK（或把原来的 data/dek.key 放回去）；'
+          + '确认要从零开始的话，把 data/ 下的 gateway.db 挪走再启动。',
+        )
+      }
+    }
+    await store.setSetting('dek_fp', fp)
+    return
+  }
+  if (saved !== fp) {
+    throw new Error(
+      `数据密钥不对：这个库是用指纹 ${saved} 那把密钥加密的，当前这把是 ${fp}。`
+      + '继续启动会让全部历史消息与渠道凭证静默读不出来，所以这里直接停下。'
+      + '请把原来那把密钥填回 GW_DEK（或把原来的 data/dek.key 放回去）；'
+      + '确认要从零开始的话，把 data/ 下的 gateway.db 挪走再启动。',
+    )
+  }
+}
 
 /**
  * 从单用户升级到多用户。
@@ -492,6 +544,36 @@ const apiDeps = {
   })(),
 }
 
+/*
+ * **健康检查必须真的写一次。**
+ *
+ * 只读一次的健康检查在这台机器上最要命的那类故障面前是全绿的：磁盘写满、
+ * 卷变成只读之后，短信一条都存不下、设备连握手都完不成，而 `/api/health`
+ * 照样 200、`docker compose ps` 照样 Up——DEPLOY.md 的排查表教人看的正是这一行。
+ * 于是唯一一个既不推送、界面上也看不见、监控还绿着的故障就这么长期存在。
+ *
+ * 写的是 settings 表里一行定值覆盖（一次 UPSERT，代价可忽略），结果缓存
+ * HEALTH_PROBE_TTL_MS——它比 Dockerfile 里的 30 秒 interval 短，所以每次
+ * 健康检查都能拿到足够新的结论，而外部监控再密集也压不垮库。
+ */
+const HEALTH_PROBE_TTL_MS = 20_000
+let probeAt = 0
+let probeOk = true
+async function dbWritable(): Promise<boolean> {
+  const t = Date.now()
+  if (t - probeAt < HEALTH_PROBE_TTL_MS) return probeOk
+  probeAt = t
+  try {
+    await store.setSetting('health_probe', String(t))
+    if (!probeOk) log.info('数据库恢复可写')
+    probeOk = true
+  } catch (e) {
+    if (probeOk) log.error('数据库写不进去，健康检查转为不健康', { error: String(e) })
+    probeOk = false
+  }
+  return probeOk
+}
+
 const server = createServer((req, res) => {
   // 移除指纹特征：Node 默认会带 Date 头，能少一个是一个（计划 §6.3）
   res.sendDate = false
@@ -500,11 +582,16 @@ const server = createServer((req, res) => {
     // 健康检查是「所有路由一律 403」的唯一例外：Docker HEALTHCHECK 与外部监控
     // 需要它在初始化完成前也可用，否则容器会因健康检查失败无限重启。
     // 代价用「未初始化时不返回任何运行数据」抵消。
-    void isInitialized(store).then((ready) => {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(ready
-        ? { ok: true, online_devices: hub.onlineDevices().length, uptime_sec: Math.round(process.uptime()) }
-        : { ok: true, initialized: false }))
+    void Promise.all([isInitialized(store), dbWritable()]).then(([ready, writable]) => {
+      const code = writable ? 200 : 503
+      res.writeHead(code, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(writable
+        ? (ready
+            ? { ok: true, online_devices: hub.onlineDevices().length, uptime_sec: Math.round(process.uptime()) }
+            : { ok: true, initialized: false })
+        : { ok: false, db_writable: false, error: '数据库写不进去（多半是磁盘满或卷变只读）' }))
+    }).catch(() => {
+      if (!res.headersSent) { res.writeHead(503, { 'content-type': 'application/json' }); res.end('{"ok":false}') }
     })
     return
   }
@@ -622,6 +709,16 @@ const server = createServer((req, res) => {
     if (handled || res.headersSent) return
     // 非 API 路径交给控制台；深链路由由前端处理（计划 §11.2）
     if (!serveStatic(cfg.webRoot, req, res)) res.writeHead(404).end()
+  }).catch((e) => {
+    /*
+     * 这条 catch 不是摆设：没有它，任何逃出来的异常都变成一个**永远不返回的请求**
+     * ——界面一直转圈、没有错误码，日志里只有一条指向别处的未捕获 rejection，
+     * 而每条这样的请求各占一个 socket 直到超时。磁盘写满时这会同时发生在
+     * 每一个带会话的接口上。handleApi 内部已经自己兜了一层，这里兜的是
+     * 上面那个 then 回调（serveStatic 也会抛）。
+     */
+    log.error('请求处理未捕获异常', { path: req.url, error: String(e) })
+    if (!res.headersSent) res.writeHead(500).end()
   })
 })
 
@@ -738,7 +835,14 @@ async function sweepInactiveDevices(): Promise<void> {
     hub.get(d.id)?.close(CLOSE_AUTH_FAILED, ErrorCode.ACCOUNT_INACTIVE)
   }
 }
-const sweepTimer = setInterval(() => void sweepInactiveDevices().catch(() => { /* 下一轮再来 */ }), 60_000)
+let sweepRunning = false
+const sweepTimer = setInterval(() => {
+  if (sweepRunning) return
+  sweepRunning = true
+  void sweepInactiveDevices()
+    .catch(() => { /* 下一轮再来 */ })
+    .finally(() => { sweepRunning = false })
+}, 60_000)
 
 /**
  * 机器主人的渠道：登录失败、异地登录这类**与账号无关**的告警发给他。
@@ -770,13 +874,24 @@ async function liveChannels(userId: string) {
  * 掉线检测。每分钟一次即可：判定阈值是 5 分钟，再密集只是徒增开销。
  * 告警由服务端直接发出，不经过手机——用掉线的设备通知自己掉线没有意义。
  */
+/*
+ * **在飞标记**。回调本身不会重入，但里面是 void 出去的异步：
+ * 渠道慢的时候（网络抖动是常态，不是异常）上一轮还没跑完下一轮就开跑，
+ * 而 monitor.ts 的去重是「告警真的送出去才记」——两轮并发时第一轮还没记上，
+ * 第二轮就又发了一遍。同一个文件里保留上限那一处早就为这件事加了闸，
+ * 掉线巡检和计划任务漏了。
+ */
+let monitorRunning = false
 const monitorTimer = setInterval(() => {
+  if (monitorRunning) { log.warn('上一轮掉线检测还没跑完，跳过这一轮'); return }
+  monitorRunning = true
   void checkDevices({
     store,
     channels: liveChannels,
     online: () => hub.onlineDevices(),
     baseUrl: cfg.baseUrl,
   }).catch((e: unknown) => log.error('掉线检测异常', { error: String(e) }))
+    .finally(() => { monitorRunning = false })
 }, 60_000)
 
 /** 设备名缓存，仅用于告警文案；取不到就退回 id，不值得为它阻塞。 */
@@ -847,10 +962,19 @@ const runTaskNow = async (task: ParsedTask) => {
  * 每分钟检查一次。不能用小时粒度：「每天 09:00」这类排期需要分钟精度，
  * 小时粒度会把它变成「每天 09:00 到 10:00 之间的某个时刻」。
  */
+/*
+ * 同样要在飞标记，而且这里的后果更重：runTask 的告警路径被慢渠道拖过 60 秒时，
+ * 上一轮手里的 last_run_at 已经过期，下一轮可能把同一条保号短信再发一遍——
+ * 那是真的往外发短信，不是多打一行日志。
+ */
+let taskRunning = false
 const taskTimer = setInterval(() => {
+  if (taskRunning) { log.warn('上一轮计划任务还没跑完，跳过这一轮'); return }
+  taskRunning = true
   void refreshDeviceNames()
     .then(async () => tasksTick(await taskDeps(), (enc) => cipher.decrypt(enc)))
     .catch((e: unknown) => log.error('计划任务异常', { error: String(e) }))
+    .finally(() => { taskRunning = false })
 }, 60_000)
 
 /** 回复映射保留 7 天：超过这个窗口的推送，用户基本不会再去引用回复。 */
@@ -896,6 +1020,48 @@ const cleanupTimer = setInterval(() => {
       .finally(() => { retentionRunning = false })
   }
 }, 3600_000)
+
+/**
+ * 启动时补上那些「已入库、却从未派发」的事件。
+ *
+ * ack 与推送是**脱钩**的（session.ts 里写明了理由：让 Agent 等推送结果只会
+ * 拖慢队列）。代价就在这里：进程在「已经回了 event_ack、推送还排在队列里」
+ * 那一刻停掉，手机那头已经把本地队列删了，而这几条谁都不会再提起——
+ * 实测一次灌 12 条、SIGTERM 之后只有 1 条真的发出去，另外 11 条在库里躺着，
+ * 重启后的日志里关于它们一个字都没有。**漏报是这套系统唯一不能接受的失败。**
+ * 补传一批 50 条时这个窗口最宽，而部署恰恰常常挑在夜里。
+ *
+ * 判据是 `matched_rules IS NULL`：`setMatchedRules` 排在 dispatch **之前**，
+ * 所以 NULL 严格等于「派发根本没开始」，补跑不会重复推送。
+ * `imported` 的事件写完 matched_rules 就 return，天然不在这个集合里。
+ *
+ * 只看最近 24 小时：更早的补出来已经没有意义（验证码早过期了），
+ * 反而会在一次久违的重启后砸一屏历史通知出来。
+ */
+const RECOVER_WINDOW_MS = 24 * 3600 * 1000
+const RECOVER_MAX = 200
+async function recoverUnpushed(): Promise<void> {
+  const rows = await store.listUnprocessedEvents(Date.now() - RECOVER_WINDOW_MS, RECOVER_MAX)
+  if (rows.length === 0) return
+  log.warn('发现上次退出时没来得及推送的事件，正在补发', { count: rows.length })
+  const deps = { store, cipher, baseUrl: cfg.baseUrl ?? null }
+  for (const r of rows) {
+    try {
+      const [from, content] = await Promise.all([cipher.decrypt(r.sender_enc), cipher.decrypt(r.content_enc)])
+      await processEvent(deps, r.id, {
+        user_id: r.user_id, device_id: r.device_id, kind: r.kind,
+        from, content, occurred_at: r.occurred_at,
+        direction: r.direction ?? 'in', sim_slot: r.sim_slot ?? undefined,
+      })
+    } catch (e) {
+      // 一条补不出来不该挡住后面的
+      log.error('补发事件失败', { event_id: r.id, error: String(e) })
+    }
+  }
+  log.info('补发完成', { count: rows.length })
+}
+// 不 await：补发要读规则、渠道、还要发网络请求，不该把端口监听拖在后面
+void recoverUnpushed().catch((e: unknown) => log.error('补发未推送事件失败', { error: String(e) }))
 
 const shutdown = async (sig: string) => {
   log.info('收到信号，正在退出', { sig })

@@ -149,9 +149,32 @@ export function buildText(msg: NotifyMessage, useSpoiler: boolean): string {
   // 验证码放在 spoiler 内部的首行：点开后第一眼就能看到，
   // 但在通知栏预览和 Telegram 的内容扫描里都不是明文。
   const inner = msg.code ? `🔑 ${msg.code}\n\n${msg.body}` : msg.body
-  const shown = useSpoiler ? `<tg-spoiler>${esc(inner)}</tg-spoiler>` : esc(inner)
-  return `${lines.join('\n')}\n\n💬 ${shown}`
+  const head = lines.join('\n')
+  /*
+   * **裁到 Telegram 的 4096 字符上限以内。**
+   *
+   * 超了不是「发得慢一点」，是 400 Bad Request，而非 429 的 4xx 在这里判的是
+   * retryable=false——也就是**一次性永久失败，那条消息就没了**。
+   * 短信正文上限 4096（protocol.ts），HTML 转义一个 `&` 变五个字符，
+   * 再加上头部几行，4096 是很容易越过去的（实测 4096 个汉字出来 4213 字符）。
+   *
+   * 裁的是 inner 而不是最终串：先算出留给正文的预算，按预算裁**转义前**的原文，
+   * 再包 spoiler 标签。反过来裁最终串会把 `</tg-spoiler>` 切掉半截，
+   * 那条消息连格式都不合法。验证码在正文开头，裁尾巴不影响它。
+   */
+  const wrap = (t: string) => (useSpoiler ? `<tg-spoiler>${t}</tg-spoiler>` : t)
+  let body = inner
+  while (`${head}\n\n💬 ${wrap(esc(body))}`.length > TG_MAX_TEXT && body.length > 0) {
+    // 按超出量估一刀再多切一点，避免一个字符一个字符地退（转义后长度不线性）
+    const over = `${head}\n\n💬 ${wrap(esc(body))}`.length - TG_MAX_TEXT
+    body = body.slice(0, Math.max(0, body.length - Math.max(16, over))) 
+  }
+  if (body !== inner) body += '…（已截断）'
+  return `${head}\n\n💬 ${wrap(esc(body))}`
 }
+
+/** Telegram 单条消息 4096 字符。留 64 给上面那句「已截断」与余量。 */
+const TG_MAX_TEXT = 4096 - 64
 
 /** 每种事件的图标与「谁」那一行的标签。来电写「号码」而不是「发件人」。 */
 const HEAD: Record<'sms' | 'call' | 'notification', { icon: string; label: string; field: string }> = {

@@ -75,6 +75,10 @@ export function proxyBark(upstream: string, req: IncomingMessage, res: ServerRes
     },
     (up) => {
       res.writeHead(up.statusCode ?? 502, up.headers)
+      // 和 static.ts 同一个形状：客户端中途断开时 pipe 不会关掉上游那条连接，
+      // 于是每取消一次就漏一个 socket。两端互相销毁。
+      up.on('error', () => { res.destroy() })
+      res.on('close', () => { up.destroy() })
       up.pipe(res)
     },
   )

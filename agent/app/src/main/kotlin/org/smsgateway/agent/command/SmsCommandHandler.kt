@@ -13,6 +13,7 @@ import org.smsgateway.agent.R
 import org.smsgateway.agent.db.PendingEvent
 import org.smsgateway.agent.location.Locator
 import org.smsgateway.agent.net.ConnState
+import org.smsgateway.agent.net.label
 import org.smsgateway.agent.protocol.Protocol
 import org.smsgateway.agent.sms.SmsSender
 import org.smsgateway.agent.util.Log
@@ -122,6 +123,13 @@ class SmsCommandHandler(private val ctx: Context) {
         is ConnState.Connecting -> ctx.getString(R.string.conn_connecting)
         is ConnState.Waiting -> ctx.getString(R.string.conn_waiting, s.retryInSec)
         is ConnState.Fatal -> ctx.getString(R.string.conn_stopped, s.code)
+        /*
+         * 这条回复恰恰是这个功能存在的理由：「手机联不上服务端了，我还想知道
+         * 它怎么了」。所以被拒的原因必须出现在这条短信里——尤其是时钟偏差，
+         * 那是人回到手机跟前一分钟就能修好的事，而在此之前他完全看不出来。
+         * 直接用 label()：界面、常驻通知、这条短信共用同一句话。
+         */
+        is ConnState.Blocked -> s.label(ctx, App.get().prefs.isPaired)
         ConnState.Idle -> ctx.getString(R.string.conn_idle)
     }
 

@@ -293,6 +293,13 @@ export class MemoryStore implements Store {
 
   async getSetting(k: string) { return this.settings.get(k) ?? null }
   async setSetting(k: string, v: string) { this.settings.set(k, v) }
+  async firstEncryptedSample() { return null }
+  async listUnprocessedEvents(since: number, limit: number) {
+    return [...this.events.values()]
+      .filter((e) => e.matched_rules == null && e.received_at >= since)
+      .sort((a, b) => a.occurred_at - b.occurred_at || a.id.localeCompare(b.id))
+      .slice(0, limit)
+  }
   deviceLogs: DeviceLogRecord[] = []
   async appendDeviceLog(r: DeviceLogRecord) { this.deviceLogs.push(r) }
   async listDeviceLogs(deviceId: string, userId: string, limit: number, offset: number) {

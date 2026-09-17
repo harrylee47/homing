@@ -11,6 +11,8 @@
     <string name="state_connected">已连接</string>
     <string name="state_waiting">等待重连（%1$ds）</string>
     <string name="state_stopped">已停止：%1$s</string>
+    <string name="state_clock_skew">手机时间不对，请打开「设置 → 日期和时间 → 自动确定」</string>
+    <string name="state_blocked">被拒绝：%1$s</string>
 
     <string name="btn_scan">扫码配对</string>
     <string name="or_manual">或者手动填写</string>

@@ -243,6 +243,23 @@ function simSlotOf(v: unknown): number | null {
  * 进程内计数即可：这是硬约束④允许之外的状态，但重启后重置的影响仅是
  * 放宽一次窗口，可以接受。
  */
+/**
+ * 限速表要自己扫地。
+ *
+ * 这几张表原来只写不删：键是 IP，值是一个窗口，窗口过期了条目还在。
+ * 于是内存随「这台机器历史上见过的独立 IP 数」单调上涨——公网可达、
+ * 常年不重启，被扫描器刷一遍就是几十万条（实测约 100 字节/条，
+ * 三张表合计约 300 字节/IP）。
+ *
+ * 限速状态本来就允许丢失（进程一重启就全没了，代价只是放宽一个窗口），
+ * 所以做法很简单：每次写入时顺手扫一遍，把过期的删掉。
+ * outboundWindows 与 core/bot.ts 的两处早就是这么写的，这三张漏了。
+ */
+function pruneExpired<V>(m: Map<string, V>, expiredAt: (v: V) => number, t: number): void {
+  if (m.size < 64) return   // 小表不值当扫，正常使用下永远走不到下面
+  for (const [k, v] of m) if (expiredAt(v) <= t) m.delete(k)
+}
+
 const pairAttempts = new Map<string, { count: number; resetAt: number }>()
 const PAIR_MAX = 10
 const PAIR_WINDOW_MS = 15 * 60 * 1000
@@ -250,6 +267,7 @@ const PAIR_WINDOW_MS = 15 * 60 * 1000
 function rateLimited(ip: string): boolean {
   const rec = pairAttempts.get(ip)
   const t = now()
+  pruneExpired(pairAttempts, (v) => v.resetAt, t)
   if (!rec || t > rec.resetAt) {
     pairAttempts.set(ip, { count: 1, resetAt: t + PAIR_WINDOW_MS })
     return false
@@ -386,6 +404,12 @@ async function noteCredentialFail(
   deps: ApiDeps, ip: string, opts: { userId: string | null | undefined; detail: string },
 ): Promise<void> {
   const c = (loginFails.get(ip)?.count ?? 0) + 1
+  /*
+   * 这张表的清理要按**锁定到期**算，不能按「有没有 until」算：
+   * 没到 5 次时 until 是 0，那些条目也该在锁定窗口之后被扫掉，
+   * 否则每个来敲过一次门的 IP 都会永久留下一条。
+   */
+  pruneExpired(loginFails, (v) => (v.until || 0) + LOGIN_LOCKOUT_MS, now())
   loginFails.set(ip, { count: c, until: c >= LOGIN_MAX_ATTEMPTS ? now() + LOGIN_LOCKOUT_MS : 0 })
   await deps.store.audit({
     user_id: opts.userId ?? null, actor: null, action: 'auth.fail',
@@ -1466,6 +1490,7 @@ const REG_WINDOW_MS = 15 * 60 * 1000
 function regLimited(ip: string): boolean {
   const r = regAttempts.get(ip)
   const t = now()
+  pruneExpired(regAttempts, (v) => v.until, t)
   if (r && t < r.until) {
     if (r.n >= REG_MAX) return true
     r.n++
@@ -2111,8 +2136,36 @@ route('POST', '/api/channels/telegram/discover-chat', async ({ user, res, body }
   })
 })
 
-route('DELETE', '/api/channels/:id', async ({ user, res, params, deps, ip }) => {
+route('DELETE', '/api/channels/:id', async ({ user, res, params, deps, ip, url }) => {
   const c = await deps.store.getChannel(params.id!, user.id)
+  /*
+   * **被规则引用着就不让删**，照「删设备被引用时拒绝并说清是谁」那套来。
+   *
+   * 悄悄删掉的后果是这台机器上最隐蔽的一种漏报：事件正常入库、规则正常命中，
+   * 只是推送目标不存在了——控制台上一切正常，验证码一条都收不到，
+   * 而且连告警都不会有（告警本身也要走渠道）。
+   *
+   * 规则页上那个 dangling 徽章只是**稳态**的提示。按仓库里那条
+   * 「三个路口都要拦一下」的原则，删除这一刻正是最该拦的那个路口——
+   * 此时人就在界面前，改规则只要两下；等到验证码没来才发现，中间可能是几天。
+   *
+   * `?force=1` 是给「我就是要删」的出口：一并把它从那些规则里摘掉。
+   */
+  const force = url.searchParams.get('force') === '1'
+  const using = (await deps.store.listRules(user.id))
+    .filter((r) => r.enabled && (JSON.parse(r.action_json) as { channels?: string[] }).channels?.includes(params.id!))
+  if (using.length > 0 && !force) {
+    return json(res, 409, {
+      error: `还有规则在用这条渠道：${using.map((r) => r.name).join('、')}。`
+        + '删掉之后这些规则命中时会一条都推不出去，而且不会有任何提示。',
+      rules: using.map((r) => ({ id: r.id, name: r.name })),
+    })
+  }
+  for (const r of using) {
+    const act = JSON.parse(r.action_json) as { channels?: string[] }
+    act.channels = (act.channels ?? []).filter((x) => x !== params.id!)
+    await deps.store.upsertRule({ ...r, action_json: JSON.stringify(act) })
+  }
   await deps.store.deleteChannel(params.id!, user.id)
   // 删除必须留痕：渠道没了等于通知全断，而这种故障是静默的
   await deps.store.audit({
@@ -2895,6 +2948,33 @@ route('POST', '/api/notify-capture', async ({ user, res, body, deps, ip }) => {
  * 实时捕获只能看见「启用之后」发生的事，装网关之前的记录躺在手机本地。
  * 导入的记录只归档不推送——几千条旧短信照常推送就是几千条通知。
  */
+/**
+ * 这一批导进来的历史，会不会一进来就被保留上限删掉。
+ *
+ * 导入的 `occurred_at` 是短信原本的时间，在「保留最新 N 条」的排序里必然排在最末——
+ * **第一批被删的就是它们**，而整条链上没有一处会告诉用户：导入接口返回的是
+ * 「手机读了多少条」，清理只写服务端日志，导入的事件又只归档不推送。
+ * 用户看到「导入成功 3000 条」，一两小时后列表里什么都没多，
+ * 他会认为是网关把他的历史弄丢了。
+ *
+ * **两条路径都要走这一道**：手动导入，以及「与手机对齐」——后者内部同样会
+ * importHistory，而且 limit 上限是 20000，原来完全没有这道拦截。
+ */
+async function retentionConflicts(
+  deps: ApiDeps, userId: string, limit: number,
+): Promise<Record<string, { limit: number; count: number }>> {
+  const cfg = parseRetention(await deps.store.getUserSetting(userId, RETENTION_SETTING))
+  const conflicts: Record<string, { limit: number; count: number }> = {}
+  for (const kind of RETAINABLE_KINDS) {
+    if (kind === 'notification') continue     // 导入只涉及短信与通话
+    if (cfg[kind] <= 0) continue
+    const count = await deps.store.countEventsByKind(userId, kind)
+    // 已经顶到上限，或者这一批导进来必然溢出
+    if (count + limit > cfg[kind]) conflicts[kind] = { limit: cfg[kind], count }
+  }
+  return conflicts
+}
+
 route('POST', '/api/devices/:id/import-history', async ({ user, res, params, body, deps, ip }) => {
   if (!deps.importHistory) return json(res, 500, { error: '未接入' })
   if (!(await ownedDevice(deps, user.id, params.id!))) return json(res, 404, { error: '设备不存在' })
@@ -2916,15 +2996,7 @@ route('POST', '/api/devices/:id/import-history', async ({ user, res, params, bod
    * 所以在**下发指令之前**拦一道，协议和保留上限那边保持一致：
    * 有冲突就回 409 带上数字，界面问过人再带 confirm 来。
    */
-  const cfg = parseRetention(await deps.store.getUserSetting(user.id, RETENTION_SETTING))
-  const conflicts: Record<string, { limit: number; count: number }> = {}
-  for (const kind of RETAINABLE_KINDS) {
-    if (kind === 'notification') continue     // 导入只涉及短信与通话
-    if (cfg[kind] <= 0) continue
-    const count = await deps.store.countEventsByKind(user.id, kind)
-    // 已经顶到上限，或者这一批导进来必然溢出
-    if (count + limit > cfg[kind]) conflicts[kind] = { limit: cfg[kind], count }
-  }
+  const conflicts = await retentionConflicts(deps, user.id, limit)
   if (Object.keys(conflicts).length > 0 && (b as { confirm?: boolean })?.confirm !== true) {
     return json(res, 409, {
       error: '导入的历史记录会被保留上限删掉',
@@ -2958,6 +3030,22 @@ route('POST', '/api/devices/:id/reconcile', async ({ user, res, params, body, de
   const since = Number.isFinite(days) && days > 0 ? now() - days * 86_400_000 : null
   const limit = Math.min(Math.max(Number(b?.limit) || 2000, 1), 20000)
   const id = params.id!
+
+  /*
+   * 对齐也会导历史进来，所以同样要先问保留上限这一道。
+   *
+   * 原来只有手动导入那条路挡着，对齐这条完全没有——而它的 limit 上限是 20000，
+   * 比导入还高。后果是个来回打转的循环：对齐把历史补进来 → 一小时后被保留上限
+   * 从最旧的开始删掉 → 下次再对齐又原样导一遍，而用户全程看不出发生了什么。
+   * **预览那一次就要拦**：预览本身就已经把历史导进库里了，等到 apply 才问已经晚了。
+   */
+  const conflicts = await retentionConflicts(deps, user.id, limit)
+  if (Object.keys(conflicts).length > 0 && (b as { confirm?: boolean })?.confirm !== true) {
+    return json(res, 409, {
+      error: '对齐会把手机上的历史补进来，而它们会被保留上限删掉',
+      retention_conflict: conflicts,
+    })
+  }
 
   // 第一步：把手机上有、网关没有的补进来（只归档不推送，见 HistoryImporter）
   const imp = await deps.importHistory(id, since, limit)
@@ -3744,7 +3832,30 @@ route('GET', '/api/threads/:key', async ({ user, res, params, url, deps }) => {
 
 // ── 分发 ────────────────────────────────────────────────────
 
+/**
+ * **这个函数的契约是「不抛」。**
+ *
+ * 调用方是 `void handleApi(...).then(...)`，一旦 promise 被 reject 就没人接，
+ * 表现是**请求永远不返回**：界面一直转圈、没有错误码，日志里只有一条
+ * 「未捕获的 Promise rejection」指向完全错误的方向，每条这样的请求还各占
+ * 一个 socket 直到客户端超时。
+ *
+ * 下面那个 `decodeURIComponent` 曾经栽过一次，当时只补了那一个调用点。
+ * 真正会被撞上的却是另一半：**磁盘写满时 `checkAuth` 里的会话续期写库失败**，
+ * 于是每一个带会话的接口同时挂死，而 `/api/health` 照样 200、容器照样 healthy。
+ * 所以现在整个函数体包在一层 try 里，异常一律落成 500 + 一条带路径的日志。
+ */
 export async function handleApi(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Promise<boolean> {
+  try {
+    return await handleApiInner(req, res, deps)
+  } catch (e) {
+    log.error('API 未处理异常', { path: req.url, method: req.method, error: String(e) })
+    if (!res.headersSent) json(res, 500, { error: 'internal error' })
+    return true
+  }
+}
+
+async function handleApiInner(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Promise<boolean> {
   const url = new URL(req.url ?? '/', 'http://localhost')
   if (!url.pathname.startsWith('/api/')) return false
 
@@ -3758,6 +3869,39 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
   if (!match.setup && !(await isInitialized(deps.store))) {
     json(res, 403, { error: '服务端尚未完成初始化，请先访问控制台完成配置向导' })
     return true
+  }
+
+  /*
+   * **向导也要一份凭证。**
+   *
+   * 从容器起来、到机主在浏览器里点完向导为止，这台网关是**谁先到就归谁**的：
+   * 连发两个 POST 就成了第一个管理员（能建号、停用、重置任何人的口令）。
+   * 而它不是「没人知道」——一键脚本默认用 `<ip>.sslip.io`，Caddy 一签到证书
+   * 这个主机名就被写进公开的 Certificate Transparency 日志，crt.sh 与
+   * certstream 是实时的，等于对外广播「这里刚起来一台空网关」。
+   * 而 README 的流程要求先去云控制台改安全组、再去手机上装 App，
+   * 这个窗口经常不是几分钟而是几小时。被抢之后机主看到的是登录页而不是向导，
+   * 多半会以为自己记错了口令。
+   *
+   * 凭证用现成的 `data/admin.token`（首启生成，600 权限，日志里已脱敏）——
+   * 拿得到这台机器的人才有。install.sh 会在最后把它打出来，
+   * 手装的看一条 docker exec 命令。只在第一次装的时候粘一次。
+   *
+   * `/api/setup/status` 不在此列：向导页要靠它决定画什么，
+   * 而它只回答「装没装过」，门已经在这里了。
+   */
+  if (match.setup && url.pathname !== '/api/setup/status') {
+    if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' }), true
+    const presented = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
+    if (!presented || !timingSafeEqual(presented, deps.adminToken)) {
+      json(res, 403, {
+        error: '安装口令不对。它在服务器上的 data/admin.token 里；'
+          + '一键安装的话脚本最后已经打出来过，手装的话运行 '
+          + 'docker compose exec gateway cat /data/admin.token',
+        need_setup_token: true,
+      })
+      return true
+    }
   }
 
   let user = ANON
@@ -3852,7 +3996,16 @@ async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string, scope:
     // 只在登录处判是不够的：会话最长 30 天且每次访问滑动顺延，
     // 到期那一刻用户手里多半正攥着一个有效会话
     if (!userActive(owner, now())) return null
+    /*
+     * **滑动续期写失败不该炸掉整条鉴权。**
+     *
+     * 这是一次纯粹为了「用着用着不掉线」的写。磁盘写满、卷变只读时它会抛，
+     * 而它排在每一个带会话的请求最前面——于是整个控制台同时失效，
+     * 表现却只是「一直转圈」。续期没成功最多让这个会话早一点过期，
+     * 而当下这次请求本来是完全可以正常伺候的。
+     */
     await deps.store.touchSession(sess.token_hash, t + (sess.trusted ? TRUSTED_SESSION_TTL_MS : SESSION_TTL_MS))
+      .catch((e) => { log.warn('会话续期失败，本次请求照常放行', { error: String(e) }) })
     return owner
   }
 

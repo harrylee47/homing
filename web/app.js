@@ -31,11 +31,17 @@ const setToken = (t) => {
 
 // ── API ─────────────────────────────────────────────────────
 
+/** 首次配置向导用的安装口令。只在内存里活一趟，走完就丢。 */
+let setupToken = ''
+
 async function api(path, opts = {}) {
   const res = await fetch(`/api${path}`, {
     method: opts.method || 'GET',
     headers: {
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      // 向导那两步用的是「安装口令」（服务器上的 data/admin.token），
+      // 此时还没有任何会话。它只活在内存里，走完向导就丢。
+      ...(setupToken && path.startsWith('/setup/') ? { authorization: `Bearer ${setupToken}` }
+        : token ? { authorization: `Bearer ${token}` } : {}),
       ...(opts.body ? { 'content-type': 'application/json' } : {}),
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -596,6 +602,12 @@ async function setup() {
     <div class="steps"><div class="on"></div><div id="s2"></div></div>
     <div class="card">
       <p class="muted">这台服务器将存放你的全部短信内容，包括银行验证码。先建一个管理员账号。</p>
+      <label>安装口令</label>
+      <input id="setuptok" autocomplete="off" placeholder="从服务器上取，只用这一次">
+      <div class="muted">这道门是为了防止别人赶在你前面把这台网关注册成他的——
+      新签的证书会被记进公开日志，等于对外广播「这里刚起来一台空网关」。<br>
+      一键安装的话，脚本最后已经把它打出来了；手装的话在服务器上运行
+      <code>docker compose exec gateway cat /data/admin.token</code>。</div>
       <label>用户名</label>
       <input id="name" value="admin" autocomplete="username">
       <div class="muted">字母、数字、- 和 _，2–24 个字符。之后可以再建别的账号，
@@ -615,6 +627,10 @@ async function setup() {
     if (bad) return ($('#err').textContent = bad)
     $('#next').disabled = true
     try {
+      // 安装口令只在这一趟用，不落 localStorage：它是机器的应急凭证，
+      // 不该留在浏览器里
+      setupToken = $('#setuptok').value.trim()
+      if (!setupToken) { $('#next').disabled = false; return ($('#err').textContent = '请先填安装口令') }
       const r = await api('/setup/password', {
         method: 'POST', body: { password: pw, name: $('#name').value.trim() }, allow404: true,
       })
@@ -3278,10 +3294,39 @@ function channelEditor(c, bark) {
 
   $('#c_del').onclick = async () => {
     if (!confirm(`删除渠道「${c.name}」？命中它的规则将不再推送到这里。`)) return
-    await api(`/channels/${c.id}`, { method: 'DELETE' })
+    try {
+      await api(`/channels/${c.id}`, { method: 'DELETE' })
+    } catch (e) {
+      /*
+       * 服务端在「还有规则在用它」时回 409。这不是错误提示就完事——
+       * 直接删掉的后果是那些规则命中时**一条都推不出去，而且毫无提示**，
+       * 所以这里要么把规则改掉，要么由用户明确同意「连规则里的引用一起摘掉」。
+       */
+      if (!/还有规则在用这条渠道/.test(e.message)) { toast(e.message); return }
+      if (!confirm(`${e.message}\n\n确定 = 一并把它从这些规则里摘掉再删\n取消 = 先去规则里改`)) return
+      await api(`/channels/${c.id}?force=1`, { method: 'DELETE' })
+    }
     toast('已删除')
     go('/channels')
   }
+}
+
+/**
+ * 「导进来的历史会被保留上限删掉」这道确认。
+ *
+ * 手动导入与「与手机对齐」两条路都会走到，所以抽出来——两处各抄一份的代价
+ * 不是重复，是漂移：哪天文案或判据改了只会改到一处。
+ *
+ * @returns true 表示用户同意继续（调用方带 confirm:true 重来一次）；
+ *          false 表示取消，或者这个错误压根不是保留上限冲突（此时调用方应当原样抛出）。
+ */
+function askRetention(e) {
+  const c = e.data?.retention_conflict
+  if (!c) return false
+  const lines = Object.entries(c)
+    .map(([k, v]) => `${KIND_CN[k] || k}上限 ${v.limit} 条，现有 ${v.count} 条`).join('；')
+  return confirm(`你设了保留上限（${lines}），补进来的旧记录会在下一轮清理时被删掉。\n\n`
+    + `要保住它们，先到「设置 → 消息保留上限」调高或改成不限制。\n\n仍然继续吗？`)
 }
 
 /**
@@ -3581,15 +3626,13 @@ async function devices() {
            * 排序里必然排最末——第一批被删的就是它们。不拦这一道的话，
            * 用户看到「导入成功 3000 条」，一两小时后列表里什么都没多。
            */
-          const c = e.data?.retention_conflict
-          if (!c) throw e
-          const lines = Object.entries(c)
-            .map(([k, v]) => `${KIND_CN[k] || k}上限 ${v.limit} 条，现有 ${v.count} 条`).join('；')
-          if (!confirm(`你设了保留上限（${lines}），导进来的旧记录会在下一轮清理时被删掉。\n\n`
-            + `要保住它们，先到「设置 → 消息保留上限」调高或改成不限制。\n\n仍然继续导入吗？`)) {
-            $('#imp_out').innerHTML = '<span class="muted">已取消。到「设置 → 消息保留上限」调整后再来。</span>'
-            impGo.disabled = false
-            return
+          if (!askRetention(e)) {
+            if (e.data?.retention_conflict) {
+              $('#imp_out').innerHTML = '<span class="muted">已取消。到「设置 → 消息保留上限」调整后再来。</span>'
+              impGo.disabled = false
+              return
+            }
+            throw e
           }
           r = await api(`/devices/${$('#imp_dev').value}/import-history`, {
             method: 'POST', body: { ...body, confirm: true },
@@ -3617,7 +3660,15 @@ async function devices() {
       recGo.disabled = true
       $('#imp_out').textContent = '正在比对手机上的记录…'
       try {
-        const plan = await api(`/devices/${dev}/reconcile`, { method: 'POST', body: { days, limit } })
+        let plan
+        try {
+          plan = await api(`/devices/${dev}/reconcile`, { method: 'POST', body: { days, limit } })
+        } catch (e) {
+          // 对齐同样会把历史补进来，服务端在**预览这一步**就会拦——
+          // 预览本身已经导过一次了，等到 apply 才问就晚了
+          if (!askRetention(e)) throw e
+          plan = await api(`/devices/${dev}/reconcile`, { method: 'POST', body: { days, limit, confirm: true } })
+        }
         const imp = plan.imported || {}
         const range = plan.window
           ? `${fmtDate(plan.window.since)} 到 ${fmtDate(plan.window.until)}`
@@ -3646,7 +3697,7 @@ async function devices() {
           return
         }
 
-        const r = await api(`/devices/${dev}/reconcile`, { method: 'POST', body: { days, limit, apply: true } })
+        const r = await api(`/devices/${dev}/reconcile`, { method: 'POST', body: { days, limit, apply: true, confirm: true } })
         $('#imp_out').innerHTML =
           `对齐完成：从手机读取 <b>${(r.imported?.sms ?? 0) + (r.imported?.calls ?? 0)}</b> 条（重复的自动跳过），` +
           `删除手机上已不存在的 <b>${r.deleted}</b> 条。`

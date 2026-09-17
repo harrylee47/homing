@@ -122,6 +122,32 @@ export class ProviderError extends Error {
  *
  * 读不出来就返回 null，交给调用方走默认退避——猜一个数比不猜更糟。
  */
+/**
+ * 按 **UTF-8 字节数**裁剪，不按字符数。
+ *
+ * 推送服务的上限普遍是按字节算的（ntfy 默认 4096 字节、APNs 载荷 4KB），
+ * 而一个汉字是三个字节——按字符裁会让中文短信在「看起来才一千多字」的时候
+ * 就被对方 4xx 拒掉，而这类拒绝在 telegram.ts / ntfy.ts 里都判成不可重试，
+ * 也就是**那条验证码永久丢了**。裁尾巴不影响验证码：它在正文开头。
+ *
+ * 不会把一个字符切成半个：逐字符累加字节数，放不下就停。
+ */
+export function clipBytes(s: string, maxBytes: number): string {
+  const enc = new TextEncoder()
+  if (enc.encode(s).length <= maxBytes) return s
+  const mark = '…（已截断）'
+  const budget = maxBytes - enc.encode(mark).length
+  let n = 0
+  let out = ''
+  for (const ch of s) {
+    const w = enc.encode(ch).length
+    if (n + w > budget) break
+    n += w
+    out += ch
+  }
+  return out + mark
+}
+
 export function retryAfterMsOf(res: Response, body?: string): number | null {
   const header = res.headers.get('retry-after')
   if (header) {

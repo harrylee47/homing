@@ -26,6 +26,9 @@
     <string name="state_connected">Connected</string>
     <string name="state_waiting">Reconnecting in %1$ds</string>
     <string name="state_stopped">Stopped: %1$s</string>
+    <!-- 时钟偏差：站在手机跟前的人唯一能自己修好的那一类，所以话要说到能照做 -->
+    <string name="state_clock_skew">Phone clock is off — open Settings › Date &amp; time › Set automatically</string>
+    <string name="state_blocked">Rejected: %1$s</string>
 
     <!-- 配对 -->
     <string name="btn_scan">Scan to pair</string>

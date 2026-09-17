@@ -65,6 +65,10 @@ class MainActivity : AppCompatActivity() {
         else toast(getString(R.string.toast_perms_denied, denied.joinToString { it.substringAfterLast('.') }))
         // 前台定位到手之后才谈得上后台定位，见 requestBackgroundLocation()
         requestBackgroundLocation()
+        // 权限刚到手：两个内容观察器是在 onCreate 里启动的，那时候一个权限
+        // 都没有，而授权不会重启进程——不在这里补一次，去电与已发送短信
+        // 就永远不会被捕获，且一声不吭
+        App.get().startObservers()
         render(lastState, lastPending)
     }
 
@@ -99,6 +103,19 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted) launchScanner() else toast(getString(R.string.toast_no_camera))
+    }
+
+    /**
+     * 回到前台时补启动两个内容观察器。
+     *
+     * 权限不一定是在这个界面里给的：通知使用权要跳去系统设置、后台定位在
+     * Android 11+ 也会被丢到设置页里，两者都不会回调 permLauncher。
+     * onResume 是唯一能可靠察觉「他刚在外面把权限给上了」的时机，
+     * 而两个 start() 都是幂等的，白调一次没有代价。
+     */
+    override fun onResume() {
+        super.onResume()
+        App.get().startObservers()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -189,6 +206,8 @@ class MainActivity : AppCompatActivity() {
         val chip = when (s) {
             is ConnState.Connected -> R.color.brand_mint
             is ConnState.Fatal -> R.color.brand_pink
+            // 会一直重试，但要人动手才好得了——按失败色标，不能和「正在连」混为一谈
+            is ConnState.Blocked -> R.color.brand_pink
             is ConnState.Connecting, is ConnState.Waiting -> R.color.brand_yellow
             is ConnState.Idle -> R.color.brand_bg
         }

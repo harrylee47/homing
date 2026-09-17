@@ -115,9 +115,10 @@ class App : Application() {
         initKeepAlive()
 
         // 捕获本机发出的短信。没有「已发送」广播，只能监听短信库变化。
-        sentObserver = SentSmsObserver(this).also { it.start() }
+        sentObserver = SentSmsObserver(this)
         // 去电同理：NEW_OUTGOING_CALL 从 Android 10 起只发给默认拨号应用
-        callObserver = CallLogObserver(this).also { it.start() }
+        callObserver = CallLogObserver(this)
+        startObservers()
 
         if (prefs.isPaired) ws.start()
 
@@ -196,6 +197,24 @@ class App : Application() {
             setOnePixEnabled(false)
             addCallback({ Log.d("保活 onStop") }) { Log.d("保活 doWork") }
         }
+    }
+
+    /**
+     * 启动（或补启动）两个内容观察器。**权限到手之后必须再喊一次。**
+     *
+     * 它们第一次被启动是在 onCreate 里，而那时候一个权限都还没给——
+     * 全新安装的人是先点开 App、再在界面上点「申请权限」的，
+     * 而授予运行时权限**不会重启进程**。没有这一下补启动，
+     * 去电就永远不上报、已发送短信也永远不捕获，两者都零报错。
+     *
+     * 两个 start() 自己是幂等的，所以这里可以随便调（MainActivity 的
+     * 权限回调与每次 onResume 各调一次——通知使用权、后台定位这类要跳出
+     * App 去授予的权限，onResume 是唯一能可靠察觉到的时机）。
+     */
+    fun startObservers() {
+        if (!ProcessUtil.isMainProcess(this)) return
+        sentObserver?.start()
+        callObserver?.start()
     }
 
     companion object {

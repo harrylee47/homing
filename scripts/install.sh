@@ -119,6 +119,11 @@ port_busy() {
   elif command -v netstat >/dev/null 2>&1; then
     netstat -tln 2>/dev/null | grep -qE "[:.]$1[[:space:]]"
   else
+    # 两个都没有（精简镜像、最小化安装的系统上很常见）。
+    # **不能直接 return 1**——那等于向用户报告「端口空闲」，而实际可能正被占着：
+    # 装完 Caddy 绑不上 80，而脚本的诊断会把人指向「安全组没放行」，
+    # 怎么改安全组都没用。用 bash 自己的 /dev/tcp 连一下，连得上就是有人在听。
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&-; return 0; }
     return 1
   fi
 }
@@ -207,6 +212,16 @@ if [[ -f "$ENV_FILE" ]] && grep -q '^GW_DEK=' "$ENV_FILE" 2>/dev/null; then
     c_ok "对外地址已更新为 $BASE_URL"
   fi
 else
+  # 旁边已经有一个装满密文的库，却没有密钥——这时候生成一把新的等于毁档。
+  # 最典型的走法是「把 data/ 备份恢复到一台新 VPS，然后照 README 再跑一遍脚本」，
+  # 以及「.env 被改坏或被删了一行」。网关自己在启动时也会拦（它记着密钥指纹），
+  # 但在这里拦住更好：那时候人已经装完了，还得去翻容器日志才知道为什么起不来。
+  if [[ -f "$DIR/data/gateway.db" ]]; then
+    die "$DIR/data 下已经有数据库，但 .env 里没有 GW_DEK。
+     继续下去会生成一把新密钥，而那个库里的短信和渠道凭证是用**原来那把**加密的，
+     换了就再也解不开。请把原来的 GW_DEK 填回 $ENV_FILE；
+     确认要从零开始的话，先把 $DIR/data/gateway.db 挪走。"
+  fi
   DEK=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
   if [[ $DRY_RUN == 1 ]]; then
     printf '   [dry-run] 写入 %s（含新生成的 GW_DEK）\n' "$ENV_FILE"
@@ -342,13 +357,24 @@ fi
 
 step "装好了"
 
+# 安装口令：首次配置向导要用它，防止别人赶在机主前面把这台网关注册成他的。
+# 一键路径上人就在终端前，直接打出来最省事——手装的那条路在 README 里写了命令。
+SETUP_TOKEN=""
+if [[ $DRY_RUN == 0 ]]; then
+  SETUP_TOKEN=$(cd "$DIR" && docker compose -f docker-compose.deploy.yml exec -T gateway \
+    cat /data/admin.token 2>/dev/null | tr -d '\r\n' || true)
+fi
+
 cat <<EOF
 
   控制台地址   ${BASE_URL}
   Agent 地址   wss://${DOMAIN}/ws   （手机配对时用，控制台会给二维码，不用手打）
 
+  安装口令     ${SETUP_TOKEN:-（取不到，运行：cd $DIR && docker compose -f docker-compose.deploy.yml exec gateway cat /data/admin.token）}
+               ↑ 只在第一次打开控制台时粘一次，用来证明你是这台机器的主人
+
   接下来：
-    1. 用手机或电脑浏览器打开控制台，按向导设置口令与两步验证
+    1. 用手机或电脑浏览器打开控制台，粘上面那串安装口令，按向导设置口令与两步验证
     2. 在「设备」页生成配对码，用手机 App 扫码配对
     3. 在「渠道」页加一个 Telegram 或 Bark
 

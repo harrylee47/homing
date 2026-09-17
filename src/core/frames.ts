@@ -81,10 +81,25 @@ function parseWith<S extends z.ZodType<{ ts: number }>>(
   // 时钟窗口校验，抵御重放（计划 §6.4）
   const skew = Math.abs(now - parsed.data.ts)
   if (skew > CLOCK_SKEW_TOLERANCE_MS) {
+    /*
+     * **话要说到人能照着做。**
+     *
+     * 这条拒绝最常见的来由不是攻击，而是「翻出来的备用机没插卡、没开自动校时，
+     * 或者长期断电之后 RTC 归零」——凭证、网络、域名全是对的，就是连不上。
+     * 只说「时间戳偏移 600s」的话，站在手机跟前的人不知道该动哪里；
+     * 说清「快了还是慢了」和「去哪儿开自动校时」，他一分钟就能修好。
+     *
+     * **不做自动补偿。** 这道窗口本身就是抵御重放的，按对方报的时间去校准
+     * 等于把它关掉。
+     */
+    const fast = parsed.data.ts > now
+    const mins = Math.round(skew / 60_000)
     return {
       ok: false,
       code: ErrorCode.CLOCK_SKEW,
-      message: `时间戳偏移 ${Math.round(skew / 1000)}s，超出 ${CLOCK_SKEW_TOLERANCE_MS / 1000}s 容忍范围`,
+      message: `手机时间比服务端${fast ? '快' : '慢'}约 ${mins} 分钟`
+        + `（超出 ${CLOCK_SKEW_TOLERANCE_MS / 60_000} 分钟容忍范围）。`
+        + '请在手机上打开「设置 → 日期和时间 → 自动确定」。',
     }
   }
 
