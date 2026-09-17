@@ -277,6 +277,23 @@ M0 技术验证 → M1 最小闭环 → M2 下行发送 → M3 Web 控制台 →
 
 明文策略：`main` 源集的 network_security_config 完全禁止明文；`debug` 源集单独放行本地开发地址。release 构建不受影响。
 
+**常驻的那台手机上装 release，不装 debug。** debug 包 `android:debuggable=true`，
+任何能敲 adb 的人一条 `run-as org.smsgateway.agent.debug` 就能读到它的 shared_prefs——
+里面是 `token`（设备长期凭证，足以冒充这台手机连网关）和 `sms_command`
+（短信指令口令，足以让人短信定位它）。而这台手机的处境恰恰是**开着无线调试、
+常年无人看管**。同一条命令在 release 上是 `package not debuggable`。
+
+过去把 debug 留在手机上的理由是「出问题要能掏日志、堆栈要看得懂」。两条都已经被替代：
+日志走 `get_logs`（控制台设备页「取 Agent 日志」，脱敏在 `util/Log.kt` 里做），
+堆栈靠 `agent/mapping/` 存下来的 R8 映射还原。debug 仍然留在**模拟器**上——
+那里需要明文连本地开发服务、需要 `run-as` 灌 prefs 造场景。
+
+包名不同（debug 带 `.debug` 后缀），所以两者互不覆盖，切换等于**重新配对**：
+新的 `device_id`、权限重授、通知使用权重开。连带要改的是**按设备绑定的东西**——
+计划任务的 `device_id`、规则的 `match.device_ids`。旧设备记录**吊销但不删**，
+历史消息还挂在它名下（`pipeline.ts` 只把未吊销的算进「多设备」判断，
+所以留着不会让通知平白多出设备名后缀）。
+
 ## 短信指令（Agent 上唯一落盘的业务配置）
 
 「手机联不上服务端了，我还想知道它怎么了」——这个功能的全部意义在此，所以它必须在手机本地
