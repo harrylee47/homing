@@ -20,8 +20,8 @@ android {
         // 这个 versionName，同一个号对应两份不同的二进制，「他装的到底是哪一版」
         // 就再也答不上来了。换包时 web/download/homing.apk、agent/mapping/ 下的
         // 混淆映射与 SHIPPED.txt 要一起换（见 CLAUDE.md「开源仓库」那节）。
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
     }
 
     /**

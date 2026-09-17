@@ -163,11 +163,33 @@ class App : Application() {
      *
      * 配置参考 SmsForwarder（BSD 2-Clause, Copyright (c) 2021 pppscn）
      * app/src/main/kotlin/cn/ppps/forwarder/App.kt 中的 Cactus 初始化，
-     * 去掉了无声音乐与一像素 Activity：
-     *  - 无声音乐持续占用音频焦点，会干扰正常使用，且本机 Android 12 上收益有限
-     *  - 一像素 Activity 仅在 Android 9 以下生效，目标机是 Android 12
+     * 现在**四项全开**，和上游实际跑起来的样子一致：
+     * 双进程前台服务 + JobScheduler + WorkManager 互拉 + 无声音乐 + 一像素。
      *
-     * 保留的是 Cactus 的核心机制：双进程前台服务 + JobScheduler + WorkManager 互拉。
+     * 这里曾经写着「去掉了无声音乐与一像素」并给了两条理由，**两条都是错的**，
+     * 2026-09-18 逐条查过（反编译 AAR + 模拟器 A/B 实测）：
+     *
+     *  - 「无声音乐持续占用音频焦点，会干扰正常使用」——**假**。Cactus 的 68 个
+     *    class 里 `requestAudioFocus` 出现 0 次，它只是 `MediaPlayer.setVolume(0,0)`
+     *    放一段静音 mp3，抢不走任何东西，也打断不了用户正在听的歌。
+     *  - 「一像素仅在 Android 9 以下生效，目标机是 Android 12」——前半句对，但
+     *    结论反了：Cactus 内部就写着 `SDK_INT >= 28 直接 return`，所以在 Android 12 上
+     *    `setOnePixEnabled(false)` 是**彻底的 no-op**，关掉它一分钱都省不到；
+     *    真正被关掉的是 API 24–27 那些机器上还会跑的那一招，而 minSdk=24、
+     *    产品的前提正是「翻一台闲置旧机」。
+     *
+     * 后来替换上去的那条「华为/小米/OPPO 的耗电统计会标成后台播放音频」同样
+     * **查不到任何依据**，是个听起来合理但没人验证过的说法。
+     *
+     * 已知的真实账（实测）：开着音乐时系统会给这个 uid 记一条 `AudioMix` partial
+     * wakelock，覆盖约 94% 的播放时长；而这台手机常年熄屏，等于全天候持有。
+     * 在 **AOSP** 上它换不来任何进程优先级——前台服务已经把 `oom_score_adj` 摁到
+     * 200，开与不开的 adj、procstate、adjType 三项完全相同。
+     *
+     * **但那不是这一招被认为有用的地方。** 华为/小米/OPPO 自家的清理守护进程会不会
+     * 对「正在放音频」的进程网开一面，两个方向都没有证据——而那恰恰是唯一可能
+     * 有收益的一层。既然代价是「常年插电的机器上多一条 wakelock」，而上游几百万
+     * 装机量跑的就是开着的配置（且运营者自己用它时体感确实更稳），这个赌注划算。
      */
     private fun initKeepAlive() {
         val flags = if (Build.VERSION.SDK_INT >= 30) PendingIntent.FLAG_IMMUTABLE
@@ -185,16 +207,24 @@ class App : Application() {
             setPendingIntent(pi)
             setCrashRestartUIEnabled(true)
             /*
-             * 上面那段注释说「去掉了无声音乐与一像素 Activity」，但**光写注释不算数**：
-             * Cactus 这两项默认都是开的，不显式关掉就一直在跑。
+             * **这四行全部显式写出来，哪怕值和 Cactus 的默认值一样。**
              *
-             * 无声音乐的实际代价落在 ROM 上：华为、小米、OPPO 的耗电统计会把这个 App
-             * 标成「后台播放音频」，用户据此去限制它——而那恰好等于关掉保活，
-             * 正是我们最不想要的结果。
-             * （那个 440KB 的 mp3 打在 Cactus 的 AAR 里，关掉播放不会让它从包里消失。）
+             * 这里栽过一次：M0 的注释写着「去掉了无声音乐与一像素」，而代码里一个
+             * setter 都没有——Cactus 这两项默认就是 true，于是注释和现实整整半年
+             * 是反的，没人看得出来。依赖隐式默认值 = 把一个会变的东西当成不会变的。
+             *
+             * `setMusicInterval` 的单位是**毫秒**，不是秒：它原样写进
+             * `DefaultConfig.repeatInterval`，消费处是 `Handler.postDelayed(r, 那个值)`。
+             * 上游传的 `10` 因此是 10 毫秒而不是 10 秒——也就是说上游实际跑的是
+             * 连续循环。这里写 0（Cactus 的默认值，语义同样是「放完立刻再放」），
+             * 与上游的实际行为一致。那段 mp3 长 26.46 秒。
+             *
+             * 那个 439,659 字节的 mp3 无论开关都打在包里（占出货 APK 的 15%），
+             * 所以「关掉它能瘦身」也是不成立的。
              */
-            setMusicEnabled(false)
-            setOnePixEnabled(false)
+            setMusicEnabled(true)
+            setMusicInterval(0L)
+            setOnePixEnabled(true)
             addCallback({ Log.d("保活 onStop") }) { Log.d("保活 doWork") }
         }
     }
