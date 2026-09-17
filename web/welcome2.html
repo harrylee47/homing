@@ -23,6 +23,19 @@
 -->
 <script src="/welcome2.js"></script>
 <style>
+  /*
+   * 肤色。style.css 的调色板里没有这一项，因为控制台里不画人。
+   * 但落地页里画——而**白色的脸和白色的手**正是真人反馈里反复指着问
+   * 「这一块是什么」的根源：它跟卡片、跟纸、跟手机机身全都是同一个 --card。
+   * 一个暖米色在两套主题下都成立：浅色底上和纸区分得开，深色底上自己发亮。
+   * 它是「物体的颜色」不是「界面的颜色」，所以不跟主题走。
+   */
+  :root {
+    --skin: #f3d2ad;
+    /* 五官与指缝要**永远是深色**。它们压在肤色上，而肤色不跟主题走，
+       用 --line 的话深色模式下会变成薄荷绿——一张米色的脸配两只绿眼睛。 */
+    --ink: #17150f;
+  }
   .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
   .top {
     position: sticky; top: 0; z-index: 10; background: var(--bg);
@@ -1215,13 +1228,13 @@
               <!-- 前兜。胳膊压在它上面，正好只露出右半边 -->
               <path fill="none" stroke-width="3" d="M58 320 C78 340 130 336 148 312"/>
               <!-- 脖子 -->
-              <path fill="var(--card)" stroke="none" d="M79 152 H107 V190 H79 Z"/>
+              <path fill="var(--skin)" stroke="none" d="M79 152 H107 V190 H79 Z"/>
               <path fill="none" stroke-width="3.4" d="M79 158 V186 M107 158 V186"/>
               <!-- 耳朵先画，脸压上去只露外缘 -->
-              <circle cx="49" cy="126" r="9" fill="var(--card)"/>
-              <circle cx="135" cy="126" r="9" fill="var(--card)"/>
+              <circle cx="49" cy="126" r="9" fill="var(--skin)"/>
+              <circle cx="135" cy="126" r="9" fill="var(--skin)"/>
               <!-- 脸 -->
-              <path fill="var(--card)" d="M50 116 C50 86 68 70 92 70 C116 70 134 86 134 116 C134 148 117 168 92 168 C67 168 50 148 50 116 Z"/>
+              <path fill="var(--skin)" d="M50 116 C50 86 68 70 92 70 C116 70 134 86 134 116 C134 148 117 168 92 168 C67 168 50 148 50 116 Z"/>
             </g>
             <!-- 头发：先照着脸的轮廓铺满上半边，再挖出额前那道刘海 -->
             <g stroke="var(--line)" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round">
@@ -1234,11 +1247,11 @@
             </g>
             <!-- 五官。眼睛是两颗豆子加一点高光，笑是一条弧——
                  再多一笔，缩到手机上就糊成一团 -->
-            <g fill="var(--line)">
+            <g fill="var(--ink)">
               <ellipse cx="76" cy="128" rx="5.4" ry="6.6"/>
               <ellipse cx="108" cy="128" rx="5.4" ry="6.6"/>
             </g>
-            <g fill="var(--card)">
+            <g fill="#fff">
               <circle cx="78" cy="125" r="1.9"/>
               <circle cx="110" cy="125" r="1.9"/>
             </g>
@@ -1246,7 +1259,7 @@
               <ellipse cx="63" cy="140" rx="8" ry="5"/>
               <ellipse cx="121" cy="140" rx="8" ry="5"/>
             </g>
-            <path fill="none" stroke="var(--line)" stroke-width="3.2" stroke-linecap="round"
+            <path fill="none" stroke="var(--ink)" stroke-width="3.2" stroke-linecap="round"
                   d="M84 146 C89 152 95 152 100 146"/>
 
             <!-- 举起手机的那条前臂。两处都改过：
@@ -1279,19 +1292,34 @@
               <circle cx="126.5" cy="199.5" r="3.8" stroke-width="2.5"/>
               <circle cx="136.5" cy="209.5" r="3.8" stroke-width="2.5"/>
             </g>
-            <!-- 握着它的那只手。上一版把手背画成一整块圆角白团、再在上面刻三道
-                 指骨——那一块谁也认不出是手，真人反馈原话是「这一块白色的也不是
-                 手指 是什么呢」。**能让人一眼认出手的是分开的手指，不是掌背。**
-                 所以现在只画四根**各自分开**的手指搭在背板上（指根在机身左缘
-                 外一点点，说明手是从背后绕过来的），底下露一小块掌根接到手腕。
-                 手背的主体藏在机身后面——那本来就是看不见的部分。 -->
-            <path fill="var(--card)" stroke="var(--line)" stroke-width="3.2" stroke-linejoin="round"
-                  d="M98 272 C88 282 88 302 100 309 C112 316 128 312 132 301 C136 289 132 276 122 271 Z"/>
-            <g fill="var(--card)" stroke="var(--line)" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
-              <rect x="88" y="222" width="32" height="14" rx="7"/>
-              <rect x="86" y="240" width="34" height="14" rx="7"/>
-              <rect x="88" y="257" width="32" height="14" rx="7"/>
-              <rect x="92" y="274" width="28" height="13" rx="6.5"/>
+            <!-- 握着它的那只手。这只手改过三版，前两版都败在**它是白的、而且是
+                 拆开的几块**：先是「一整块圆角白团 + 三道指骨」，后是「四根各自
+                 描边的白色胶囊 + 底下一块白掌根」——五块同色同描边的东西摆在一起，
+                 谁也看不出是一只手。
+
+                 这一版两处都改：① 上肤色（见 --skin 那条注释）；② 画成**一整只**。
+                 手法是「先描边、后填色」：同样五个形状先用两倍粗的 --line 描一遍，
+                 再用 --skin 实心盖一遍——union 内部的线全被盖掉，只剩外轮廓那半边，
+                 于是掌和四指连成一只手，而不是五块拼在一起。 -->
+            <g stroke="var(--line)" stroke-width="6.4" fill="none" stroke-linejoin="round" stroke-linecap="round">
+              <ellipse cx="98" cy="272" rx="24" ry="29"/>
+              <rect x="80" y="216" width="40" height="18" rx="9"/>
+              <rect x="78" y="232" width="44" height="18" rx="9"/>
+              <rect x="80" y="250" width="40" height="18" rx="9"/>
+              <rect x="84" y="268" width="33" height="17" rx="8.5"/>
+            </g>
+            <g fill="var(--skin)" stroke="none">
+              <ellipse cx="98" cy="272" rx="24" ry="29"/>
+              <rect x="80" y="216" width="40" height="18" rx="9"/>
+              <rect x="78" y="232" width="44" height="18" rx="9"/>
+              <rect x="80" y="250" width="40" height="18" rx="9"/>
+              <rect x="84" y="268" width="33" height="17" rx="8.5"/>
+            </g>
+            <!-- 指缝。四根手指连成一片之后就得靠这几道短线分开 -->
+            <g fill="none" stroke="var(--ink)" stroke-width="2.6" stroke-linecap="round" opacity=".38">
+              <path d="M92 234 H118"/>
+              <path d="M90 251 H120"/>
+              <path d="M92 268 H116"/>
             </g>
           </svg>
 
