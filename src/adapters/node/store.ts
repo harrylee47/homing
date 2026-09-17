@@ -578,8 +578,8 @@ export class SqliteStore implements Store {
       .run(o.id, o.user_id, o.device_id, o.to_number, o.content_enc, o.sim_slot, o.status, o.error, o.created_at, o.updated_at)
   }
 
-  async getOutbound(id: string): Promise<OutboundRecord | null> {
-    const row = this.db.prepare('SELECT * FROM outbound WHERE id = ?').get(id)
+  async getOutbound(id: string, userId: string): Promise<OutboundRecord | null> {
+    const row = this.db.prepare('SELECT * FROM outbound WHERE id = ? AND user_id = ?').get(id, userId)
     return row ? (row as unknown as OutboundRecord) : null
   }
 

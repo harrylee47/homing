@@ -418,7 +418,12 @@ export interface Store {
   // 发送任务
   createOutbound(o: OutboundRecord): Promise<void>
   /** 不带作用域：回执要按 cmd_id 找回记录，那时只有 id */
-  getOutbound(id: string): Promise<OutboundRecord | null>
+  /**
+   * 取一条发送记录。**userId 必填**——返回体里有解密后的正文与收件号码，
+   * 而这个接口开放给 bot 作用域。同目录的 getEvent 一直是带作用域的，
+   * 这个漏了；改成必填参数，让下次漏写变成编译错误而不是一条静默的越权查询。
+   */
+  getOutbound(id: string, userId: string): Promise<OutboundRecord | null>
   listOutbound(limit: number, offset: number, filter: OutboundFilter): Promise<OutboundRecord[]>
   /** 分页要的总数。过滤条件与 listOutbound 一致。 */
   countOutbound(filter: OutboundFilter): Promise<number>

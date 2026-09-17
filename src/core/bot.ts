@@ -86,7 +86,16 @@ export interface BotMessage {
  * 这是允许的进程内状态：确认窗口只有几分钟，重启后丢失的后果仅仅是用户
  * 需要重新发一次命令，不涉及任何数据丢失。
  */
-const pendingSends = new Map<string, { to: string; text: string; expiresAt: number }>()
+const pendingSends = new Map<string, {
+  to: string; text: string; expiresAt: number
+  /**
+   * 已经兑现过了。**不能直接删掉**——删了的话第二次点按钮和「超时」
+   * 走的是同一个分支，回的那句「请重新发送命令」读起来像「没发出去」，
+   * 而最自然的下一步就是重发，于是同一条短信发两遍。
+   * 发短信是不可撤销的动作，这两种情况必须说成两句话。
+   */
+  usedAt?: number
+}>()
 const PENDING_TTL_MS = 5 * 60 * 1000
 
 function stashSend(to: string, text: string, now = Date.now()): string {
@@ -462,9 +471,14 @@ export async function handleCallback(api: BotApi, data: string, now = Date.now()
 
   const pending = pendingSends.get(m[1]!)
   if (!pending || pending.expiresAt < now) {
-    return { text: '这条待发消息已过期，请重新发送命令' }
+    return { text: '确认窗口已超时（5 分钟），请重新发一次 /send' }
   }
-  pendingSends.delete(m[1]!)
+  if (pending.usedAt != null) {
+    // 按钮被点第二次。原消息本该在第一次之后就被改写掉，
+    // 这里是那条路径失败时的兜底——两层都有，因为代价是重复发一条短信
+    return { text: '这条已经发过了，不用再点。要再发一条请重新 /send' }
+  }
+  pending.usedAt = now
 
   const deviceId = m[2]!
   const s = await api.stats()

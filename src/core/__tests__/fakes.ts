@@ -234,7 +234,10 @@ export class MemoryStore implements Store {
   outbound = new Map<string, OutboundRecord>()
 
   async createOutbound(o: OutboundRecord) { this.outbound.set(o.id, o) }
-  async getOutbound(id: string) { return this.outbound.get(id) ?? null }
+  async getOutbound(id: string, userId: string) {
+    const o = this.outbound.get(id)
+    return o && o.user_id === userId ? o : null
+  }
   async listOutbound(limit: number, offset: number, filter: OutboundFilter) {
     return this.filteredOutbound(filter).slice(offset, offset + limit)
   }

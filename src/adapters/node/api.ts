@@ -1851,7 +1851,10 @@ route('GET', '/api/tasks', async ({ user, res, deps }) => {
     }
   }))
   json(res, 200, { tasks: items, timezone: tz })
-})
+  // bot 作用域：/tasks 就在 Bot 注册的命令菜单里，不给它权限的后果是
+  // 「用户能点、点了一个字都不回」——彻底的沉默，而且日志之外无从察觉。
+  // 开放面与已有的 /events、/outbound 同级（都会解出正文）
+}, true, false, 'bot')
 
 route('POST', '/api/tasks', async ({ user, res, body, deps, ip }) => {
   const b = body as Record<string, unknown>
@@ -2295,7 +2298,8 @@ route('POST', '/api/outbound', async ({ user, res, body, deps, ip }) => {
 }, true, false, 'bot')
 
 route('GET', '/api/outbound/:id', async ({ user, res, params, deps }) => {
-  const o = await deps.store.getOutbound(params.id!)
+  const o = await deps.store.getOutbound(params.id!, user.id)
+  // 不属于自己的一律当「不存在」，不回 403——那等于确认这条记录真的存在
   if (!o) return json(res, 404, { error: '任务不存在' })
   const dev = await deps.store.getDevice(o.device_id)
   json(res, 200, {

@@ -194,7 +194,7 @@ describe('确认按钮回调', () => {
     const data = prompt!.buttons![0]![0]!.data
     const r = await handleCallback(api, data, Date.now() + 10 * 60_000)
     expect(sendSms).not.toHaveBeenCalled()
-    expect(r!.text).toContain('过期')
+    expect(r!.text).toContain('超时')
   })
 
   it('同一个确认不能重复点击发两次', async () => {
@@ -205,6 +205,24 @@ describe('确认按钮回调', () => {
     await handleCallback(api, data)
     await handleCallback(api, data)
     expect(sendSms).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * 「已经发过了」和「确认窗口超时」必须是两句不同的话。
+   *
+   * 早先两种情况都回「这条待发消息已过期，请重新发送命令」——而那句读起来像
+   * 「没发出去」，用户最自然的下一步就是重发 /send，于是同一条短信发两遍。
+   * 发短信是不可撤销的动作，这两种状态不能共用一句文案。
+   */
+  it('重复点击说的是「已经发过了」，不是「已过期」', async () => {
+    const sendSms = vi.fn(async () => ({ id: 'c', status: 'pending' }))
+    const api = makeApi({ sendSms })
+    const prompt = await handleCommand(api, '/send 13900139000 你好')
+    const data = prompt!.buttons![0]![0]!.data
+    await handleCallback(api, data)
+    const again = await handleCallback(api, data)
+    expect(again!.text).toContain('已经发过了')
+    expect(again!.text).not.toContain('超时')
   })
 
   it('选中的设备在点击时已离线则不发送', async () => {
