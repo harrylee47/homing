@@ -686,29 +686,40 @@ route('POST', '/api/users/:id/reset', async ({ user, res, params, deps, ip }) =>
  * 再加几层摩擦，而每个跳过的地方都会把后果讲清楚。
  */
 
+/**
+ * 待验证的 TOTP 密钥，存在这个用户自己的配置里。
+ *
+ * 不直接写进 totp_secret：写了再验的话，用户扫码失败就把自己锁在门外了——
+ * 账号立刻进入「必须交验证码」状态，而他手上还没有可用的认证器。
+ *
+ * 也不放进程内 Map：硬约束④不允许进程内状态，而且那样一重启就得重扫。
+ */
+const S_TOTP_PENDING = 'totp_pending'
+const TOTP_SETUP_TTL_MS = 10 * 60 * 1000
+
 /** 绑定前先拿密钥与二维码。此刻还没写进账号，验证通过才算数 */
 route('POST', '/api/auth/totp/setup', async ({ user, res, deps }) => {
   const secret = generateTotpSecret()
-  pendingTotp.set(user.id, { secret, until: now() + 10 * 60 * 1000 })
+  await deps.store.setUserSetting(user.id, S_TOTP_PENDING,
+    JSON.stringify({ secret, until: now() + TOTP_SETUP_TTL_MS }))
   const uri = totpUri(secret, user.name)
   json(res, 200, { secret, uri, qr: toSvg(uri) })
 })
 
-/**
- * 待验证的 TOTP 密钥。
- *
- * 不直接写进账号：写了再验的话，用户扫码失败就把自己锁在门外了。
- * 放内存里 10 分钟——重启丢掉只是要重新扫一次，没有损失。
- */
-const pendingTotp = new Map<string, { secret: string; until: number }>()
-
 route('POST', '/api/auth/totp/enable', async ({ user, res, body, deps, ip }) => {
-  const p = pendingTotp.get(user.id)
-  if (!p || p.until < now()) return json(res, 400, { error: '绑定已超时，请重新开始' })
+  type PendingTotp = { secret: string; until: number }
+  const raw = await deps.store.getUserSetting(user.id, S_TOTP_PENDING)
+  let p: PendingTotp | null = null
+  if (raw) {
+    try {
+      p = JSON.parse(raw) as PendingTotp
+    } catch { /* 存坏了当没有 */ }
+  }
+  if (!p?.secret || p.until < now()) return json(res, 400, { error: '绑定已超时，请重新开始' })
   const code = (body as { code?: string })?.code ?? ''
   if (!(await verifyTotp(p.secret, code))) return json(res, 401, { error: '验证码不正确' })
 
-  pendingTotp.delete(user.id)
+  await deps.store.setUserSetting(user.id, S_TOTP_PENDING, '')
   await deps.store.upsertUser({ ...user, totp_secret: p.secret })
   await deps.store.audit({ user_id: user.id, actor: user.name, action: 'totp.enable', detail: null, ip, created_at: now() })
   json(res, 200, { ok: true })
@@ -1019,7 +1030,12 @@ route('DELETE', '/api/invites/:hash', async ({ user, res, params, deps, ip }) =>
 
 /** 注册限速。与配对码那套分开——配对失败不该把注册一起锁死，反之亦然 */
 const regAttempts = new Map<string, { n: number; until: number }>()
-const REG_MAX = 8
+/**
+ * 20 次而不是几次：这个闸拦的是自动化滥用，不该把打错几次字的人挡在外面。
+ * 真正扛住 argon2 资源消耗的是 withPasswordSlot 的并发闸，不是这里的次数。
+ * 注册、自助续期、找回共用同一个计数——它们都是「免鉴权 + 要跑口令运算」。
+ */
+const REG_MAX = 20
 const REG_WINDOW_MS = 15 * 60 * 1000
 
 function regLimited(ip: string): boolean {
