@@ -1302,16 +1302,24 @@
                  一遍，再用 --skin 实心盖一遍——union 内部的线全被盖掉，只剩
                  外轮廓那半边，掌和四指连成一只手而不是五块拼在一起。 -->
             <g transform="rotate(-13 98 258)" fill="var(--skin)" stroke="var(--line)"
-               stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+               stroke-width="2.9" stroke-linejoin="round" stroke-linecap="round">
               <!-- 掌在最底下，四根手指自下而上依次压上去。
+                   **掌要落在小臂和指根之间**，不是落在手指正下方——
+                   后者是一只爪子：手腕 → 掌 → 手指本来就该是一条斜线。
                    **手指必须互相压着画、各自留着自己的描边**——
                    前一版把它们并进一个 union 里，指缝只剩几条淡线，
-                   整只手糊成一只连指手套。 -->
-              <ellipse cx="94" cy="282" rx="22" ry="25"/>
-              <rect x="80" y="260" width="34" height="18" rx="9"/>
-              <rect x="76" y="244" width="46" height="18" rx="9"/>
-              <rect x="74" y="228" width="53" height="18" rx="9"/>
-              <rect x="76" y="212" width="47" height="18" rx="9"/>
+                   整只手糊成一只连指手套。
+                   **粗细按机身量**：手指是横着搭在机身**长边**上的，
+                   一台手机的长边约等于八九根手指宽，四根加起来只该占一半，
+                   一根 18 个单位（四根盖满整块背板）一眼就是假的。
+                   指根也不能甩到机身外面太远：手指是**贴在背板上**的，
+                   露在左缘外的只该是绕过边缘那一点点，甩出去二十个单位就成了
+                   四根悬在帽衫上的香肠。 -->
+              <ellipse cx="82" cy="262" rx="20" ry="34"/>
+              <rect x="90" y="251" width="24" height="12" rx="6"/>
+              <rect x="88" y="240" width="34" height="12" rx="6"/>
+              <rect x="86" y="229" width="42" height="12" rx="6"/>
+              <rect x="88" y="218" width="34" height="12" rx="6"/>
             </g>            </g>
           </svg>
 
