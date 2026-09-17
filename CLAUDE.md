@@ -530,7 +530,15 @@ https://github.com/rikouu/homing（公开，AGPL-3.0）。
 cd agent && set -a && . ~/.homing-release.properties && set +a
 ./gradlew :app:verifyReleaseSigning :app:assembleRelease
 cp app/build/outputs/apk/release/app-release.apk ../web/download/homing.apk
+# 混淆映射必须跟着一起更新，否则下次收到崩溃报告只有一串 a.b.c
+gzip -c app/build/outputs/mapping/release/mapping.txt > mapping/homing.apk.mapping.txt.gz
+shasum -a 256 ../web/download/homing.apk | awk '{print "apk_sha256 " $1}' > mapping/SHIPPED.txt
 ```
+
+**mapping.txt 在 `build/` 里，而 `build/` 是 gitignore 的**——也就是说不主动存下来，
+分发出去的那个包的崩溃堆栈就永远还原不了了。存在 `agent/mapping/`（gz 后约 1.6MB），
+用 `SHIPPED.txt` 里的 sha256 与 APK 对应。换包时两者一起换，
+留一份对不上的映射比没有更糟。
 
 **先跑 `verifyReleaseSigning`**。没有凭据时 Gradle 会**静默回落到 debug 签名**，
 `assembleRelease` 照样 BUILD SUCCESSFUL，产出一个证书完全不同的包——
