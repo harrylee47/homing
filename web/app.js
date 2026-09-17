@@ -592,7 +592,7 @@ function setupTotp(r) {
   }
   $('#done').onclick = () => finish({ code: $('#code').value })
   $('#skip').onclick = () => {
-    if (!confirm('暂不开启两步验证？\n\n登录将只需要用户名和口令。这个控制台上能看到你所有的短信，包括银行验证码。\n\n之后随时可以在「设置 → 两步验证」打开。')) return
+    if (!confirm('暂不开启两步验证？\n\n这个控制台上能看到你所有的短信，包括银行验证码。')) return
     finish({ skip: true })
   }
 }
@@ -841,7 +841,7 @@ async function register() {
       <label style="display:flex;gap:9px;align-items:flex-start;text-transform:none;letter-spacing:0;font-size:14px;line-height:1.6;margin-top:10px">
         <input type="checkbox" id="agree" style="width:auto;margin-top:3px">
         <span>我已读完<a href="/privacy">《隐私与风险声明》</a>并同意。我理解：这台服务器会保存我的短信正文与验证码，
-        运营者在技术上能够读到，本服务<b>做不到端到端加密</b>，也<b>不保证不漏报</b>。</span>
+        本服务<b>做不到端到端加密</b>，也<b>不保证不漏报</b>。</span>
       </label>
       <div class="btnrow"><button id="go">创建账号</button></div>
       <div id="err" class="err-text"></div>
@@ -1878,7 +1878,7 @@ async function rules() {
         <b>已发送短信</b> 本机发出的，只归档不推送<br>
         <b>普通短信</b> 以上都不是，正常推送<br>
         <b>来电</b> 单独分组，点击可预填回复<br>
-        之后随时可改。</p>
+</p>
         <div class="btnrow"><button id="seed" class="sm">写入建议规则</button></div>
       </div>` : ''}
       ${rs.length ? `<div class="card list">${rs.map((r) => `
@@ -2005,7 +2005,6 @@ function ruleEditor(rule, chs, devs = []) {
             <span>${t}</span>
           </label>`).join('')}
       </div>
-      <div class="muted">都不勾表示全部类型。</div>
 
       <label>方向</label>
       <select id="direction">
@@ -2023,7 +2022,6 @@ function ruleEditor(rule, chs, devs = []) {
 
       <label>正文包含</label>
       <div id="cbox"></div>
-      <div class="muted">命中任意一个即可。</div>
 
       <label>正文不包含</label>
       <div id="xbox"></div>
@@ -2039,16 +2037,16 @@ function ruleEditor(rule, chs, devs = []) {
 
       <label>限定设备</label>
       ${devs.length > 1 ? `
-        <div class="muted">不勾选表示不限制。勾选后这条规则只对选中的设备生效——
-        不同卡走不同渠道就靠这里，给每张卡各建一条规则即可。</div>
+        <div class="muted">勾选后这条规则只对选中的设备生效。不同卡走不同渠道就靠这里，
+        给每张卡各建一条规则。</div>
         ${devs.map((d) => `<label style="display:flex;gap:8px;align-items:center;margin:6px 0">
           <input type="checkbox" data-dev="${esc(d.id)}" style="width:auto"${(m.device_ids || []).includes(d.id) ? ' checked' : ''}>
           <span>${esc(d.name)} <span class="muted">${d.status === 'online' ? '在线' : '离线'}</span></span></label>`).join('')}
       ` : `<div class="muted">当前只有 ${devs.length} 台设备，无需限定。多设备时这里可以让不同的卡走不同的渠道。</div>`}
       ${allSims.length ? `
         <label>限定卡槽</label>
-        <div class="muted">不勾选表示不限制。双卡机上两张卡的用途往往完全不同——
-        一张收银行验证码，一张是垃圾短信重灾区，靠号码是分不完的。
+        <div class="muted">双卡机上两张卡的用途往往完全不同：一张收银行验证码，
+        一张是垃圾短信重灾区，靠号码是分不完的。
         <b>卡槽未知的消息不会命中</b>（老版本 Agent 或系统不给这个信息）。</div>
         ${allSims.map((x) => `<label style="display:flex;gap:8px;align-items:center;margin:6px 0">
           <input type="checkbox" data-sim="${x.slot}" style="width:auto"${(m.sim_slot || []).includes(x.slot) ? ' checked' : ''}>
