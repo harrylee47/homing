@@ -46,6 +46,10 @@ export const MAX_PENDING_EVENTS = 5000
  * `retryable` 语义由 Agent 决定重连策略：
  *  - AUTH_* 与 PROTOCOL_VERSION_UNSUPPORTED 不可重试，需人工介入（重新配对/升级）
  *  - 其余可按指数退避重试
+ *
+ * 分这两类的判断标准是**人要不要动手**，不是「这次能不能连上」。
+ * 账号到期照样连不上，但它会自己好转（续期／管理员改到期时间），
+ * 所以它不属于前者——见 ACCOUNT_INACTIVE。
  */
 export const ErrorCode = {
   /** token 不匹配 */
@@ -54,6 +58,15 @@ export const ErrorCode = {
   AUTH_DEVICE_REVOKED: 'AUTH_DEVICE_REVOKED',
   /** device_id 不存在 */
   AUTH_UNKNOWN_DEVICE: 'AUTH_UNKNOWN_DEVICE',
+  /**
+   * 设备凭证有效，但主人的账号已停用或已到期。
+   *
+   * **必须可重试**，这是它和 AUTH_DEVICE_REVOKED 唯一但要命的区别：
+   * 到期是个会自己好转的状态（用户拿邀请码续期、管理员改到期时间），
+   * 而 FATAL 会让 Agent 永久停下来——续完期手机也不会回来，
+   * 得跑到手机跟前重新配对。那等于「续期」这个功能不存在。
+   */
+  ACCOUNT_INACTIVE: 'ACCOUNT_INACTIVE',
   /** 协议版本不受支持 */
   PROTOCOL_VERSION_UNSUPPORTED: 'PROTOCOL_VERSION_UNSUPPORTED',
   /** 帧结构非法 / 校验失败 */
@@ -307,16 +320,9 @@ export const HelloAckPayload = z.object({
 
 /** 服务端 → Agent：握手被拒。发送后立即关闭连接。 */
 export const HelloRejectPayload = z.object({
-  code: z.enum([
-    ErrorCode.AUTH_INVALID_TOKEN,
-    ErrorCode.AUTH_DEVICE_REVOKED,
-    ErrorCode.AUTH_UNKNOWN_DEVICE,
-    ErrorCode.PROTOCOL_VERSION_UNSUPPORTED,
-    ErrorCode.CLOCK_SKEW,
-    ErrorCode.RATE_LIMITED,
-    ErrorCode.SERVER_NOT_INITIALIZED,
-    ErrorCode.INTERNAL,
-  ]),
+  // 取全集：漏一个就会出现「服务端真的发得出、schema 却判它非法」的帧
+  // （PROTOCOL_MALFORMED 就漏过一次）
+  code: z.enum(Object.values(ErrorCode) as [ErrorCode, ...ErrorCode[]]),
   /** 面向人的说明，不含敏感信息 */
   message: z.string().max(200),
   /** 建议等待秒数；不可重试错误为 null */

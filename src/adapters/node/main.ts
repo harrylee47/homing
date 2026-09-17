@@ -5,7 +5,8 @@ import { setDefaultResultOrder } from 'node:dns'
 import { createServer } from 'node:http'
 import { createCipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
-import { DEFAULT_AGENT_CONFIG } from '../../core/protocol.js'
+import { DEFAULT_AGENT_CONFIG, ErrorCode } from '../../core/protocol.js'
+import { CLOSE_AUTH_FAILED } from '../../core/session.js'
 import { loadConfig } from './config.js'
 import { MemoryHub } from './hub.js'
 import { SqliteStore } from './store.js'
@@ -544,7 +545,9 @@ async function sweepInactiveDevices(): Promise<void> {
     if (!active.has(d.user_id)) active.set(d.user_id, userActive(await store.getUser(d.user_id), Date.now()))
     if (active.get(d.user_id)) continue
     log.warn('账号已停用或到期，断开设备连接', { device_id: d.id, user_id: d.user_id })
-    hub.get(d.id)?.close(4001, 'AUTH_DEVICE_REVOKED')
+    // 不是 AUTH_DEVICE_REVOKED：设备凭证本身没问题，人只是到期了。
+    // 断开后 Agent 会重连，由握手给出可重试的 ACCOUNT_INACTIVE
+    hub.get(d.id)?.close(CLOSE_AUTH_FAILED, ErrorCode.ACCOUNT_INACTIVE)
   }
 }
 const sweepTimer = setInterval(() => void sweepInactiveDevices().catch(() => { /* 下一轮再来 */ }), 60_000)

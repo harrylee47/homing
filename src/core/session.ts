@@ -12,6 +12,7 @@ import { userActive } from './users.js'
 import {
   DEFAULT_AGENT_CONFIG,
   ErrorCode,
+  FATAL_ERROR_CODES,
   type AgentConfig,
   type DownstreamFrame,
   type EventKind as EventKindT,
@@ -187,7 +188,7 @@ export class DeviceSession {
     const owner = await this.deps.store.getUser(device.user_id)
     if (!userActive(owner, this.now())) {
       log.warn('设备主人的账号已停用或到期，拒绝握手', { device_id: device.id, user_id: device.user_id })
-      return this.reject(ErrorCode.AUTH_DEVICE_REVOKED, '账号已停用或已到期')
+      return this.reject(ErrorCode.ACCOUNT_INACTIVE, '账号已停用或已到期')
     }
 
     this.state = 'authenticated'
@@ -366,12 +367,9 @@ export class DeviceSession {
 
   private reject(code: ErrorCode, message: string): SessionAction {
     this.state = 'closed'
-    const retryable = ![
-      ErrorCode.AUTH_INVALID_TOKEN,
-      ErrorCode.AUTH_DEVICE_REVOKED,
-      ErrorCode.AUTH_UNKNOWN_DEVICE,
-      ErrorCode.PROTOCOL_VERSION_UNSUPPORTED,
-    ].includes(code as never)
+    // 用 protocol.ts 那一份，别在这里再抄一遍：两份清单迟早分叉，
+    // 而分叉的表现是「某个错误码这边判可重试、那边判不可重试」
+    const retryable = !FATAL_ERROR_CODES.includes(code)
 
     return {
       send: [
@@ -382,7 +380,10 @@ export class DeviceSession {
         ) as DownstreamFrame,
       ],
       close: {
-        code: code.startsWith('AUTH_') ? CLOSE_AUTH_FAILED : CLOSE_PROTOCOL_ERROR,
+        // 鉴权类（含账号停用/到期）统一用 4001，别只看 AUTH_ 前缀——
+        // ACCOUNT_INACTIVE 不带这个前缀，按前缀判会把它归成「协议错误」
+        code: code.startsWith('AUTH_') || code === ErrorCode.ACCOUNT_INACTIVE
+          ? CLOSE_AUTH_FAILED : CLOSE_PROTOCOL_ERROR,
         reason: code,
       },
     }

@@ -3031,13 +3031,29 @@ const fmtDay = (ts) => new Date(ts).toLocaleDateString('zh-CN')
  * 码只在生成那一次给出明文——之后库里只有哈希，列表里显示不出来。
  * 所以备注是必需的人类把手：没有它，管理员不知道该撤销哪一条。
  */
+/** 注册开关的当前状态。生成邀请码那一刻要用它决定提不提醒 */
+let regOpen = false
+
 async function paintInvites() {
   const box = $('#invites')
   if (!box) return
   try {
     const [{ invites }, reg] = await Promise.all([api('/invites'), api('/registration')])
     $('#reg_mode').value = reg.mode
-    box.innerHTML = invites.length ? `<div class="list">${invites.map((i) => {
+    regOpen = reg.mode === 'invite'
+
+    /**
+     * 注册关着的时候，列表里每一个「未使用」的码其实都用不了。
+     *
+     * 不提醒的话失败发生在看不见的地方：你把链接发出去，对方点开只看到
+     * 「这台服务器没有开放注册」，两个人都不知道少了哪一步。
+     */
+    const live = invites.filter((i) => !i.used_at && !i.expired).length
+    const warn = !regOpen && live > 0
+      ? `<div class="notice" style="margin-bottom:10px">注册当前是<b>关闭</b>的，下面那 ${live} 个还没用的码现在都注册不了。把上面的开关改成「凭邀请码注册」才生效。</div>`
+      : ''
+
+    box.innerHTML = warn + (invites.length ? `<div class="list">${invites.map((i) => {
       const state = i.used_at ? `已被 ${esc(i.used_by ?? '某人')} 使用`
         : i.expired ? '已过期'
         : `未使用 · ${fmtDay(i.expires_at)} 前有效`
@@ -3051,7 +3067,7 @@ async function paintInvites() {
           <button class="danger sm" data-revoke="${esc(i.code_hash)}">撤销</button>
         </div>`}
       </div>`
-    }).join('')}</div>` : '<div class="muted">还没有发过邀请码。</div>'
+    }).join('')}</div>` : '<div class="muted">还没有发过邀请码。</div>')
 
     for (const b of box.querySelectorAll('[data-revoke]')) {
       b.onclick = async () => {
@@ -3081,6 +3097,7 @@ function showInvite(r) {
         <div class="mono wrap card tight" style="user-select:all;font-size:12px">${esc(r.url)}</div>` : `
         <div class="muted">没配 GW_BASE_URL，给不出链接——让对方自己打开控制台的注册页填码。</div>`}
       <div class="muted" style="margin-top:8px">码本身在 ${fmt(r.expires_at)} 前有效。</div>
+      ${regOpen ? '' : `<div class="notice" style="margin-top:8px">注意：注册现在是<b>关闭</b>的，这个码发出去对方也注册不了。发之前先把上面的开关改成「凭邀请码注册」。</div>`}
       <div class="btnrow"><button class="ghost sm" id="inv_hide">我记下了，隐藏</button></div>
     </div>`
   $('#inv_hide').onclick = () => { $('#inv_new').innerHTML = '' }

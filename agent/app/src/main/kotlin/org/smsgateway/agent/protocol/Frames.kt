@@ -40,6 +40,13 @@ object ErrorCodes {
     const val AUTH_UNKNOWN_DEVICE = "AUTH_UNKNOWN_DEVICE"
     const val PROTOCOL_VERSION_UNSUPPORTED = "PROTOCOL_VERSION_UNSUPPORTED"
 
+    /**
+     * 账号停用或到期。**故意不在 FATAL 里**：它会自己好转（用户续期、
+     * 管理员改到期时间），进 FATAL 就等于续完期手机再也不会自己连回来。
+     * 退避循环最长 60 秒一次，续期后一分钟内自动恢复。
+     */
+    const val ACCOUNT_INACTIVE = "ACCOUNT_INACTIVE"
+
     val FATAL = setOf(
         AUTH_INVALID_TOKEN, AUTH_DEVICE_REVOKED,
         AUTH_UNKNOWN_DEVICE, PROTOCOL_VERSION_UNSUPPORTED,

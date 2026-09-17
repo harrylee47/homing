@@ -10,6 +10,7 @@ import { createCipher, generateDek, hashToken, type Cipher } from '../crypto.js'
 import { daysLeft, inactiveReason, userActive } from '../users.js'
 import { DeviceSession } from '../session.js'
 import { encodeFrame, makeFrame } from '../frames.js'
+import { ErrorCode, FATAL_ERROR_CODES } from '../protocol.js'
 import { MemoryHub, MemoryStore } from './fakes.js'
 import { runTask, tick } from '../tasks.js'
 import { checkDevices, resetAlertState } from '../monitor.js'
@@ -94,16 +95,59 @@ describe('到期后设备连不上 —— 否则「服务停止」是假的', ()
     expect((r.send[0] as { type: string }).type).toBe('hello_ack')
   })
 
+  /** 拒绝帧里真正决定 Agent 行为的两个字段 */
+  const rejection = (r: Awaited<ReturnType<typeof handshake>>) =>
+    r.send[0] as { type: string; payload: { code: string; retry_after_sec: number | null } }
+
   it('账号到期后握手被拒', async () => {
     store.users.set('u1', user({ expires_at: NOW - 1 }))
     const r = await handshake()
-    expect((r.send[0] as { type: string }).type).toBe('hello_reject')
+    expect(rejection(r).type).toBe('hello_reject')
   })
 
   it('账号停用后握手被拒', async () => {
     store.users.set('u1', user({ disabled: true }))
     const r = await handshake()
-    expect((r.send[0] as { type: string }).type).toBe('hello_reject')
+    expect(rejection(r).type).toBe('hello_reject')
+  })
+
+  /**
+   * 到期用的错误码**必须可重试**。
+   *
+   * 踩过的坑：一开始复用了 AUTH_DEVICE_REVOKED，而它在 FATAL_ERROR_CODES 里，
+   * Agent 收到后进 ConnState.Fatal 永久停止重连——于是续完期手机也不回来，
+   * 必须跑到手机跟前重新配对。等于「续期」这个功能根本不存在，
+   * 而且到期那天手机多半正在线，问题当场发作。
+   */
+  it('到期用的是可重试的错误码，不是「去重新配对」', async () => {
+    store.users.set('u1', user({ expires_at: NOW - 1 }))
+    const p = rejection(await handshake()).payload
+    expect(p.code).toBe(ErrorCode.ACCOUNT_INACTIVE)
+    expect(FATAL_ERROR_CODES).not.toContain(p.code)
+    expect(p.retry_after_sec).not.toBeNull()
+  })
+
+  it('停用同理 —— 管理员点回启用，手机自己就回来了', async () => {
+    store.users.set('u1', user({ disabled: true }))
+    const p = rejection(await handshake()).payload
+    expect(p.code).toBe(ErrorCode.ACCOUNT_INACTIVE)
+    expect(p.retry_after_sec).not.toBeNull()
+  })
+
+  it('续期之后同一台设备用原凭证就能连回来', async () => {
+    store.users.set('u1', user({ expires_at: NOW - 1 }))
+    expect(rejection(await handshake()).type).toBe('hello_reject')
+
+    // 管理员续期 / 用户拿邀请码自助续期
+    store.users.set('u1', user({ expires_at: NOW + 30 * DAY }))
+    expect((await handshake()).send[0]!.type).toBe('hello_ack')
+  })
+
+  it('设备被吊销仍然是不可重试的 —— 那才是真要人动手的', async () => {
+    await store.revokeDevice('dev_1', 'u1')
+    const p = rejection(await handshake()).payload
+    expect(p.code).toBe(ErrorCode.AUTH_DEVICE_REVOKED)
+    expect(p.retry_after_sec).toBeNull()
   })
 
   it('账号被删后握手被拒 —— 设备凭证还有效，但人已经没了', async () => {
