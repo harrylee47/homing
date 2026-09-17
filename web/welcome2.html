@@ -1292,35 +1292,27 @@
               <circle cx="126.5" cy="199.5" r="3.8" stroke-width="2.5"/>
               <circle cx="136.5" cy="209.5" r="3.8" stroke-width="2.5"/>
             </g>
-            <!-- 握着它的那只手。这只手改过三版，前两版都败在**它是白的、而且是
-                 拆开的几块**：先是「一整块圆角白团 + 三道指骨」，后是「四根各自
-                 描边的白色胶囊 + 底下一块白掌根」——五块同色同描边的东西摆在一起，
-                 谁也看不出是一只手。
+            <!-- 握着它的那只手。
+                 前几版都怪在**四根一模一样的水平胶囊摞成一摞**——那是暖气片，
+                 不是手。真的手绕在机身上有三件事：整只手是**斜的**（手腕从
+                 左下伸上来，手指不可能是水平的）、四根**指尖不齐**（中指最长、
+                 小指最短）、指缝只在**靠指尖那一段**看得见，不横穿整只手。
 
-                 这一版两处都改：① 上肤色（见 --skin 那条注释）；② 画成**一整只**。
-                 手法是「先描边、后填色」：同样五个形状先用两倍粗的 --line 描一遍，
-                 再用 --skin 实心盖一遍——union 内部的线全被盖掉，只剩外轮廓那半边，
-                 于是掌和四指连成一只手，而不是五块拼在一起。 -->
-            <g stroke="var(--line)" stroke-width="6.4" fill="none" stroke-linejoin="round" stroke-linecap="round">
-              <ellipse cx="98" cy="272" rx="24" ry="29"/>
-              <rect x="80" y="216" width="40" height="18" rx="9"/>
-              <rect x="78" y="232" width="44" height="18" rx="9"/>
-              <rect x="80" y="250" width="40" height="18" rx="9"/>
-              <rect x="84" y="268" width="33" height="17" rx="8.5"/>
-            </g>
-            <g fill="var(--skin)" stroke="none">
-              <ellipse cx="98" cy="272" rx="24" ry="29"/>
-              <rect x="80" y="216" width="40" height="18" rx="9"/>
-              <rect x="78" y="232" width="44" height="18" rx="9"/>
-              <rect x="80" y="250" width="40" height="18" rx="9"/>
-              <rect x="84" y="268" width="33" height="17" rx="8.5"/>
-            </g>
-            <!-- 指缝。四根手指连成一片之后就得靠这几道短线分开 -->
-            <g fill="none" stroke="var(--ink)" stroke-width="2.6" stroke-linecap="round" opacity=".38">
-              <path d="M92 234 H118"/>
-              <path d="M90 251 H120"/>
-              <path d="M92 268 H116"/>
-            </g>
+                 画法是「先描边、后填色」：同样几个形状先用两倍粗的 --line 描
+                 一遍，再用 --skin 实心盖一遍——union 内部的线全被盖掉，只剩
+                 外轮廓那半边，掌和四指连成一只手而不是五块拼在一起。 -->
+            <g transform="rotate(-13 98 258)" fill="var(--skin)" stroke="var(--line)"
+               stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+              <!-- 掌在最底下，四根手指自下而上依次压上去。
+                   **手指必须互相压着画、各自留着自己的描边**——
+                   前一版把它们并进一个 union 里，指缝只剩几条淡线，
+                   整只手糊成一只连指手套。 -->
+              <ellipse cx="94" cy="282" rx="22" ry="25"/>
+              <rect x="80" y="260" width="34" height="18" rx="9"/>
+              <rect x="76" y="244" width="46" height="18" rx="9"/>
+              <rect x="74" y="228" width="53" height="18" rx="9"/>
+              <rect x="76" y="212" width="47" height="18" rx="9"/>
+            </g>            </g>
           </svg>
 
           <!-- ③ 联想气泡：里面是放大的那块手机屏幕。
