@@ -183,7 +183,7 @@ function stashQuery(q: Omit<StashedQuery, 'expiresAt'>, now = Date.now()): strin
   return token
 }
 
-const EXPIRED_QUERY = '这个列表太久了，按钮已失效。重发一次命令即可。'
+const EXPIRED_QUERY = '按钮已失效，重发一次命令即可。'
 
 /** 仅供测试。 */
 export function resetPendingSends(): void {
@@ -227,7 +227,7 @@ export const COMMANDS: { command: string; description: string }[] = [
 
 export const HELP = [
   '<b>可用命令</b>',
-  '/status — 设备在线状态、电量、充电状态、今日统计',
+  '/status — 设备在线、电量、充电、今日统计',
   '/recent [n] — 最近 n 条消息（默认 10，上限 30）',
   '/search &lt;关键词&gt; — 全文检索',
   '/from &lt;号码&gt; [n] — 按来源号码查询，支持部分匹配',
@@ -241,7 +241,7 @@ export const HELP = [
   '/help — 这条',
   '',
   '列表下面的<b>数字按钮</b>可以逐条打开看全文，还能翻页。',
-  '直接<b>引用回复</b>任意一条短信推送，即可把内容作为短信回给对方。',
+  '<b>引用回复</b>任意一条短信推送，就能回短信给对方。',
   '也可以直接发一个号码或几个字过来——号码当作 /from，其余当作 /search。',
 ].join('\n')
 
@@ -350,7 +350,7 @@ export async function handleText(api: BotApi, text: string): Promise<BotMessage 
     case '📊 状态': return status(api)
     case '📨 最近': return list(api, { limit: 10 }, '最近 10 条')
     case '🧵 发送记录': return sentList(api, 10)
-    case '🔎 搜索': return { text: '想搜什么？直接把关键词发过来，或者用 /search 关键词', forceReply: true }
+    case '🔎 搜索': return { text: '想搜什么？把关键词发过来。', forceReply: true }
   }
 
   // 纯数字（或带 + 和分隔符的号码）按「查这个号码」处理，其余按全文检索。
@@ -565,7 +565,7 @@ const renderEvent = (
  */
 async function detail(api: BotApi, id: string, backToken?: string): Promise<BotMessage> {
   const e = await api.event(id)
-  if (!e) return { text: '这条消息不存在，可能已经被删掉了' }
+  if (!e) return { text: '这条消息不存在' }
 
   const head = [esc(e.from), e.device_name ? esc(e.device_name) : null, e.sim ? esc(e.sim) : null, fmtTime(e.occurred_at)]
     .filter(Boolean).join(' · ')
@@ -621,7 +621,7 @@ async function replyPrompt(api: BotApi, eventId: string): Promise<BotMessage> {
   if (!e) return { text: '这条消息不存在，无法回复' }
   const via = [e.device_name, e.sim_slot == null ? null : `SIM${e.sim_slot + 1}`].filter(Boolean).join(' ')
   return {
-    text: `回复 <b>${esc(e.from)}</b>${via ? `（用 ${esc(via)}）` : ''}——直接打字发过来即可。`,
+    text: `回复 <b>${esc(e.from)}</b>${via ? `（用 ${esc(via)}）` : ''}`,
     forceReply: true,
     replyTo: { eventId: e.id, sender: e.from, deviceId: e.device_id, simSlot: e.sim_slot ?? null },
   }

@@ -525,7 +525,7 @@ async function setup() {
       <label>用户名</label>
       <input id="name" value="admin" autocomplete="username">
       <div class="muted">字母、数字、- 和 _，2–24 个字符。之后可以再建别的账号，
-      每个人的设备、消息、规则完全独立，互相看不见。</div>
+      每个账号在控制台里只看到自己的数据。</div>
       <label>口令（至少 8 位，含英文 / 数字 / 符号中的两类）</label>
       <input id="pw" type="password" autocomplete="new-password">
       <label>再输一次</label>
@@ -574,7 +574,7 @@ function setupTotp(r) {
       </div>
       <div id="err" class="err-text"></div>
       <div class="muted" style="margin-top:8px">不开也能用，之后随时可以在「设置 → 两步验证」打开。
-      不开的话，登录只要用户名和口令。</div>
+      </div>
     </div>`)
 
   const finish = async (body) => {
@@ -615,14 +615,14 @@ function login() {
       <label>口令</label>
       <input id="pw" type="password" autocomplete="current-password">
       <label>两步验证码（没开就留空）</label>
-      <input id="code" inputmode="numeric" maxlength="6" class="mono" style="letter-spacing:4px" placeholder="没绑认证器就空着">
+      <input id="code" inputmode="numeric" maxlength="6" class="mono" style="letter-spacing:4px">
       <!--
         这一栏对**所有人**都显示，哪怕这个账号没绑两步验证。
         不能按账号决定显不显示：那等于做了一个「这个用户名有没有开两步验证」
         的探针，而用户名是可以枚举的。所以只能靠文案说清楚。
       -->
-      <div class="muted">两步验证是可选的。<b>没绑过认证器就把这一栏留空</b>，直接点登录；
-      绑过的话填认证器 App 上那个每 30 秒变一次的 6 位数字。</div>
+      <div class="muted"><b>没绑过认证器就把这一栏留空</b>，直接点登录；
+      绑过的话填认证器 App 上每 30 秒变一次的 6 位数字。</div>
       <label style="display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-size:14px">
         <input type="checkbox" id="trust" style="width:auto" checked>
         <span>在这台设备上保持登录 30 天</span>
@@ -637,11 +637,11 @@ function login() {
       </div>
     </div>
     <div class="card" id="expired" hidden>
-      <div class="notice">账号到期了，但<b>数据都还在</b>。有新的邀请码就能自己续上，续完立刻恢复。</div>
+      <div class="notice">账号到期了，但<b>数据都还在</b>。有新的邀请码可以自己续上。</div>
       <input id="exp_name" type="hidden">
       <label>邀请码</label>
       <input id="exp_code" class="mono" style="letter-spacing:3px;text-transform:uppercase">
-      <div class="muted">用上面填的口令${'' /* 与登录同一套凭证 */}（和两步验证码，如果开了的话）一起验证身份。</div>
+      <div class="muted">口令和两步验证码用上面填的那份。</div>
       <div class="btnrow"><button id="exp_go" class="sm">续期并登录</button></div>
       <div id="exp_err" class="err-text"></div>
     </div>`)
@@ -723,11 +723,11 @@ const PRIVACY_SUMMARY = [
 ]
 
 const PRIVACY_TEXT = [
-  ['先说最重要的三句', [
+  ['先说最重要的几件事', [
     '这台服务器会收到并**长期保存**你手机上的短信正文、来电记录，以及你勾选的 App 通知。',
     '数据在数据库里是加密的，但**密钥就在同一台服务器上**。能登上这台服务器的人，技术上能读到你的短信正文。运营者就是这样的人。',
-    '做不到「运营者看不见」。任何这类工具声称自己看不见，要么是在骗你，要么它根本没在帮你转发内容。',
-    '如果这三句让你犹豫，正确的反应不是关掉页面，而是**自己部署一份**——本项目开源（AGPL-3.0）。',
+    '做不到「运营者看不见」——服务端必须解开正文才能匹配规则、拼出推送内容。',
+    '不放心就自己部署一份——本项目开源（AGPL-3.0）。',
   ]],
   ['这个服务会拿到什么', [
     '来自你自己配对的那台安卓手机（你给手机 App 什么权限，它就采集什么）：',
@@ -743,7 +743,7 @@ const PRIVACY_TEXT = [
   ]],
   ['存在哪儿、存多久', [
     '存在这台服务器上的一个数据库文件里。短信正文、号码、位置坐标、渠道凭证都经 AES-256-GCM 加密后入库。',
-    '**消息默认永久保留，没有任何自动清理。** 半年前的验证码大概率还在库里——这是有意的，「翻出几个月前那条」正是这类工具最主要的用途之一。',
+    '**消息默认永久保留，没有任何自动清理。** 半年前的验证码大概率还在库里。',
     '你可以随时自己删：按时间或类型清空历史、删设备时连历史一起删、删掉渠道和规则。注销账号会把你的设备、消息、规则、任务一并删除。',
     '**已经推送出去的内容删不掉。** Telegram 里的聊天记录、手机上已经弹出的 Bark 通知、你自己的 Webhook 收到的数据，都不在这台服务器的控制范围内。',
     '运营者可能为防故障而备份数据库。你删掉的东西不一定同时从备份里消失。',
@@ -751,30 +751,30 @@ const PRIVACY_TEXT = [
   ['加密挡得住谁，挡不住谁', [
     '**挡得住**：拿到数据库文件副本的人。硬盘被拷走、备份泄漏、文件误传到公开的地方——这些情况下拿到的是一堆密文。',
     '**挡不住**：能登上这台服务器的人。密钥必须和程序待在一起，程序才跑得起来。',
-    '而且服务端**必须把正文解开**，才能判断这是不是验证码、匹配你写的规则、把内容拼进推送消息。这是这类工具的物理限制，不是偷懒——所以它**做不到端到端加密**。',
-    '所以这句话必须说清楚：**运营者在技术上能读到你的每一条短信，包括验证码本身。他承诺不看，但拦住他的是承诺，不是密码学。** 同样地，任何攻破这台服务器的人也能读到。',
+    '而且服务端**必须把正文解开**，才能判断这是不是验证码、匹配你写的规则、把内容拼进推送消息。所以它**做不到端到端加密**。',
+    '**运营者在技术上能读到你的每一条短信，包括验证码本身。他承诺不看，但拦住他的是承诺，不是密码学。** 同样地，任何攻破这台服务器的人也能读到。',
   ]],
   ['用户之间的隔离是真的，但它是软件层面的', [
-    '每个账号有一套独立的设备、渠道、规则和消息。管理员在控制台里**读不到**别人的消息——这不是靠自觉，是写在代码里的：任何一次消息查询都必须带上用户身份，类型检查不允许漏掉，并有测试盯着。',
+    '每个账号有一套独立的设备、渠道、规则和消息。管理员在控制台里**读不到**别人的消息——这不是靠自觉，是代码强制的。',
     '但有两件事你得知道：',
     '1. 管理员可以**重置你的口令**（这是为了帮忘记口令的人找回账号）。重置之后，他就能用新口令登录你的账号。这会写进审计日志，而且系统会往**你自己的渠道**推一条通知——你会知道，但那是事后。',
     '2. 更直接的路径在上一节：他本来就能在服务器上直接解开整个数据库。',
-    '所以隔离防的是**误操作、程序串数据、和顺手看一眼**，它不防一个下定决心要看的运营者。**这是软件层面的保证，不是密码学层面的保证。你最终信任的是运营这台机器的这个人。**',
+    '所以隔离防的是**误操作、程序串数据、和顺手看一眼**，它不防一个下定决心要看的运营者。',
   ]],
   ['你选哪个推送渠道，就等于再给谁一份', [
-    '不配渠道，内容只待在这台服务器上。配了渠道，内容就会离开这台服务器：',
+    '配了渠道，内容就会离开这台服务器：',
     '· **Telegram**：正文包在「点一下才显示」的遮罩里，但那是为了避免 Bot 被封，不是为了防人偷看。内容完整经过 Telegram 的服务器，并长期留在聊天记录里，能被转发、能被截图。',
-    '· **Bark**：内容经推送服务器与苹果的推送服务送到你的 iPhone。**验证码会明文显示在锁屏上**——能拿到你手机的人就能看到。这正是它好用的原因，也是它的代价。',
+    '· **Bark**：内容经推送服务器与苹果的推送服务送到你的 iPhone。**验证码会明文显示在锁屏上**——能拿到你手机的人就能看到。',
     '· **Webhook**：内容原样发到你填的那个地址。那个地址是谁的、对方记不记日志，由你自己负责。',
   ]],
   ['它不只是「读」，还能操作那台手机', [
     '你可以从控制台让那台手机**发短信**（保号任务、回复验证码），也可以**查一次它的位置**。',
-    '短信指令是可选功能：开启后，用一条带口令的短信就能查那台手机的状态和位置。口令明文躺在短信里是这条链路的物理限制——人在外面算不了签名。所以它的能力被刻意做窄：**只有查状态、网络、电量、定位、重连，没有发短信**。请配号码白名单，不用时关掉。',
+    '短信指令是可选功能：开启后，用一条带口令的短信就能查那台手机的状态和位置。口令是明文写在短信正文里的，这一点没法避免。所以它的能力被刻意做窄：**只有查状态、网络、电量、定位、重连，没有发短信**。请配号码白名单，不用时关掉。',
   ]],
   ['账号有效期与注销', [
     '你的账号可能有有效期。到期后**服务全部停止**：登不进控制台、手机断开连接、不再转发任何消息、计划任务不再执行。',
-    '**到期不会删除你的数据。** 数据还在，续期后自动恢复。可以用一个新的邀请码自助续期，或者联系管理员。',
-    '你可以随时请管理员删除账号，那会连同设备、消息、规则、任务一起删掉，不可恢复。',
+    '**到期不会删除数据**，续期后自动恢复。可以用一个新的邀请码自助续期，或者联系管理员。',
+    '你可以随时请管理员删除账号，不可恢复。',
   ]],
   ['不保证什么', [
     '**不保证不漏报。** 手机没电、断网、被系统杀掉、运营商延迟——任何一环都可能让一条短信迟到或收不到。请不要把它当成唯一的接收手段，尤其是涉及钱的操作。',
@@ -816,7 +816,7 @@ async function register() {
         <div class="notice">这台服务器<b>没有开放注册</b>。</div>
         <p class="muted">它是个人自建的服务，账号由管理员发放。
         ${contact ? `想要一个账号，联系：<b>${esc(contact)}</b>` : '想要一个账号，请联系这台服务器的管理员。'}</p>
-        <p class="muted">也可以<b>自己搭一套</b>——本项目开源，装完这台机器就是你自己的。</p>
+        <p class="muted">也可以<b>自己搭一套</b>——本项目开源。</p>
         <div class="btnrow"><a href="/welcome"><button class="ghost sm">了解这是什么</button></a></div>
       </div>
       <div class="card tight row"><a href="/login" class="muted">← 回登录</a></div>`)
@@ -865,7 +865,7 @@ async function register() {
         body: { code: $('#code').value.trim(), name, password: pw, agree: true },
       })
       try { localStorage.setItem(LAST_USER_KEY, name) } catch { /* 隐私模式 */ }
-      toast('账号创建好了，用它登录吧')
+      toast('账号已创建，请登录')
       go('/login')
     } catch (e) {
       $('#err').textContent = e.message
@@ -882,8 +882,7 @@ async function privacy() {
     <div class="card tight muted">版本 ${esc(PRIVACY_VERSION)}${
       pub?.admin_contact ? ` · 这台服务器由 <b>${esc(pub.admin_contact)}</b> 运行` : ''}</div>
     <div class="card prose">
-      <p>这不是法律模板，是一份大白话说明。注册前请读完——你正在把一部手机收到的全部短信，
-      交给另外一台电脑保管，其中包括银行验证码。</p>
+      <p>注册前请读完。</p>
       ${privacyHtml()}
     </div>
     <div class="card tight row">
@@ -915,7 +914,7 @@ async function recover() {
       <summary class="muted">❓ 收不到验证码</summary>
       <p class="muted" style="margin:8px 0 0">可能是这几种情况：</p>
       <ul class="muted" style="margin:6px 0 0;padding-left:20px;line-height:1.7">
-        <li><b>还没配过推送渠道</b>——那这条路走不通，换用两步验证器，或者联系管理员重置</li>
+        <li><b>还没配过推送渠道</b>——换用两步验证器，或联系管理员重置</li>
         <li>渠道配错了。登录后到「设置 → 渠道」点一下测试按钮就能确认</li>
         <li>通知被手机静音或屏蔽了，去通知设置里看一眼</li>
       </ul>
@@ -2036,7 +2035,7 @@ function ruleEditor(rule, chs, devs = []) {
         <span class="muted">到</span>
         <input id="w_to" type="time" value="${esc(win?.to || '')}" style="flex:1">
       </div>
-      <div class="muted">两个都留空表示全天。起点晚于终点表示跨午夜，如 23:00 到 07:00。按服务器时区算。</div>
+      <div class="muted">两个都留空表示全天。起点晚于终点表示跨午夜，如 23:00 到 07:00。按「设置 → 时区」里配的时区算。</div>
 
       <label>限定设备</label>
       ${devs.length > 1 ? `
@@ -2083,8 +2082,7 @@ function ruleEditor(rule, chs, devs = []) {
     ${chs.some((c) => c.type === 'bark') ? `
       <h2>Bark 行为</h2>
       <div class="card">
-        <div class="muted">这几项配在规则里而不是渠道里——它随消息类型变化：
-        银行验证码要穿透专注模式，广告短信不该。对非 Bark 渠道无影响。</div>
+        <div class="muted">这几项按消息类型配，所以放在规则里。对非 Bark 渠道无影响。</div>
         <label>通知级别</label>
         <select id="b_level">
           ${BARK_LEVELS.map(([v, t]) => `<option value="${v}"${bark.level === v ? ' selected' : ''}>${t}</option>`).join('')}
@@ -2110,8 +2108,7 @@ function ruleEditor(rule, chs, devs = []) {
     ${chs.some((c) => c.type === 'ntfy') ? `
       <h2>ntfy 行为</h2>
       <div class="card">
-        <div class="muted">字段刻意和 Bark 那几项对齐：同一条规则在两个渠道上表现一致，
-        一个人同时用 iPhone 和安卓时不该看到两种行为。对非 ntfy 渠道无影响。</div>
+        <div class="muted">字段与 Bark 那几项对齐，同一条规则在两个渠道上表现一致。对非 ntfy 渠道无影响。</div>
         <label>通知级别</label>
         <select id="n_prio">
           ${NTFY_LEVELS.map(([v, t]) => `<option value="${v}"${ntfy.priority === v ? ' selected' : ''}>${t}</option>`).join('')}
@@ -2463,7 +2460,7 @@ async function channels() {
             </div>
           </div>
           <div class="muted" data-result="${esc(c.id)}"></div>
-        </div>`).join('')}</div>` : '<div class="card muted">还没有渠道。没有渠道则收到短信不会推送到任何地方。</div>'}
+        </div>`).join('')}</div>` : '<div class="card muted">还没有渠道，在下面添加一个。</div>'}
       <h2>新增渠道</h2>
       <div class="card">
         <label>类型</label>
@@ -2503,9 +2500,9 @@ async function channels() {
     const sel = $('#barkaccess')
     if (sel) {
       const DESC = {
-        push: '其它服务可以拿已知的设备 Key 推送。陌生人无法注册新设备，也就无法把这台服务器当免费中转用——Key 是随机串，不知道就推不了。',
+        push: '其它服务拿已知的设备 Key 就能推送，陌生人注册不了新设备。',
         full: '注册也开放。只在用 Bark App 绑定新设备时才需要，绑完建议调回「允许推送」。',
-        off: '外部完全不可用。网关自己的推送走内部地址，不受影响；arm 上的其它服务仍可用 127.0.0.1:2334。',
+        off: '外部完全不可用。网关自己的推送走内部地址，不受影响；同一台机器上的其它服务仍可用本机地址访问。',
       }
       const paintDesc = () => { $('#barkdesc').textContent = DESC[sel.value] }
       paintDesc()
@@ -2549,7 +2546,7 @@ async function channels() {
                去图的是<b>你的 iPhone</b> 而不是服务器，所以地址必须公网可达；
                而且只认 <b>PNG / JPEG</b>——填 .svg 的话图标位置会是空的，不报错。
                上面预填的是本网关自己的图标。</div>
-               <div class="muted">验证码会放进通知标题，长按即可复制，无需打开任何 App。</div>`,
+`,
         collect: () => ({
           server: $('#f_server').value.trim(),
           key: $('#f_key').value.trim(),
@@ -2575,8 +2572,7 @@ async function channels() {
         html: `<div class="card tight" style="background:var(--bg)">
                  <b>为什么给安卓推荐它</b>
                  <div class="muted" style="margin:6px 0 0">Bark 只有 iPhone。ntfy 在安卓上能做到同一件事：
-                 验证码显示在通知栏，通知上直接有一个<b>「复制验证码」按钮</b>，点一下进剪贴板，
-                 不用打开任何 App。iOS 上也有客户端，但那个复制按钮官方只保证安卓 App 与网页版有。</div>
+                 验证码显示在通知栏，通知上直接有一个<b>「复制验证码」按钮</b>，不用打开 App。iOS 上也有客户端，但那个复制按钮官方只保证安卓 App 与网页版有。</div>
                </div>
                <label>服务器地址</label>
                <input id="f_server" class="mono" value="https://ntfy.sh" placeholder="https://ntfy.sh">
@@ -2752,7 +2748,7 @@ function channelEditor(c, bark) {
     </div>
     <h2>配置</h2>
     <div class="card">
-      <p class="muted">留空表示不修改。密钥不会回显，这是有意的。</p>
+      <p class="muted">留空表示不修改。密钥不会回显。</p>
       ${fields.map((f) => `
         <label>${esc(f.label)}</label>
         <input id="c_${esc(f.key)}" class="mono" type="${f.secret ? 'password' : 'text'}"
@@ -3225,8 +3221,7 @@ function paintA2HS() {
       </div>
       <span class="badge ok">已安装</span>
     </div>
-    <p class="muted" style="margin:10px 0 0">这里和 Safari 里是<b>两份独立的登录状态</b>，
-    互不影响，各自都可以勾「保持登录 30 天」。</p>`
+    <p class="muted" style="margin:10px 0 0">这里和 Safari 里是<b>两份独立的登录状态</b>，各自都可以勾「保持登录 30 天」。</p>`
     return
   }
 
@@ -3237,7 +3232,7 @@ function paintA2HS() {
     </div>
     <p class="muted" style="margin:10px 0 0">
       ${iOS
-        ? '另外：Bark 通知点进去仍然会在 Safari 里打开，<b>不会进主屏 App</b>——iOS 不给网页 App 做这件事，没有变通。主屏 App 解决的是「我主动想看一眼」：全屏、没有地址栏、独立的长会话。'
+        ? 'Bark 通知点进去会在 Safari 里打开，<b>不会进主屏 App</b>——iOS 不支持，没有变通。'
         : '安卓装的是 WebAPK，通知或链接点进去会直接落在这个 App 里。'}
       这一版<b>不带推送通知</b>，验证码仍然靠 Bark / Telegram 送到你手上。
     </p>`
@@ -3458,7 +3453,7 @@ function showNewUser(r, what = '已创建') {
     <div class="card" style="margin-top:12px">
       <!-- 不用 h2：它是全大写的，而用户名要原样显示 -->
       <div style="font-weight:800;margin-bottom:6px">${esc(what)}：${esc(r.name)}</div>
-      <p class="muted">口令和二维码<b>只显示这一次</b>，关掉就没了。让对方当面扫码，
+      <p class="muted">口令和二维码<b>只显示这一次</b>。让对方当面扫码，
       并在他登录后立刻自己改口令。</p>
       <label>初始口令</label>
       <div class="mono wrap card tight" style="user-select:all">${esc(r.password)}</div>
@@ -3490,7 +3485,7 @@ async function settings() {
         <p class="muted">每个账号在控制台里只能看到自己的设备、渠道、规则和消息。
         家人合用一台网关时，各自配各自的卡。</p>
         <div class="card tight" style="background:var(--bg)">
-          <b>说清楚边界</b>
+          <b>管理员能看到什么</b>
           <p class="muted" style="margin:6px 0 0">这是<b>应用层</b>的隔离，不是密码学隔离。
           你作为管理员能重置任何人的口令，从而以他的身份登录看到他全部的短信——
           这个动作会写审计，并且会推一条通知到<b>他自己</b>的渠道。
@@ -3508,8 +3503,7 @@ async function settings() {
       <h2>开放注册</h2>
       <div class="card">
         <p class="muted">开了之后，拿到邀请码的人可以自己注册。
-        <b>没有「完全开放」这一档</b>——这台服务器持有所有注册者短信的解密能力，
-        而邀请制本身就是最有效的一道风控：你知道码发给了谁。</p>
+        <b>没有「完全开放」这一档</b>：这台服务器能解密所有注册者的短信，码发给了谁你得清楚。</p>
         <label>注册方式</label>
         <select id="reg_mode">
           <option value="off">关闭（只有你能建号）</option>
@@ -3590,7 +3584,7 @@ async function settings() {
       <label>当前口令</label><input id="old" type="password" autocomplete="current-password">
       <label>新口令（至少 8 位，含英文 / 数字 / 符号中的两类）</label><input id="new" type="password" autocomplete="new-password">
       <label>再输一次新口令</label><input id="new2" type="password" autocomplete="new-password">
-      <div class="muted">修改后所有已登录的会话都会失效，包括当前这个。没有找回流程，请先存好。</div>
+      <div class="muted">修改后所有已登录的会话都会失效，包括当前这个。忘了可以在登录页用「忘记口令」找回。</div>
       <div class="btnrow"><button id="chpw">修改</button></div>
       <div id="err" class="err-text"></div>
     </div>
@@ -4044,12 +4038,12 @@ async function paintBattery() {
   box.innerHTML = `
     <h2>电量告警</h2>
     <div class="card">
-      <p class="muted">电量耗尽关机后验证码完全收不到，而且不会有任何告警——因为告警也要靠设备上报。阈值填 0 表示关闭该项。</p>
+      <p class="muted">关机后不会有任何告警——告警本身也要靠设备上报。阈值填 0 表示关闭该项。</p>
       <label>低于多少电量时告警（%）</label>
       <input id="bt_low" type="number" min="0" max="100" value="${c.low}">
       <label>充电到多少时提醒拔电（%）</label>
       <input id="bt_full" type="number" min="0" max="100" value="${c.full}">
-      <div class="muted">长期保持满电会加速电池老化。这台机器常年插电，填 90 左右比较合适；不需要就填 0。</div>
+      <div class="muted">长期保持满电会加速电池老化。常年插电的话填 90 左右比较合适。</div>
       <label style="display:flex;gap:8px;align-items:center;margin-top:10px">
         <input type="checkbox" id="bt_chg" style="width:auto"${c.notify_charging_change ? ' checked' : ''}>
         <span>充电状态变化时通知</span>
