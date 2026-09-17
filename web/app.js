@@ -196,21 +196,31 @@ function metaLine(parts, deviceId, deviceName, showDevice) {
 }
 
 /**
- * 通话正文里除去状态之后还剩什么。
+ * 通话记录的一行，排版对着手机上的通话 App 来：
+ * 方向箭头 + 号码（未接标红）/ 第二行是类型与时长 / 右边时间。
  *
- * 来电的正文本身就是状态（「未接来电」），徽章已经说了一遍，再显示就是重复；
- * 去电的正文里还带着通话时长，那部分要留下。
+ * 通话和短信不是一回事：短信要读正文，通话只需要「谁、什么时候、接没接到」。
+ * 用同一套排版就会让「未接来电」这四个字被当成正文摆在那里。
  */
-function callDetail(content) {
-  const rest = String(content).replace(/^已拨出\s*·\s*/, '')
-  return rest === content ? '' : rest
-}
-
-/** 通话状态：未接是要一眼看见的那个。 */
-function callBadge(content, direction) {
-  if (direction === 'out') return '<span class="badge info">去电</span>'
-  if (content.includes('未接')) return '<span class="badge err">未接来电</span>'
-  return '<span class="badge ok">已接来电</span>'
+function callRow(e, multi) {
+  const missed = e.direction !== 'out' && e.content.includes('未接')
+  const arrow = e.direction === 'out' ? '↗' : missed ? '↙' : '↙'
+  const what = e.direction === 'out' ? '去电' : missed ? '未接来电' : '已接来电'
+  // 正文形如「已接来电 · 通话 1分20秒」，状态那半截由上面的 what 说，这里只留时长
+  const dur = String(e.content).replace(/^(已拨出|已接来电|未接来电|已拒接)\s*·?\s*/, '').trim()
+  // 箭头跟在第二行而不是单开一列：手机上的通话记录就是这么排的，
+  // 号码那一行要留给号码本身
+  return `
+    <div class="item" data-id="${esc(e.id)}">
+      <div class="row">
+        <b class="truncate ${missed ? 'missed' : ''}">${esc(e.from)}</b>
+        <span class="muted mono" style="font-size:12px;flex:none">${fmt(e.occurred_at)}</span>
+      </div>
+      <div class="muted" style="margin-top:2px">
+        <span class="arrow ${missed ? 'missed' : ''}">${arrow}</span>${what}${dur ? ` · ${esc(dur)}` : ''}
+      </div>
+      ${metaLine([e.sim, ...e.matched_rules], e.device_id, e.device_name, multi)}
+    </div>`
 }
 
 /** 事件类型徽章。颜色与 style.css 的 .c-sms/.c-call/.c-notification 对应。 */
@@ -380,6 +390,8 @@ window.addEventListener('popstate', () => route())
 
 const routes = [
   [/^\/$/, overview],
+  [/^\/threads\/(.+)$/, thread],
+  [/^\/threads$/, threads],
   [/^\/events\/(.+)$/, eventDetail],
   [/^\/events$/, events],
   [/^\/compose$/, compose],
@@ -415,7 +427,9 @@ async function route() {
     if (m) {
       nav.hidden = path === '/login' || path === '/setup'
       for (const a of nav.querySelectorAll('a')) {
-        const group = path.startsWith('/events') ? '/events' : path.startsWith('/sent') ? '/compose' : path
+        // 会话和消息是同一件事的两种看法，导航上归到「消息」
+        const group = path.startsWith('/events') || path.startsWith('/threads') ? '/events'
+          : path.startsWith('/sent') ? '/compose' : path
         a.classList.toggle('active', a.dataset.nav === group)
       }
       return view(m[1])
@@ -593,6 +607,22 @@ async function overview() {
  * 筛选条件放在 URL 查询串里：刷新、前进后退、把链接发给自己都能还原当前视图，
  * 而不是刷新一下筛选就没了。
  */
+/**
+ * 消息页的分段控件。
+ *
+ * 「会话」是一种**看法**而不是一种类型，但它和「我要看通话记录」一样是个独立意图，
+ * 所以和类型并排放在最外层，而不是埋进一个视图切换里。
+ */
+function msgSegs(current, segLink) {
+  const segs = [['', '全部'], ['sms', '短信'], ['call', '通话'], ['notification', '通知']]
+  return `<div class="segs">
+    <a href="/threads" class="${current === 'thread' ? 'on' : ''}" data-seg="thread">会话</a>
+    ${segs.map(([k, t]) =>
+      `<a href="${segLink ? segLink(k) : `/events${k ? `?kind=${k}` : ''}`}" class="${current === k ? 'on' : ''}" data-seg="${k}">${t}</a>`,
+    ).join('')}
+  </div>`
+}
+
 async function events() {
   const p = new URLSearchParams(location.search)
   const get = (k, d = '') => p.get(k) ?? d
@@ -612,7 +642,6 @@ async function events() {
   // 类别切换放在最外层，而不是埋在「更多筛选」里：
   // 「我要看通话记录」是个独立意图，不该让人先想到它是一种「消息筛选」
   const kindNow = get('kind')
-  const segs = [['', '全部'], ['sms', '短信'], ['call', '通话'], ['notification', '通知']]
   const segLink = (k) => {
     const q = new URLSearchParams(location.search)
     k ? q.set('kind', k) : q.delete('kind')
@@ -622,9 +651,7 @@ async function events() {
 
   render(`
     <h1>${kindNow === 'call' ? '通话记录' : kindNow === 'notification' ? '应用通知' : '消息'}</h1>
-    <div class="segs">
-      ${segs.map(([k, t]) => `<a href="${segLink(k)}" class="${kindNow === k ? 'on' : ''}" data-seg="${k}">${t}</a>`).join('')}
-    </div>
+    ${msgSegs(kindNow, segLink)}
     <div class="card">
       <input id="f_q" placeholder="${kindNow === 'call' ? '搜索号码' : '搜索发件人或正文'}" value="${esc(get('q'))}">
       <details id="adv" ${['from', 'device', 'direction', 'since', 'until'].some((k) => get(k)) ? 'open' : ''}>
@@ -753,16 +780,14 @@ async function events() {
             <button class="ghost sm" id="bydate">改用时间范围找</button>
           </div>
         </div>` : ''}
-      ${r.events.length ? `<div class="card list">${r.events.map((e) => `
+      ${r.events.length ? `<div class="card list">${r.events.map((e) =>
+        e.kind === 'call' ? callRow(e, multi) : `
         <div class="item striped ${stripeOf(e.kind, e.direction)}" data-id="${esc(e.id)}">
           <div class="row">
             <b class="truncate">${e.direction === 'out' && e.kind === 'sms' ? '→ ' : ''}${esc(e.from)}</b>
             <span class="muted mono" style="font-size:12px;flex:none">${fmt(e.occurred_at)}</span>
           </div>
-          ${e.kind === 'call'
-            ? `<div style="margin-top:6px">${callBadge(e.content, e.direction)}
-                 ${callDetail(e.content) ? `<span class="muted" style="margin-left:6px">${esc(callDetail(e.content))}</span>` : ''}</div>`
-            : `<div class="muted truncate" style="margin-top:3px">${esc(e.content)}</div>`}
+          <div class="muted truncate" style="margin-top:3px">${esc(e.content)}</div>
           ${metaLine(
             // e.sim 由服务端算：只有一张卡时是空串，不显示
             [e.sim, e.direction === 'out' && e.kind === 'sms' ? '本机发出' : '', ...e.matched_rules],
@@ -923,6 +948,163 @@ async function compose() {
  * 设备上用户手动发的短信会作为 direction=out 的事件进「消息」页，
  * 这里只收网关下发的任务——两条路径的失败原因完全不同。
  */
+// ── 会话（像短信 App 一样） ──────────────────────────────────
+
+/**
+ * 按号码归拢的会话列表。
+ *
+ * 和「消息」页是两种看法：那边是一条时间线，用来找「刚才那条验证码」；
+ * 这边按人分组，用来回答「这个号码之前跟我说过什么」——
+ * 后者在一列时间戳里翻是很费劲的，而手机上本来就是分好组的。
+ */
+async function threads() {
+  render(`
+    <h1>会话</h1>
+    ${msgSegs('thread')}
+    <div id="list"><div class="loading">加载中…</div></div>`)
+  for (const a of app.querySelectorAll('[data-seg]')) {
+    a.onclick = (e) => { e.preventDefault(); go(a.getAttribute('href')) }
+  }
+
+  try {
+    const r = await api('/threads')
+    $('#list').innerHTML = r.threads.length ? `
+      ${r.truncated ? `<div class="card tight muted">按最近 ${r.scanned} 条记录归组。更早的记录进到会话里还能继续往前翻。</div>` : ''}
+      <div class="card list">${r.threads.map((t) => `
+        <div class="item" data-key="${esc(t.key)}">
+          <div class="thline">
+            <div class="avatar ${deviceClass(t.key)}">${esc(avatarOf(t.number))}</div>
+            <div class="col grow" style="min-width:0">
+              <div class="row">
+                <b class="truncate">${esc(t.number)}</b>
+                <span class="muted mono" style="font-size:12px;flex:none">${fmt(t.last_at)}</span>
+              </div>
+              <div class="muted truncate">${t.last_direction === 'out' ? '你：' : ''}${esc(t.last_text)}</div>
+            </div>
+          </div>
+        </div>`).join('')}</div>`
+      : '<div class="card muted">还没有短信往来。</div>'
+
+    for (const el of app.querySelectorAll('.item')) {
+      el.onclick = () => go(`/threads/${encodeURIComponent(el.dataset.key)}`)
+    }
+  } catch (e) { fail(e) }
+}
+
+/**
+ * 头像位：号码取后两位，字母发件人取首字母。
+ *
+ * 底色由号码哈希决定（和设备色是同一套），因为后两位撞得很厉害——
+ * 一屏里能出现三个「00」。真正让人一眼认出是谁的是颜色，不是那两个数字。
+ */
+function avatarOf(number) {
+  const digits = String(number).replace(/\D/g, '')
+  if (digits.length >= 2) return digits.slice(-2)
+  return String(number).trim().slice(0, 2).toUpperCase() || '#'
+}
+
+/** 一条会话：气泡对话 + 底部直接回复。 */
+async function thread(key) {
+  render('<div class="loading">加载中…</div>')
+  try {
+    const r = await api(`/threads/${encodeURIComponent(key)}`)
+    const devs = (await api('/devices').catch(() => ({ devices: [] }))).devices
+    const online = devs.filter((d) => d.status === 'online')
+    const multi = devs.filter((d) => d.status !== 'revoked').length > 1
+
+    // 回复默认用最近一条收到的消息那台设备、那张卡：
+    // 换一张卡发回去，对方看到的是陌生号码
+    const prefDev = online.some((d) => d.id === r.reply_device) ? r.reply_device : (online[0]?.id ?? '')
+
+    let lastDay = ''
+    const bubbles = r.items.map((x) => {
+      const day = new Date(x.at).toLocaleDateString('zh-CN')
+      const sep = day === lastDay ? '' : `<div class="daysep">${esc(dayLabel(x.at))}</div>`
+      lastDay = day
+      const failed = x.source === 'outbound' && x.status === 'failed'
+      const meta = [
+        new Date(x.at).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+        multi && x.device_name ? esc(x.device_name) : '',
+        x.sim ? esc(x.sim) : '',
+        x.source === 'outbound' ? esc((OUTBOUND_STATUS.find(([v]) => v === x.status) || [, x.status ?? ''])[1]) : '',
+        failed && x.error ? esc(x.error) : '',
+      ].filter(Boolean).join(' · ')
+      return `${sep}<div class="bub ${x.direction === 'out' ? 'out' : 'in'}${failed ? ' fail' : ''}"
+        data-id="${esc(x.id)}" data-src="${esc(x.source)}">${esc(x.text)}<span class="stamp">${meta}</span></div>`
+    }).join('')
+
+    render(`
+      <div class="row" style="align-items:flex-start">
+        <h1 class="wrap" style="margin-bottom:8px">${esc(r.number)}</h1>
+        <a href="/threads" class="muted">返回</a>
+      </div>
+      ${r.truncated ? '<div class="card tight muted">只列出了最近的往来。</div>' : ''}
+      <div class="card"><div class="thread">${bubbles}</div></div>
+      <div class="card">
+        ${online.length ? `
+          <label>回复</label>
+          <textarea id="t_text" rows="2" placeholder="输入内容，回车换行"></textarea>
+          ${multi ? `<label>用哪台设备</label>
+            <select id="t_dev">${online.map((d) =>
+              `<option value="${esc(d.id)}"${d.id === prefDev ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>` : ''}
+          <div id="t_simbox"></div>
+          <div class="btnrow"><button id="t_send">发送</button></div>
+          <div id="t_err" class="err-text"></div>`
+          : '<div class="muted">没有在线设备，暂时无法回复。</div>'}
+      </div>`)
+
+    for (const el of app.querySelectorAll('.bub')) {
+      el.onclick = () => go(`${el.dataset.src === 'outbound' ? '/sent/' : '/events/'}${encodeURIComponent(el.dataset.id)}`)
+    }
+    // 打开就滚到最新一条：对话是从下往上看的
+    const last = app.querySelector('.bub:last-of-type')
+    if (last) last.scrollIntoView({ block: 'center' })
+
+    if (!online.length) return
+
+    const devOf = () => devs.find((d) => d.id === ($('#t_dev')?.value || prefDev))
+    const drawSims = () => {
+      $('#t_simbox').innerHTML = simSelect('t_sim', simsOf(devOf()), r.reply_sim)
+    }
+    drawSims()
+    if ($('#t_dev')) $('#t_dev').onchange = drawSims
+
+    $('#t_send').onclick = async () => {
+      const text = $('#t_text').value
+      if (!text.trim()) return ($('#t_err').textContent = '内容不能为空')
+      $('#t_send').disabled = true
+      $('#t_err').textContent = ''
+      try {
+        const sim = $('#t_sim')
+        await api('/outbound', {
+          method: 'POST',
+          body: {
+            device_id: $('#t_dev')?.value || prefDev,
+            to: r.number, text,
+            ...(sim && sim.value !== '' ? { sim_slot: Number(sim.value) } : {}),
+          },
+        })
+        toast('已提交发送')
+        thread(key)
+      } catch (e) {
+        $('#t_err').textContent = e.message
+        $('#t_send').disabled = false
+      }
+    }
+  } catch (e) { fail(e) }
+}
+
+/** 今天/昨天说人话，再往前给日期。 */
+function dayLabel(ts) {
+  const d = new Date(ts)
+  const today = new Date()
+  const sameDay = (a, b) => a.toDateString() === b.toDateString()
+  if (sameDay(d, today)) return `今天 ${d.toLocaleDateString('zh-CN')}`
+  const y = new Date(today.getTime() - 86400000)
+  if (sameDay(d, y)) return `昨天 ${d.toLocaleDateString('zh-CN')}`
+  return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+}
+
 async function sent() {
   const p = new URLSearchParams(location.search)
   const get = (k, d = '') => p.get(k) ?? d

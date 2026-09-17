@@ -28,6 +28,7 @@ import { toSvg } from '../../core/qr.js'
 import { eventFingerprint, planReconcile } from '../../core/fingerprint.js'
 import { scanMatches } from '../../core/search.js'
 import { simLabel, simsOf } from '../../core/sim.js'
+import { groupThreads, mergeThread, threadKey, type ThreadItem } from '../../core/thread.js'
 import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
 import type { BarkAccess } from './barkproxy.js'
@@ -1540,6 +1541,122 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
     scanned_to: scannedTo,
     exhausted: r.exhausted,
     truncated: !r.exhausted,
+  })
+}, true, false, 'bot')
+
+// ── 会话视图 ────────────────────────────────────────────────
+
+/**
+ * 按号码归拢的会话列表 —— 控制台里那个「像短信 App 一样」的视图。
+ *
+ * 号码是密文，SQL 没法 GROUP BY，只能取一批出来解密后在内存里分组。
+ * 所以这是**最近若干条里的会话**，不是全部历史的会话总表：
+ * 要做后者得把整库解密一遍，而会话视图的用途本来就是「最近在跟谁来往」。
+ * 更早的记录仍然能在会话里翻到（进去之后按号码过滤，那条路径是完整的）。
+ */
+const THREAD_SCAN = 1500
+
+route('GET', '/api/threads', async ({ res, url, deps }) => {
+  const scan = Math.min(Math.max(Number(url.searchParams.get('scan') ?? THREAD_SCAN), 100), 20_000)
+
+  const rows = await deps.store.listEvents({ kind: 'sms', limit: scan, offset: 0 })
+  const items = await Promise.all(rows.map(async (e) => ({
+    from: await deps.cipher.decrypt(e.sender_enc),
+    text: await deps.cipher.decrypt(e.content_enc),
+    at: e.occurred_at,
+    direction: (e.direction ?? 'in') as 'in' | 'out',
+    device_id: e.device_id,
+    sim_slot: e.sim_slot,
+  })))
+
+  // 网关自己发出去的也要出现在会话里：控制台发完一条，它就该在对话里，
+  // 否则「我刚发的那条呢」只能去另一个页面找
+  const sent = await deps.store.listOutbound(scan, 0, { device_id: null, status: null, to: null })
+  for (const o of sent) {
+    items.push({
+      from: o.to_number,
+      text: await deps.cipher.decrypt(o.content_enc),
+      at: o.created_at,
+      direction: 'out',
+      device_id: o.device_id,
+      sim_slot: o.sim_slot,
+    })
+  }
+
+  json(res, 200, {
+    threads: groupThreads(items),
+    scanned: rows.length + sent.length,
+    // 取满了说明更早的还有，界面据此说明这是「最近的会话」
+    truncated: rows.length >= scan,
+  })
+}, true, false, 'bot')
+
+/**
+ * 一条会话里的全部往来。
+ *
+ * 事件流与网关的发送记录合并成同一条时间线——在手机上它们本来就是一条对话。
+ * 号码用归一化后的键做**部分匹配**，所以 +86 前缀写法不同的记录都能捞到。
+ */
+route('GET', '/api/threads/:key', async ({ res, params, url, deps }) => {
+  const key = params.key!
+  const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 200), 1), 500)
+  const scan = Math.min(Math.max(Number(url.searchParams.get('scan') ?? 8000), 100), 200_000)
+
+  const rows = await deps.store.listEvents({ kind: 'sms', limit: scan, offset: 0 })
+  const events: ThreadItem[] = []
+  let number = ''
+  for (const e of rows) {
+    const from = await deps.cipher.decrypt(e.sender_enc)
+    if (threadKey(from) !== key) continue
+    if (!number) number = from
+    events.push({
+      id: e.id,
+      direction: (e.direction ?? 'in') as 'in' | 'out',
+      text: await deps.cipher.decrypt(e.content_enc),
+      at: e.occurred_at,
+      source: 'event',
+      sim_slot: e.sim_slot,
+      device_id: e.device_id,
+    })
+    if (events.length >= limit) break
+  }
+
+  const outbound: ThreadItem[] = []
+  // 号码里可能带空格与横杠（「+86 138 0013 8000」），SQL 的 LIKE 匹配不上归一化后的键，
+  // 只能取一批回来逐条归一化再比
+  for (const o of await deps.store.listOutbound(scan, 0, { device_id: null, status: null, to: null })) {
+    if (threadKey(o.to_number) !== key) continue
+    if (!number) number = o.to_number
+    outbound.push({
+      id: o.id, direction: 'out',
+      text: await deps.cipher.decrypt(o.content_enc),
+      at: o.created_at, source: 'outbound',
+      status: o.status, error: o.error,
+      sim_slot: o.sim_slot, device_id: o.device_id,
+    })
+  }
+
+  if (events.length === 0 && outbound.length === 0) {
+    return json(res, 404, { error: '这个号码没有往来记录' })
+  }
+
+  const devs = await deps.store.listDevices()
+  const names = new Map(devs.map((d) => [d.id, d.name]))
+  const sims = new Map(devs.map((d) => [d.id, simsOf(d.net_json)]))
+  const items = mergeThread(events, outbound).map((x) => ({
+    ...x,
+    device_name: x.device_id ? names.get(x.device_id) ?? x.device_id : null,
+    sim: simLabel(x.device_id ? sims.get(x.device_id) ?? [] : [], x.sim_slot),
+  }))
+
+  json(res, 200, {
+    key, number,
+    items,
+    // 最近一条收到的消息决定「回复」用哪台设备哪张卡：
+    // 多卡场景下从别的卡回过去，对方看到的是陌生号码
+    reply_device: [...items].reverse().find((x) => x.direction === 'in')?.device_id ?? null,
+    reply_sim: [...items].reverse().find((x) => x.direction === 'in')?.sim_slot ?? null,
+    truncated: rows.length >= scan,
   })
 }, true, false, 'bot')
 
