@@ -77,7 +77,15 @@
         align-items: center; padding: 0 16px }
   .sc-a   { height: 90svh; justify-content: center; padding-top: 58px; gap: clamp(10px, 2.4vh, 26px) }
   .sc-mid { height: 92svh; position: relative }
-  .sc-c   { height: 100svh; position: relative; justify-content: center; padding: 0 16px 116px; gap: 12px }
+  /* clip-path 只在上下裁、左右放开（-100vw）：第三幕的导线要往上兜 100vh
+     才能接住上一幕，而 .sc-c 在 DOM 里排在 .sc-mid 后面，两者都是
+     position: relative 且没有 z-index——同一层里按文档顺序画，于是那条线
+     必然盖在第二幕的「加密 / 托管服务器」两个站牌上，正好压住中间那个字。
+     裁到 .sc-c 自己的上沿就正好接上：.sc-c 的上沿就是 .sc-mid 的下沿。
+     不能写 overflow: hidden——.vsub 是 margin: 0 -16px 的出血排版，
+     那样会把左右两边一起裁掉。 */
+  .sc-c   { height: 100svh; position: relative; justify-content: center; padding: 0 16px 116px; gap: 12px;
+            clip-path: inset(0 -100vw) }
 
   .v2head {
     margin: 0; text-align: center; font-weight: 800; letter-spacing: -.02em;
@@ -1259,33 +1267,32 @@
               <!-- 袖口 -->
               <path stroke="var(--line)" stroke-width="3" d="M84 284 C90 292 94 300 96 308"/>
             </g>
-            <!-- 手掌。原来它是一团横跨 x=64..136 的白色，一半探在手机左边，
-                 读不出是手——现在把掌心藏到手机后面，只在机身**下方**露出
-                 掌根那一截，那正是单手握手机时看得见的部分。 -->
-            <path fill="var(--card)" stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round"
-                  d="M98 250 C88 260 88 288 100 298 C112 308 136 306 144 294 C152 280 148 254 136 246 Z"/>
-            <!-- 手机。机身用 --card + 粗描边，屏幕给一块青色——
-                 直接 fill="var(--line)" 的话深色主题下会是一台薄荷绿的手机 -->
-            <g stroke="var(--line)" stroke-width="3.5" stroke-linejoin="round">
-              <rect x="96" y="186" width="52" height="82" rx="10" fill="var(--card)"/>
-              <rect x="103" y="194" width="38" height="60" rx="5" fill="var(--cyan)" stroke-width="0"/>
+            <!-- 手机：我们看到的是**背面**。
+                 他正低头看屏幕，屏幕就该朝着他自己；原来画的是屏幕朝外，
+                 于是这只手和这台手机怎么摆都是拧着的——手背、掌心、指尖
+                 三样的前后关系全部对不上。
+                 背面只画摄像头模组，不写任何内容：内容在右边那个气泡里，
+                 这里再来一份既重复又会互相打架。 -->
+            <g stroke="var(--line)" stroke-linejoin="round" fill="var(--card)">
+              <rect x="96" y="186" width="52" height="82" rx="10" stroke-width="3.5"/>
+              <rect x="103" y="193" width="26" height="26" rx="8" stroke-width="3"/>
+              <circle cx="110.5" cy="200.5" r="4" stroke-width="2.6"/>
+              <circle cx="121" cy="211" r="4" stroke-width="2.6"/>
             </g>
-            <g fill="var(--on-bright)" opacity=".75">
-              <rect x="109" y="204" width="26" height="4" rx="2"/>
-              <rect x="109" y="214" width="18" height="4" rx="2"/>
-              <rect x="109" y="230" width="22" height="7" rx="3.5"/>
-            </g>
-            <!-- 单手握手机时前面只看得见**一根拇指**，其余四指都在机身背后。
-                 原来画的是三根手指横搭在屏幕上，加上左边那团掌心，
-                 合起来认不出是一只手。现在：拇指压在机身左缘，
-                 另一侧露两个指尖，说明手是从背后绕过来的。 -->
+            <!-- 握着它的那只手：掌心贴在背板上，所以朝着我们的是**手背**，
+                 四根手指从左缘绕到屏幕那一侧去，指尖看不见。
+                 先画手指再画手背，手背正好压住指根。 -->
             <g fill="var(--card)" stroke="var(--line)" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
-              <rect x="146" y="218" width="18" height="14" rx="7"/>
-              <rect x="146" y="238" width="16" height="13" rx="6.5"/>
+              <rect x="84" y="222" width="36" height="15" rx="7.5"/>
+              <rect x="82" y="242" width="38" height="15" rx="7.5"/>
+              <rect x="86" y="262" width="34" height="14" rx="7"/>
+              <path d="M104 240 C92 252 92 290 106 300 C120 310 148 306 154 292 C160 276 156 246 144 238 Z"/>
             </g>
-            <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <path stroke="var(--line)" stroke-width="22" d="M104 288 C102 272 106 258 112 250"/>
-              <path stroke="var(--card)" stroke-width="15.5" d="M104 288 C102 272 106 258 112 250"/>
+            <!-- 手背上的三道指骨。没有它，那一块就只是个白团 -->
+            <g fill="none" stroke="var(--line)" stroke-width="2.4" stroke-linecap="round" opacity=".4">
+              <path d="M112 262 C114 274 114 282 112 290"/>
+              <path d="M126 260 C128 274 128 282 126 290"/>
+              <path d="M140 260 C142 272 142 278 140 286"/>
             </g>
           </svg>
 
