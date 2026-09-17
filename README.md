@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="web/download/homing.apk"><img src="https://img.shields.io/badge/APK-v0.1.6-66d9ef" alt="APK"></a>
+  <a href="web/download/homing.apk"><img src="https://img.shields.io/badge/APK-v0.1.7-66d9ef" alt="APK"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license"></a>
   <a href="https://github.com/rikouu/homing/actions"><img src="https://github.com/rikouu/homing/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
@@ -219,13 +219,19 @@ sudo bash install.sh
 `SMS_RECEIVED` 广播依然被押到解锁之后；连绕开广播直接读短信库都不行，
 因为那个库走的是解锁前不存在的加密区。
 
+好消息是：**解锁这一下就够了，不用打开 App。** `BOOT_COMPLETED` 正是在解锁那一刻
+投递的，App 会自己起来、自己连上（实测解锁后约 5 秒），被押住的短信也跟着补上来。
+
 所以只有两条路，**二选一**：
 
 1. **想要重启后无人值守自动恢复** → 把这台手机的锁屏设成「无」或「滑动」
    （设置 → 安全 → 屏幕锁定）。这台机器本来就该锁在家里、不外带。
 2. **想保留锁屏密码** → 接受这个代价：每次重启（停电、系统更新、手滑长按）
-   之后，都要有人走到手机跟前**解锁一次并打开一次这个 App**，再切回后台。
-   在那之前，验证码一条都收不到。
+   之后，都要有人走到手机跟前**解一次锁**。在那之前，验证码一条都收不到。
+
+还有一个与锁屏无关、但同样会让开机自启失效的情况：**这个 App 被「强行停止」过
+（设置里手动停止、或某些清理工具干的）且之后再没被打开过**。处于这个状态的应用
+收不到任何广播，包括 `BOOT_COMPLETED`——打开一次就恢复正常。
 
 App 主界面上会在检测到锁屏密码时直接显示这段提示，不用你记。
 

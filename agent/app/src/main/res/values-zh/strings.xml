@@ -87,11 +87,7 @@
     <string name="sms_battery">电量 %1$s%%%2$s</string>
     <string name="sms_battery_charging">（充电中）</string>
 
-    <string name="reboot_warn">⚠ 这台手机设了锁屏密码。重启之后，在有人解锁之前，Android 会把收到的每一条短信都押住不派发——网关这边一条都收不到，和这个 App 做了什么无关。
-
-要真正无人值守，请解除锁屏密码（设置 → 安全 → 屏幕锁定 → 无）。
-
-想保留锁屏的话：每次重启后都需要有人去解一次锁、打开这个 App 一次，再把它切到后台。</string>
+    <string name="reboot_warn">⚠ 这台手机设了锁屏密码。重启之后，在有人解锁之前，Android 会把收到的每一条短信都押住不派发，这个 App 也不会被启动——网关那边看到的是离线。\n\n但**只要有人解一次锁，就全部自动恢复**，不需要打开这个 App（实测解锁后约 5 秒自动连上，积压的短信也会跟着补上来）。\n\n所以要真正无人值守（比如停电后家里没人），请解除锁屏密码：设置 → 安全 → 屏幕锁定 → 无。否则每次重启都得有人走到手机跟前解一次锁。</string>
     <string name="btn_autostart">自启动权限（去设置）</string>
     <string name="autostart_tip_generic">多数国产 ROM 默认禁止应用开机自启，而系统不提供任何查询接口，App 无从知道你开没开。请到系统设置里允许这个 App 自启动。</string>
     <string name="autostart_unavailable">打不开那个页面。请到「设置 → 应用管理 → Homing」里允许自启动 / 后台活动。</string>

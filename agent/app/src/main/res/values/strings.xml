@@ -120,11 +120,7 @@
       代价和两条出路都写清楚：不解除锁屏就等于「每次重启后要有人去解一次锁」，
       而在那之前一条验证码都收不到。含糊其辞比不说更糟——人会以为装好就完事了。
     -->
-    <string name="reboot_warn">⚠ This phone has a screen lock. After a reboot, Android holds every incoming SMS until someone unlocks the phone — so the gateway receives nothing, no matter what this app does.
-
-For unattended operation, remove the screen lock (Settings › Security › Screen lock › None).
-
-If you want to keep the lock: after every reboot you must unlock the phone and open this app once, then send it to the background.</string>
+    <string name="reboot_warn">⚠ This phone has a screen lock. After a reboot, Android holds every incoming SMS — and does not start this app — until someone unlocks the phone. The console will show the device as offline.\n\nThe good news: unlocking is all it takes. You do not need to open this app; it reconnects by itself about 5 seconds after the unlock, and the held messages follow.\n\nSo for truly unattended operation (a power cut while nobody is home), remove the screen lock: Settings › Security › Screen lock › None. Otherwise every reboot needs someone to walk over and unlock the phone once.</string>
     <string name="btn_autostart">Auto-start permission (open settings)</string>
     <string name="autostart_tip_generic">Many Android skins block apps from starting after a reboot, and there is no way for an app to check this. Open your phone\'s settings and allow this app to auto-start.</string>
     <string name="autostart_unavailable">Could not open that page. Go to Settings › Apps › Homing and allow auto-start / background activity.</string>
