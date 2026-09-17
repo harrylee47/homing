@@ -63,6 +63,11 @@ export interface ApiDeps {
   onPasswordReset?: ((userId: string, byName: string) => void) | undefined
   /** 立即执行一个计划任务（忽略排期），用于控制台的「立即测试」。 */
   runTask?: ((task: ParsedTask) => Promise<{ sent: boolean; reason?: string }>) | undefined
+  /**
+   * 给设备发一帧 ping，让它立刻回一个带全量状态的 pong。
+   * 返回 false 表示设备不在线。不新增 cmd action——pong 里本来就什么都有。
+   */
+  pingDevice?: ((deviceId: string) => boolean) | undefined
   /** 向设备请求一次定位 */
   locateDevice?: ((deviceId: string) => Promise<{ ok: boolean; location?: unknown; error?: string }>) | undefined
   /** 让设备列出已安装应用 */
@@ -1279,6 +1284,27 @@ route('POST', '/api/devices/pairing-code', async ({ user, res, body, deps }) => 
     // 不如让用户手输——错的二维码比没有二维码更难排查
     qr: ws ? toSvg(pairPayload(ws, r.code), { cell: 4, label: '设备配对二维码' }) : null,
   })
+})
+
+/**
+ * 立刻刷新一台设备的状态。
+ *
+ * 心跳每 30 秒带回一次全量状态（电量、充电、逐卡信号、网络），平时够用；
+ * 但排查「它到底怎么了」的时候，盯着一个 29 秒前的读数干等很难受。
+ *
+ * 实现上**不新增指令**：主动发一帧 ping，Agent 的 pong 里本来就带全部状态。
+ * 这样 Agent 侧零改动、不用发新 APK——而为这件事新造一个 cmd action，
+ * 正是当年 query_status 那三个死值的由来。
+ */
+route('POST', '/api/devices/:id/refresh', async ({ user, res, params, deps }) => {
+  // 注意参数顺序是 (deps, userId, id)，两个都是 string，写反了类型检查抓不到，
+  // 表现是「设备永远不存在」
+  const d = await ownedDevice(deps, user.id, params.id!)
+  if (!d) return json(res, 404, { error: '设备不存在' })
+  if (!deps.pingDevice) return json(res, 500, { error: '未接入' })
+  if (!deps.pingDevice(d.id)) return json(res, 409, { error: '设备当前不在线' })
+  // pong 是异步回来的，等一小会儿再让前端去读
+  json(res, 202, { ok: true })
 })
 
 /**

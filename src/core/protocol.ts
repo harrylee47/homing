@@ -115,9 +115,24 @@ export const DeviceId = z.string().min(3).max(64).regex(/^dev_[A-Za-z0-9_-]+$/)
 export const EventKind = z.enum(['sms', 'call', 'notification'])
 export type EventKind = z.infer<typeof EventKind>
 
+/**
+ * 服务端能下发的指令。**这个枚举就是「服务端能发什么」的单一事实来源**——
+ * 往里加一项而不实现，编译器会通过 queryDevice 的 Exclude 提醒你。
+ *
+ * 曾经有三个死值在这里躺了很久：query_status、reboot_service、sync_config。
+ * 从 M0 第一个 commit 照着计划文档的示例 JSON 抄进来，服务端从没发过、
+ * Agent 也从没实现过。它们不是「有用但没做」，是本来就该删——能力都已经
+ * 落在更合适的位置：
+ *  - sync_config → 配置只经 hello_ack 下发，改配置时 reconnectDevices()
+ *    踢一下连接让 Agent 重连拉取。只留一条投递路径，就不会出现
+ *    「推下去的配置」和「握手拿到的配置」漂移。
+ *  - query_status → 心跳的 pong 每 30 秒就带回全量状态（电量、充电、
+ *    逐卡信号、网络）。联系不上时走短信指令，那条路刻意不经服务端。
+ *  - reboot_service → 真需要它的时候 WS 多半已经不通，指令根本到不了。
+ *    离线兜底同样是短信指令的 RECONNECT。
+ */
 export const CmdAction = z.enum([
-  'send_sms', 'query_status', 'reboot_service', 'sync_config', 'get_location', 'list_apps',
-  'import_history', 'list_fingerprints',
+  'send_sms', 'get_location', 'list_apps', 'import_history', 'list_fingerprints',
 ])
 export type CmdAction = z.infer<typeof CmdAction>
 

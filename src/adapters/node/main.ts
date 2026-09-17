@@ -5,7 +5,7 @@ import { setDefaultResultOrder } from 'node:dns'
 import { createServer } from 'node:http'
 import { createCipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
-import { DEFAULT_AGENT_CONFIG, ErrorCode } from '../../core/protocol.js'
+import { DEFAULT_AGENT_CONFIG, ErrorCode, type CmdAction } from '../../core/protocol.js'
 import { CLOSE_AUTH_FAILED } from '../../core/session.js'
 import { toSvg } from '../../core/qr.js'
 import { loadConfig } from './config.js'
@@ -239,7 +239,9 @@ function onQueryResult(cmdId: string, ok: boolean, detail: Record<string, unknow
 /** 通用的查询类指令：下发后等回执或超时。 */
 async function queryDevice(
   deviceId: string,
-  action: 'get_location' | 'list_apps' | 'import_history' | 'list_fingerprints',
+  // 不写手写联合：那样往 CmdAction 里加一项而不实现，编译器一声不吭——
+  // 三个死值就是这么积起来的。Exclude 让枚举重新成为唯一的事实来源
+  action: Exclude<CmdAction, 'send_sms'>,
   timeoutMs: number,
   args: Record<string, unknown> = {},
 ): Promise<{ ok: boolean; detail: Record<string, unknown> | null; error: string | null }> {
@@ -258,6 +260,17 @@ async function queryDevice(
 }
 
 /** 向设备请求一次定位，等待回执或超时。 */
+/**
+ * 让一台在线设备立刻回一次全量状态。
+ *
+ * 发的是普通心跳帧，Agent 的 pong 处理器本来就带回电量、充电、逐卡信号、
+ * 网络——所以不需要新的 cmd action，Agent 一行都不用改。
+ * seq 取时间戳：Agent 只是原样回传它，服务端不做配对。
+ */
+function pingDevice(deviceId: string): boolean {
+  return hub.send(deviceId, makeFrame('ping', { seq: Date.now() % 100000 }, Date.now()) as DownstreamFrame)
+}
+
 async function locateDevice(deviceId: string): Promise<{ ok: boolean; location?: unknown; error?: string }> {
   // GPS 冷启动可能要十几秒，Agent 侧自己有 25 秒上限，这里留足余量
   const result = await queryDevice(deviceId, 'get_location', 40_000)
@@ -331,6 +344,7 @@ const apiDeps = {
   trustedProxy: cfg.trustedProxy,
   // apiDeps 在 taskDeps 之前定义，用函数包一层避免 TDZ
   runTask: (task: ParsedTask) => runTaskNow(task),
+  pingDevice,
   locateDevice,
   listApps,
   importHistory,

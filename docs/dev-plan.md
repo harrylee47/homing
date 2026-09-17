@@ -259,7 +259,7 @@ v1 是自用场景的正确选择。v2 作为配置项预留，供未来分发�
   "type": "cmd",
   "payload": {
     "cmd_id": "cmd_<uuid>",
-    "action": "send_sms | query_status | reboot_service | sync_config",
+    "action": "send_sms | get_location | list_apps | import_history | list_fingerprints",
     "args": {
       "to": "13800138000",
       "text": "收到",
@@ -276,7 +276,7 @@ v1 是自用场景的正确选择。v2 作为配置项预留，供未来分发�
   "type": "cmd_result",
   "payload": {
     "cmd_id": "cmd_<uuid>",
-    "status": "accepted | sent | delivered | failed",
+    "status": "accepted | sent | delivered | done | failed",
     "error": null
   }
 }

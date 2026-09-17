@@ -2892,6 +2892,7 @@ async function devices() {
               ${d.status === 'revoked' ? '' : statusBadges(d)}
             </div>
             <div style="display:flex;gap:6px;flex-direction:column;align-items:flex-end">
+              ${d.status === 'online' ? `<button class="ghost sm" data-refresh="${esc(d.id)}">刷新状态</button>` : ''}
               ${d.status === 'online' ? `<button class="ghost sm" data-locate="${esc(d.id)}">定位</button>` : ''}
               ${d.status !== 'revoked'
                 ? `<button class="danger sm" data-revoke="${esc(d.id)}">吊销</button>`
@@ -3045,7 +3046,30 @@ async function devices() {
         <a href="${map}" target="_blank" rel="noreferrer noopener">在地图中打开</a>`
     }
 
-    for (const b of app.querySelectorAll('[data-locate]')) {
+    /**
+   * 「刷新状态」：发一帧 ping，等 pong 回来再重画。
+   *
+   * 心跳是 30 秒一次，排查时盯着一个 29 秒前的读数干等很难受。
+   * 这里不新增指令——pong 本来就带回全量状态。
+   */
+  for (const b of app.querySelectorAll('[data-refresh]')) {
+    b.onclick = async () => {
+      b.disabled = true
+      const was = b.textContent
+      b.textContent = '刷新中…'
+      try {
+        await api(`/devices/${b.dataset.refresh}/refresh`, { method: 'POST' })
+        // pong 是异步回来的，给它一点时间再去读
+        await new Promise((r) => setTimeout(r, 1200))
+        devices()
+        return
+      } catch (e) { toast(e.message) }
+      b.textContent = was
+      b.disabled = false
+    }
+  }
+
+  for (const b of app.querySelectorAll('[data-locate]')) {
       b.onclick = async () => {
         const id = b.dataset.locate
         const out = app.querySelector(`[data-loc="${id}"]`)
