@@ -1893,10 +1893,40 @@ route('POST', '/api/pair', async ({ user, res, body, deps, ip }) => {
 // ── 渠道 ────────────────────────────────────────────────────
 
 route('GET', '/api/channels', async ({ user, res, deps }) => {
-  const rows = await deps.store.listChannels(user.id)
+  const [rows, rules] = await Promise.all([
+    deps.store.listChannels(user.id),
+    deps.store.listRules(user.id),
+  ])
+
+  /**
+   * 这条渠道被几条**启用着的**规则选中。
+   *
+   * 「启用」和「收得到消息」是两件事，而界面上长得一模一样——这正是这个项目
+   * 最怕的那类静默失败。真实发生过：ntfy 与浏览器推送是在预置规则写完**之后**
+   * 才加的，而新增渠道**不会**被追加进已有规则（那是对的：新渠道不该悄悄开始
+   * 收你的银行验证码）。于是它们点「测试」能通、渠道故障告警也收得到
+   * （跨渠道告警发给所有健康渠道，不看规则），**唯独一条真实短信都不会到**，
+   * 而三处界面没有任何一处说得出为什么。
+   */
+  const inRules = new Map<string, number>()
+  for (const r of rules) {
+    if (!r.enabled) continue
+    // action_json 是用户可编辑的 JSON 字符串，解不开就当这条规则没选任何渠道——
+    // 一条坏规则不该让整个渠道列表拿不到
+    let channels: unknown
+    try { channels = (JSON.parse(r.action_json) as { channels?: unknown }).channels } catch { continue }
+    if (!Array.isArray(channels)) continue
+    for (const id of channels) {
+      if (typeof id === 'string') inRules.set(id, (inRules.get(id) ?? 0) + 1)
+    }
+  }
+
   // 绝不返回配置明文：里面是 Bot token
   json(res, 200, {
-    channels: rows.map((c) => ({ id: c.id, type: c.type, name: c.name, enabled: c.enabled, created_at: c.created_at })),
+    channels: rows.map((c) => ({
+      id: c.id, type: c.type, name: c.name, enabled: c.enabled, created_at: c.created_at,
+      in_rules: inRules.get(c.id) ?? 0,
+    })),
   })
 })
 

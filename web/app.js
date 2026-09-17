@@ -2670,11 +2670,19 @@ async function channels() {
               <b>${esc(c.name)}</b>
               <span class="muted">${c.type === 'webpush' ? '浏览器通知' : esc(c.type)}${c.enabled ? '' : ' · 已停用'}</span>
             </div>
+            ${c.enabled && c.in_rules === 0
+              ? '<span class="badge warn" style="flex:none">没规则选它</span>'
+              : ''}
             <div style="display:flex;gap:6px">
               <button class="ghost sm" data-edit="${esc(c.id)}">编辑</button>
               <button class="ghost sm" data-test="${esc(c.id)}">测试</button>
             </div>
           </div>
+          ${c.enabled && c.in_rules === 0 ? `<div class="notice" style="margin-top:8px">
+            <b>这条渠道一条真实消息都收不到。</b>没有任何启用着的规则选中它——
+            「测试」能通、渠道故障告警也会到，那两条都不看规则，所以它看起来是好的。
+            到<a href="/rules">规则</a>页把它勾进你要的规则里（比如「验证码」「普通短信」）。
+          </div>` : ''}
           <div class="muted" data-result="${esc(c.id)}"></div>
         </div>`).join('')}</div>` : '<div class="card muted">还没有渠道，在下面添加一个。</div>'}
       <h2>新增渠道</h2>
