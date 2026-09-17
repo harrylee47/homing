@@ -50,8 +50,13 @@ export async function loadBatteryConfig(store: Store): Promise<BatteryConfig> {
 
 export interface MonitorDeps {
   store: Store
-  /** 已解密的启用渠道。由适配层提供，避免 core 触碰加密细节的生命周期。 */
-  channels(): Promise<ChannelConfig[]>
+  /**
+   * 某个用户已解密的启用渠道。由适配层提供，避免 core 触碰加密细节的生命周期。
+   *
+   * 按用户取而不是取全部：设备离线的告警只该发给设备的主人，
+   * 发到别人那里既没用又泄漏了「他有几台设备」。
+   */
+  channels(userId: string): Promise<ChannelConfig[]>
   /** 当前在线的 device_id */
   online(): string[]
   baseUrl?: string | null
@@ -78,7 +83,8 @@ export function resetAlertState(): void {
 export async function checkDevices(deps: MonitorDeps): Promise<void> {
   const now = deps.now?.() ?? Date.now()
   const online = new Set(deps.online())
-  const devices = await deps.store.listDevices()
+  // 巡检是跨用户的：每台设备的告警只发给它自己的主人（见 notify）
+  const devices = await deps.store.listAllDevices()
   const battery = await loadBatteryConfig(deps.store)
 
   for (const d of devices) {
@@ -89,7 +95,7 @@ export async function checkDevices(deps: MonitorDeps): Promise<void> {
       // 恢复：如果之前告警过，补一条恢复通知，让人知道不用管了
       if (alerted.delete(d.id)) {
         log.info('设备已恢复在线', { device_id: d.id })
-        await notify(deps, {
+        await notify(deps, d.user_id, {
           title: '✅ 设备已恢复',
           body: `${d.name} 重新连接上了。`,
           priority: 'normal',
@@ -111,7 +117,7 @@ export async function checkDevices(deps: MonitorDeps): Promise<void> {
       actor: 'monitor', action: 'device.offline',
       detail: `${d.id} 离线 ${offlineSec}s`, ip: null, created_at: now,
     })
-    await notify(deps, {
+    await notify(deps, d.user_id, {
       title: '⚠️ 设备离线',
       body: `${d.name} 已离线 ${Math.floor(offlineSec / 60)} 分钟。` +
         `期间的短信会暂存在设备本地，恢复后自动补传；但若设备关机或断电，验证码将无法送达。`,
@@ -127,7 +133,7 @@ export async function checkDevices(deps: MonitorDeps): Promise<void> {
  */
 async function checkBattery(
   deps: MonitorDeps,
-  d: { id: string; name: string; battery: number | null; charging: boolean | null },
+  d: { id: string; user_id: string; name: string; battery: number | null; charging: boolean | null },
   cfg: BatteryConfig,
 ): Promise<void> {
   if (d.battery === null) return
@@ -136,7 +142,7 @@ async function checkBattery(
   if (d.charging !== null) {
     const prev = lastCharging.get(d.id)
     if (prev !== undefined && prev !== d.charging && cfg.notify_charging_change) {
-      await notify(deps, {
+      await notify(deps, d.user_id, {
         title: d.charging ? '🔌 已接通电源' : '🔋 已断开电源',
         body: `${d.name} ${d.charging ? '开始充电' : '拔掉了电源'}，当前电量 ${d.battery}%。`,
         priority: 'normal',
@@ -156,7 +162,7 @@ async function checkBattery(
         actor: 'monitor', action: 'device.battery_low',
         detail: `${d.id} ${d.battery}%`, ip: null, created_at: deps.now?.() ?? Date.now(),
       })
-      await notify(deps, {
+      await notify(deps, d.user_id, {
         title: '🪫 设备电量低',
         body: `${d.name} 仅剩 ${d.battery}% 且未在充电。电量耗尽关机后，验证码将完全收不到，` +
           `而且不会有任何告警——因为告警也要靠它上报。请尽快接上电源。`,
@@ -172,7 +178,7 @@ async function checkBattery(
   if (cfg.full > 0 && d.charging === true && d.battery >= cfg.full) {
     if (!batteryAlerted.has(fullKey)) {
       batteryAlerted.add(fullKey)
-      await notify(deps, {
+      await notify(deps, d.user_id, {
         title: '🔌 可以拔掉电源了',
         body: `${d.name} 已充到 ${d.battery}%。长期保持满电会加速电池老化，建议拔掉电源。`,
         priority: 'normal',
@@ -185,9 +191,10 @@ async function checkBattery(
 
 async function notify(
   deps: MonitorDeps,
+  userId: string,
   msg: { title: string; body: string; priority: 'normal' | 'high' },
 ): Promise<void> {
-  const channels = await deps.channels()
+  const channels = await deps.channels(userId)
   if (channels.length === 0) {
     log.error('没有可用渠道，离线告警无法送出', { title: msg.title })
     return

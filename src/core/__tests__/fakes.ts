@@ -2,7 +2,7 @@
 import type { Connection, Hub } from '../hub.js'
 import type {
   ChannelRecord, DeviceRecord, EventFilter, EventQuery, InsertEventResult, OutboundFilter, OutboundRecord,
-  MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord,
+  MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord, UserRecord,
 } from '../store.js'
 
 /** 与 SQLite 实现保持一致的状态机顺序 */
@@ -20,22 +20,52 @@ export class MemoryStore implements Store {
 
   async migrate(): Promise<void> {}
 
+  users = new Map<string, UserRecord>()
+
+  async listUsers() { return [...this.users.values()] }
+  async getUser(id: string) { return this.users.get(id) ?? null }
+  async getUserByName(n: string) {
+    return [...this.users.values()].find((u) => u.name.toLowerCase() === n.toLowerCase()) ?? null
+  }
+  async getUserByBotToken(t: string) {
+    return t ? [...this.users.values()].find((u) => u.bot_token === t) ?? null : null
+  }
+  async upsertUser(u: UserRecord) { this.users.set(u.id, u) }
+  async deleteUser(id: string) {
+    const n: Record<string, number> = {}
+    const drop = <T extends { user_id: string }>(m: Map<string, T>, key: string) => {
+      const hit = [...m.entries()].filter(([, v]) => v.user_id === id)
+      for (const [k] of hit) m.delete(k)
+      n[key] = hit.length
+    }
+    drop(this.events, 'events'); drop(this.outbound, 'outbound'); drop(this.messageRefs, 'message_refs')
+    drop(this.tasks, 'tasks'); drop(this.rules, 'rules'); drop(this.channels, 'channels')
+    drop(this.devices, 'devices'); drop(this.sessions, 'sessions')
+    this.users.delete(id)
+    return n
+  }
+
   async getDevice(id: string) { return this.devices.get(id) ?? null }
-  async listDevices() { return [...this.devices.values()] }
+  async listDevices(userId: string) { return [...this.devices.values()].filter((d) => d.user_id === userId) }
+  async listAllDevices() { return [...this.devices.values()] }
   async createDevice(d: DeviceRecord) { this.devices.set(d.id, d) }
   async touchDevice(id: string, patch: Partial<DeviceRecord>) {
     const d = this.devices.get(id)
     // 吊销是终态，断线时写入的 offline 不能把它改回去
     if (d && d.status !== 'revoked') this.devices.set(id, { ...d, ...patch })
   }
-  async deleteDevice(id: string) { return this.devices.delete(id) }
-  async deleteOutboundByDevice(deviceId: string) {
-    const hit = [...this.outbound.values()].filter((o) => o.device_id === deviceId)
+  async deleteDevice(id: string, userId: string) {
+    const d = this.devices.get(id)
+    return d?.user_id === userId ? this.devices.delete(id) : false
+  }
+  async deleteOutboundByDevice(deviceId: string, userId: string) {
+    const hit = [...this.outbound.values()].filter((o) => o.device_id === deviceId && o.user_id === userId)
     for (const o of hit) this.outbound.delete(o.id)
     return hit.length
   }
-  async revokeDevice(id: string) {
+  async revokeDevice(id: string, userId: string) {
     const d = this.devices.get(id)
+    if (d && d.user_id !== userId) return
     // 与 SQLite 实现一致：同时作废凭证，否则设备重连就又活了
     if (d) this.devices.set(id, { ...d, status: 'revoked', token_hash: '' })
   }
@@ -49,7 +79,10 @@ export class MemoryStore implements Store {
     this.events.set(e.id, e)
     return 'stored'
   }
-  async getEvent(id: string) { return this.events.get(id) ?? null }
+  async getEvent(id: string, userId: string) {
+    const e = this.events.get(id)
+    return e && e.user_id === userId ? e : null
+  }
   async listEvents(q: EventQuery) {
     return this.filtered(q).slice(q.offset, q.offset + q.limit)
   }
@@ -57,6 +90,7 @@ export class MemoryStore implements Store {
   private filtered(f: EventFilter) {
     return [...this.events.values()]
       .filter((e) =>
+        e.user_id === f.user_id &&
         (!f.kind || e.kind === f.kind) &&
         (!f.device_id || e.device_id === f.device_id) &&
         (!f.direction || (e.direction ?? 'in') === f.direction) &&
@@ -64,7 +98,10 @@ export class MemoryStore implements Store {
         (f.until === undefined || e.occurred_at <= f.until))
       .sort((a, b) => b.occurred_at - a.occurred_at || b.id.localeCompare(a.id))
   }
-  async deleteEvent(id: string) { return this.events.delete(id) }
+  async deleteEvent(id: string, userId: string) {
+    const e = this.events.get(id)
+    return e?.user_id === userId ? this.events.delete(id) : false
+  }
   async deleteEvents(f: EventFilter) {
     const hit = this.filtered(f)
     for (const e of hit) this.events.delete(e.id)
@@ -75,14 +112,24 @@ export class MemoryStore implements Store {
     if (e) this.events.set(id, { ...e, matched_rules: JSON.stringify(ruleIds) })
   }
 
-  async listChannels() { return [...this.channels.values()] }
-  async getChannel(id: string) { return this.channels.get(id) ?? null }
+  async listChannels(userId: string) { return [...this.channels.values()].filter((c) => c.user_id === userId) }
+  async listAllChannels() { return [...this.channels.values()] }
+  async getChannel(id: string, userId: string) {
+    const c = this.channels.get(id)
+    return c && c.user_id === userId ? c : null
+  }
   async upsertChannel(c: ChannelRecord) { this.channels.set(c.id, c) }
-  async deleteChannel(id: string) { this.channels.delete(id) }
+  async deleteChannel(id: string, userId: string) {
+    if (this.channels.get(id)?.user_id === userId) this.channels.delete(id)
+  }
 
-  async listRules() { return [...this.rules.values()].sort((a, b) => a.priority - b.priority) }
+  async listRules(userId: string) {
+    return [...this.rules.values()].filter((r) => r.user_id === userId).sort((a, b) => a.priority - b.priority)
+  }
   async upsertRule(r: RuleRecord) { this.rules.set(r.id, r) }
-  async deleteRule(id: string) { this.rules.delete(id) }
+  async deleteRule(id: string, userId: string) {
+    if (this.rules.get(id)?.user_id === userId) this.rules.delete(id)
+  }
 
   async createPairingCode(p: PairingCodeRecord) { this.pairings.set(p.code_hash, p) }
   async takePairingCode(hash: string, now: number) {
@@ -95,17 +142,25 @@ export class MemoryStore implements Store {
 
   tasks = new Map<string, TaskRecord>()
 
-  async listTasks() { return [...this.tasks.values()].sort((a, b) => a.created_at - b.created_at) }
-  async getTask(id: string) { return this.tasks.get(id) ?? null }
+  async listTasks(userId: string) {
+    return [...this.tasks.values()].filter((t) => t.user_id === userId).sort((a, b) => a.created_at - b.created_at)
+  }
+  async listAllTasks() { return [...this.tasks.values()].sort((a, b) => a.created_at - b.created_at) }
+  async getTask(id: string, userId: string) {
+    const t = this.tasks.get(id)
+    return t && t.user_id === userId ? t : null
+  }
   async upsertTask(t: TaskRecord) {
     const old = this.tasks.get(t.id)
     // 与 SQLite 的 upsert 一致：只覆盖配置字段，执行状态保持不变
     this.tasks.set(t.id, old ? { ...t, last_run_at: old.last_run_at, last_status: old.last_status, fail_count: old.fail_count } : t)
   }
-  async deleteTask(id: string) { this.tasks.delete(id) }
-  async setTaskEnabled(id: string, enabled: boolean) {
+  async deleteTask(id: string, userId: string) {
+    if (this.tasks.get(id)?.user_id === userId) this.tasks.delete(id)
+  }
+  async setTaskEnabled(id: string, userId: string, enabled: boolean) {
     const t = this.tasks.get(id)
-    if (t) this.tasks.set(id, { ...t, enabled })
+    if (t && t.user_id === userId) this.tasks.set(id, { ...t, enabled })
   }
   async updateTaskRun(id: string, p: { last_run_at: number; last_status: 'ok' | 'failed'; fail_count: number }) {
     const t = this.tasks.get(id)
@@ -136,8 +191,8 @@ export class MemoryStore implements Store {
     const s = this.sessions.get(h)
     if (s) this.sessions.set(h, { ...s, revoked: true })
   }
-  async revokeAllSessions() {
-    for (const [k, v] of this.sessions) this.sessions.set(k, { ...v, revoked: true })
+  async revokeAllSessions(userId: string) {
+    for (const [k, v] of this.sessions) if (v.user_id === userId) this.sessions.set(k, { ...v, revoked: true })
   }
   async cleanupSessions(now: number) {
     for (const [k, v] of this.sessions) if (v.expires_at < now || v.revoked) this.sessions.delete(k)
@@ -147,16 +202,19 @@ export class MemoryStore implements Store {
 
   async createOutbound(o: OutboundRecord) { this.outbound.set(o.id, o) }
   async getOutbound(id: string) { return this.outbound.get(id) ?? null }
-  async listOutbound(limit: number, offset: number, filter?: OutboundFilter) {
+  async listOutbound(limit: number, offset: number, filter: OutboundFilter) {
     return this.filteredOutbound(filter).slice(offset, offset + limit)
   }
-  async deleteOutbound(id: string) { return this.outbound.delete(id) }
-  async countOutbound(filter?: OutboundFilter) {
+  async deleteOutbound(id: string, userId: string) {
+    return this.outbound.get(id)?.user_id === userId ? this.outbound.delete(id) : false
+  }
+  async countOutbound(filter: OutboundFilter) {
     return this.filteredOutbound(filter).length
   }
-  private filteredOutbound(f?: OutboundFilter) {
+  private filteredOutbound(f: OutboundFilter) {
     return [...this.outbound.values()]
-      .filter((o) => (!f?.device_id || o.device_id === f.device_id)
+      .filter((o) => o.user_id === f.user_id
+        && (!f?.device_id || o.device_id === f.device_id)
         && (!f?.status || o.status === f.status)
         && (!f?.to || o.to_number.includes(f.to)))
       .sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id))

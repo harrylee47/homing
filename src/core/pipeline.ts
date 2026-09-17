@@ -41,6 +41,11 @@ export async function processEvent(
   eventId: string,
   e: MatchableEvent & {
     /**
+     * 归属用户。规则、渠道、设备名一律只在这个人的范围里取——
+     * 一条短信不该有任何机会走进别人的渠道。
+     */
+    user_id: string
+    /**
      * 历史导入的记录：网关启用前手机里就有的。
      *
      * 照常走推送的话，导入三千条旧短信就是三千条通知一次性砸到手机上。
@@ -54,7 +59,7 @@ export async function processEvent(
     // rejection 会成为 unhandled rejection，而 Node 默认因此**终止进程**。
     // 一次数据库抖动就能把整个网关打挂，这个代价不能接受。
     const [rulesR, channelsR, devicesR] = await Promise.allSettled([
-      loadRules(deps.store), loadChannels(deps), deps.store.listDevices(),
+      loadRules(deps.store, e.user_id), loadChannels(deps, e.user_id), deps.store.listDevices(e.user_id),
     ])
     if (rulesR.status === 'rejected' || channelsR.status === 'rejected') {
       log.error('加载规则或渠道失败，本条事件不推送', {
@@ -167,7 +172,7 @@ export async function processEvent(
     for (const r of results) {
       if (!r.ok || !r.ref) continue
       await deps.store.putMessageRef({
-        channel_id: r.channelId, ref: r.ref, event_id: eventId,
+        channel_id: r.channelId, ref: r.ref, event_id: eventId, user_id: e.user_id,
         sender: e.from, device_id: e.device_id, sim_slot: e.sim_slot ?? null,
         created_at: Date.now(),
       }).catch((err: unknown) => log.warn('记录消息映射失败', { error: String(err) }))
@@ -215,8 +220,8 @@ function mergeActions(matched: Rule[]): RuleAction {
 }
 
 /** 解析失败的规则会被跳过：一条写坏的规则不该让所有短信都收不到。 */
-async function loadRules(store: Store): Promise<Rule[]> {
-  const rows = await store.listRules()
+async function loadRules(store: Store, userId: string): Promise<Rule[]> {
+  const rows = await store.listRules(userId)
   const out: Rule[] = []
   for (const r of rows) {
     try {
@@ -243,8 +248,8 @@ async function loadRules(store: Store): Promise<Rule[]> {
  * 字段缺失就是 undefined），而这种失效是静默的：
  * 比如 telegram 的 spoiler 默认 true，不过 schema 就会退化成不模糊。
  */
-async function loadChannels(deps: PipelineDeps): Promise<ChannelConfig[]> {
-  const rows = await deps.store.listChannels()
+async function loadChannels(deps: PipelineDeps, userId: string): Promise<ChannelConfig[]> {
+  const rows = await deps.store.listChannels(userId)
   const out: ChannelConfig[] = []
   for (const c of rows) {
     if (!c.enabled) continue
@@ -292,7 +297,7 @@ function safeOffsetMin(epoch: number, tz: string): number {
  * 只有真的重复时才压下去——而且只压推送，历史照样归档。
  */
 async function isSmsEcho(
-  deps: PipelineDeps, eventId: string, e: MatchableEvent,
+  deps: PipelineDeps, eventId: string, e: MatchableEvent & { user_id: string },
 ): Promise<boolean> {
   if (e.kind !== 'notification') return false
   const body = normalize(e.content)
@@ -301,7 +306,7 @@ async function isSmsEcho(
 
   try {
     const recent = await deps.store.listEvents({
-      limit: 10, offset: 0, kind: 'sms', device_id: e.device_id,
+      limit: 10, offset: 0, kind: 'sms', user_id: e.user_id, device_id: e.device_id,
       since: e.occurred_at - ECHO_WINDOW_MS, until: e.occurred_at + ECHO_WINDOW_MS,
     })
     for (const r of recent) {

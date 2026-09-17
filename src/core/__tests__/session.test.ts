@@ -30,7 +30,7 @@ describe('会话状态机', () => {
   beforeEach(async () => {
     store = new MemoryStore()
     store.devices.set(DEVICE, {
-      id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
+      id: DEVICE, user_id: 'u1', name: 'test', token_hash: await hashToken(TOKEN),
       status: 'offline', last_seen_at: null, battery: null, charging: null, net_json: null,
       location_enc: null, location_at: null, app_version: null, created_at: NOW,
     })
@@ -63,7 +63,7 @@ describe('会话状态机', () => {
   })
 
   it('已吊销设备被拒且 retry_after 为 null（不可重试）', async () => {
-    await store.revokeDevice(DEVICE)
+    await store.revokeDevice(DEVICE, 'u1')
     const a = await session.handle(helloFrame())
     const p = (a.send[0] as { payload: { code: string; retry_after_sec: number | null } }).payload
     expect(p.code).toBe(ErrorCode.AUTH_DEVICE_REVOKED)
@@ -146,7 +146,7 @@ describe('历史导入的去重', () => {
     const store = new MemoryStore()
     const cipher = await createCipher(generateDek())
     store.devices.set(DEVICE, {
-      id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
+      id: DEVICE, user_id: 'u1', name: 'test', token_hash: await hashToken(TOKEN),
       status: 'offline', last_seen_at: null, battery: null, charging: null, net_json: null,
       location_enc: null, location_at: null, app_version: null, created_at: NOW,
     })
@@ -160,7 +160,7 @@ describe('历史导入的去重', () => {
   }
 
   const importFrame = (over: Record<string, unknown> = {}) => encodeFrame(makeFrame('event', {
-    id: 'evt_imp_sms_42', device_id: DEVICE, kind: 'sms',
+    id: 'evt_imp_sms_42', user_id: 'u1', device_id: DEVICE, kind: 'sms',
     from: '95533', content: '【建设银行】您的验证码是 902431',
     occurred_at: OCCURRED, extra: { imported: true },
     ...over,
@@ -172,7 +172,7 @@ describe('历史导入的去重', () => {
     content: string, occurred: number,
   ) => {
     store.events.set('evt_live', {
-      id: 'evt_live', device_id: DEVICE, kind: 'sms', direction: 'in', sim_slot: null,
+      id: 'evt_live', user_id: 'u1', device_id: DEVICE, kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: await cipher.encrypt('95533'),
       content_enc: await cipher.encrypt(content),
       enc_ver: 1, occurred_at: occurred, received_at: NOW,
@@ -233,7 +233,7 @@ describe('吊销必须真的吊销得掉', () => {
   const fresh = async () => {
     const store = new MemoryStore()
     store.devices.set(DEVICE, {
-      id: DEVICE, name: 'test', token_hash: await hashToken(TOKEN),
+      id: DEVICE, user_id: 'u1', name: 'test', token_hash: await hashToken(TOKEN),
       status: 'offline', last_seen_at: null, battery: null, charging: null, net_json: null,
       location_enc: null, location_at: null, app_version: null, created_at: NOW,
     })
@@ -248,14 +248,14 @@ describe('吊销必须真的吊销得掉', () => {
   it('断线不会把吊销状态改回离线', async () => {
     const { store, session } = await fresh()
     await session.handle(helloFrame())
-    await store.revokeDevice(DEVICE)
+    await store.revokeDevice(DEVICE, 'u1')
     await session.onDisconnect()
     expect(store.devices.get(DEVICE)!.status).toBe('revoked')
   })
 
   it('吊销后原凭证无法再握手——哪怕状态被改回去了', async () => {
     const { store, session } = await fresh()
-    await store.revokeDevice(DEVICE)
+    await store.revokeDevice(DEVICE, 'u1')
     // 模拟「状态被某条路径覆盖回 offline」这种最坏情况
     store.devices.set(DEVICE, { ...store.devices.get(DEVICE)!, status: 'offline' })
 
@@ -266,7 +266,7 @@ describe('吊销必须真的吊销得掉', () => {
 
   it('吊销后正常路径也拒绝，且给出的是吊销这个原因', async () => {
     const { store, session } = await fresh()
-    await store.revokeDevice(DEVICE)
+    await store.revokeDevice(DEVICE, 'u1')
     const a = await session.handle(helloFrame())
     expect((a.send[0]!.payload as { code: string }).code).toBe(ErrorCode.AUTH_DEVICE_REVOKED)
   })

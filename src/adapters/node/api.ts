@@ -9,7 +9,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  generateSessionToken, generateTotpSecret, hashPassword,
+  generatePassword, generateSessionToken, generateTotpSecret, hashPassword,
   LOGIN_LOCKOUT_MS, LOGIN_MAX_ATTEMPTS, SESSION_TTL_MS, TRUSTED_SESSION_TTL_MS,
   totpUri, validatePassword, verifyPassword, verifyTotp,
 } from '../../core/auth.js'
@@ -33,7 +33,7 @@ import { buildSeedRules } from '../../core/seeds.js'
 import type { Hub } from '../../core/hub.js'
 import type { BarkAccess } from './barkproxy.js'
 import { clientIp as resolveClientIp } from './clientip.js'
-import type { EventFilter, OutboundRecord, Store } from '../../core/store.js'
+import type { EventFilter, OutboundRecord, Store, UserRecord } from '../../core/store.js'
 
 export interface ApiDeps {
   store: Store
@@ -76,7 +76,6 @@ const S_INITIALIZED = 'initialized'
 /** Bark 反代的对外开放档位：off / push / full。默认 push。 */
 const S_BARK_ACCESS = 'bark_access'
 /** Bot 专用的 service token。权限比 Web 会话低一档，可单独吊销（计划 §11.4）。 */
-const S_BOT_TOKEN = 'bot_service_token'
 /** 见过的登录来源网段，用于识别异地登录。 */
 const S_KNOWN_IPS = 'known_login_ips'
 
@@ -89,6 +88,46 @@ interface Ctx {
   body: unknown
   deps: ApiDeps
   ip: string
+  /**
+   * 这次请求是谁。
+   *
+   * 鉴权通过后必定有值；免鉴权的路由（向导、登录、Bark 反代）拿到的是
+   * 一个占位用户，它的 id 是空串——空串匹配不到任何数据，
+   * 万一被误用只会查到空结果，而不是别人的短信。
+   */
+  user: UserRecord
+}
+
+/**
+ * 第一个管理员的固定 id。
+ *
+ * 固定而不是随机：向导可能被重复提交（TOTP 那步没过又回来改口令），
+ * 固定 id 才能覆盖而不是攒出一堆半成品账号。老库升级时，
+ * 原来那套单用户数据也是认领给它。
+ */
+const FIRST_USER_ID = 'usr_first'
+
+/** 给前端的用户信息。口令哈希、TOTP 密钥、bot token 一概不出门 */
+const publicUser = (u: UserRecord): Record<string, unknown> => ({
+  id: u.id, name: u.name, role: u.role, disabled: u.disabled, created_at: u.created_at,
+})
+
+/**
+ * 登录名的规矩。
+ *
+ * 限制成字母数字加中划线下划线，不是洁癖：这个名字会出现在 TOTP 的标签、
+ * 审计日志、URL 里，留空格和特殊字符只会在某个意想不到的地方咬人。
+ */
+function validateUserName(name: string): { ok: true } | { ok: false; error: string } {
+  if (name.length < 2 || name.length > 24) return { ok: false, error: '用户名需要 2–24 个字符' }
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return { ok: false, error: '用户名只能用字母、数字、- 和 _' }
+  return { ok: true }
+}
+
+/** 免鉴权路由用的占位用户。id 为空串，查什么都是空 */
+const ANON: UserRecord = {
+  id: '', name: '', password_hash: '', totp_secret: '',
+  role: 'member', bot_token: '', disabled: false, created_at: 0,
 }
 
 // ── 路由表 ──────────────────────────────────────────────────
@@ -167,36 +206,46 @@ export async function isInitialized(store: Store): Promise<boolean> {
   return (await store.getSetting(S_INITIALIZED)) === '1'
 }
 
-route('GET', '/api/setup/status', async ({ res, deps }) => {
+route('GET', '/api/setup/status', async ({ user, res, deps }) => {
   json(res, 200, { initialized: await isInitialized(deps.store) })
 }, false, true)
 
-/** 第一步：设管理员口令，返回 TOTP 密钥供扫码绑定。 */
+/** 第一步：建第一个管理员，返回 TOTP 密钥供扫码绑定。 */
 route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
   if (await isInitialized(deps.store)) return json(res, 409, { error: '已初始化' })
 
-  const pw = (body as { password?: string })?.password ?? ''
+  const b = body as { password?: string; name?: string }
+  const pw = b?.password ?? ''
   const check = validatePassword(pw)
   if (!check.ok) return json(res, 400, { error: check.error })
+  const name = (b?.name ?? '').trim() || 'admin'
+  const nameCheck = validateUserName(name)
+  if (!nameCheck.ok) return json(res, 400, { error: nameCheck.error })
 
-  await deps.store.setSetting(S_PASSWORD, await hashPassword(pw))
   const secret = generateTotpSecret()
-  await deps.store.setSetting(S_TOTP, secret)
-  await deps.store.audit({ actor: 'setup', action: 'setup.password', detail: null, ip, created_at: now() })
+  // 向导可能被重复提交（TOTP 那步没过就回来改口令），按固定 id 覆盖而不是新建
+  await deps.store.upsertUser({
+    id: FIRST_USER_ID, name,
+    password_hash: await hashPassword(pw),
+    totp_secret: secret,
+    role: 'admin', bot_token: generateSessionToken(),
+    disabled: false, created_at: now(),
+  })
+  await deps.store.audit({ user_id: FIRST_USER_ID, actor: 'setup', action: 'setup.password', detail: name, ip, created_at: now() })
 
-  const uri = totpUri(secret, 'admin')
-  json(res, 200, { secret, uri, qr: toSvg(uri) })
+  const uri = totpUri(secret, name)
+  json(res, 200, { secret, uri, qr: toSvg(uri), name })
 }, false, true)
 
 /** 第二步：验证一次 TOTP，确认认证器已正确绑定，然后才置初始化标记。 */
 route('POST', '/api/setup/verify', async ({ res, body, deps, ip }) => {
   if (await isInitialized(deps.store)) return json(res, 409, { error: '已初始化' })
 
-  const secret = await deps.store.getSetting(S_TOTP)
-  if (!secret) return json(res, 400, { error: '请先设置口令' })
+  const first = await deps.store.getUser(FIRST_USER_ID)
+  if (!first) return json(res, 400, { error: '请先设置口令' })
 
   const code = (body as { code?: string })?.code ?? ''
-  if (!(await verifyTotp(secret, code))) return json(res, 401, { error: '验证码不正确' })
+  if (!(await verifyTotp(first.totp_secret, code))) return json(res, 401, { error: '验证码不正确' })
 
   await deps.store.setSetting(S_INITIALIZED, '1')
   await deps.store.audit({ actor: 'setup', action: 'setup.complete', detail: null, ip, created_at: now() })
@@ -208,28 +257,30 @@ route('POST', '/api/setup/verify', async ({ res, body, deps, ip }) => {
 /** 登录失败计数。锁定状态可从审计日志重建，这里只是快路径。 */
 const loginFails = new Map<string, { count: number; until: number }>()
 
-route('POST', '/api/auth/login', async ({ req, res, body, deps, ip }) => {
+route('POST', '/api/auth/login', async ({ user, req, res, body, deps, ip }) => {
   const rec = loginFails.get(ip)
   if (rec && now() < rec.until) {
     return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
   }
 
-  const b = body as { password?: string; code?: string }
-  const stored = await deps.store.getSetting(S_PASSWORD)
-  const secret = await deps.store.getSetting(S_TOTP)
-  if (!stored || !secret) return json(res, 500, { error: '服务端未正确初始化' })
+  const b = body as { password?: string; code?: string; name?: string }
+  // 不填用户名时按第一个管理员算：单用户部署不该被迫多打一个框
+  const acct = b.name?.trim()
+    ? await deps.store.getUserByName(b.name.trim())
+    : (await deps.store.listUsers()).find((u) => u.role === 'admin') ?? null
 
-  const okPw = verifyPassword(b.password ?? '', stored)
-  const okTotp = okPw && (await verifyTotp(secret, b.code ?? ''))
+  const okPw = !!acct && !acct.disabled && verifyPassword(b.password ?? '', acct.password_hash)
+  const okTotp = okPw && (await verifyTotp(acct!.totp_secret, b.code ?? ''))
 
-  if (!okPw || !okTotp) {
+  if (!acct || !okPw || !okTotp) {
     const c = (rec?.count ?? 0) + 1
     loginFails.set(ip, {
       count: c,
       until: c >= LOGIN_MAX_ATTEMPTS ? now() + LOGIN_LOCKOUT_MS : 0,
     })
     await deps.store.audit({
-      actor: null, action: 'auth.fail',
+      user_id: acct?.id ?? null, actor: null, action: 'auth.fail',
+      // 不写「用户不存在」：那等于告诉爆破者哪些用户名是真的
       detail: `第 ${c} 次，${okPw ? 'TOTP' : '口令'}不正确`, ip, created_at: now(),
     })
     log.warn('登录失败', { ip, attempt: c })
@@ -263,6 +314,7 @@ route('POST', '/api/auth/login', async ({ req, res, body, deps, ip }) => {
   const token = generateSessionToken()
   const t = now()
   await deps.store.createSession({
+    user_id: acct.id,
     token_hash: await hashToken(token),
     ua_hash: await hashToken(req.headers['user-agent'] ?? ''),
     ip_prefix: ipPrefix(ip),
@@ -272,40 +324,39 @@ route('POST', '/api/auth/login', async ({ req, res, body, deps, ip }) => {
     trusted,
   })
   await deps.store.audit({
-    actor: 'admin', action: 'auth.login',
+    user_id: acct.id, actor: acct.name, action: 'auth.login',
     detail: trusted ? '并信任这台设备 30 天' : null, ip, created_at: t,
   })
-  json(res, 200, { token, expires_in: Math.floor(ttl / 1000) })
+  json(res, 200, { token, expires_in: Math.floor(ttl / 1000), user: publicUser(acct) })
 }, false)
 
-route('POST', '/api/auth/logout', async ({ req, res, deps }) => {
+route('POST', '/api/auth/logout', async ({ user, req, res, deps }) => {
   const h = req.headers.authorization
   if (h?.startsWith('Bearer ')) await deps.store.revokeSession(await hashToken(h.slice(7)))
   json(res, 200, { ok: true })
 })
 
-route('GET', '/api/auth/me', async ({ res }) => {
-  json(res, 200, { ok: true })
+route('GET', '/api/auth/me', async ({ user, res }) => {
+  json(res, 200, { ok: true, user: publicUser(user) })
 })
 
 /** 全端下线：怀疑凭证泄露时立刻断开所有会话，不必改口令（计划 §11.6）。 */
-route('POST', '/api/auth/revoke-all', async ({ res, deps, ip }) => {
-  await deps.store.revokeAllSessions()
+route('POST', '/api/auth/revoke-all', async ({ user, res, deps, ip }) => {
+  await deps.store.revokeAllSessions(user.id)
   await deps.store.audit({ actor: 'admin', action: 'auth.revoke_all', detail: null, ip, created_at: now() })
   json(res, 200, { ok: true })
 })
 
 /** 改口令：成功后使全部会话失效，包括当前这个（计划 §11.6「全端下线」）。 */
-route('POST', '/api/auth/password', async ({ res, body, deps, ip }) => {
+route('POST', '/api/auth/password', async ({ user, res, body, deps, ip }) => {
   const b = body as { old?: string; new?: string }
-  const stored = await deps.store.getSetting(S_PASSWORD)
-  if (!stored || !verifyPassword(b.old ?? '', stored)) return json(res, 401, { error: '原口令不正确' })
+  if (!verifyPassword(b.old ?? '', user.password_hash)) return json(res, 401, { error: '原口令不正确' })
   const check = validatePassword(b.new ?? '')
   if (!check.ok) return json(res, 400, { error: check.error })
 
-  await deps.store.setSetting(S_PASSWORD, await hashPassword(b.new!))
-  await deps.store.revokeAllSessions()
-  await deps.store.audit({ actor: 'admin', action: 'auth.password_change', detail: null, ip, created_at: now() })
+  await deps.store.upsertUser({ ...user, password_hash: await hashPassword(b.new!) })
+  await deps.store.revokeAllSessions(user.id)
+  await deps.store.audit({ user_id: user.id, actor: user.name, action: 'auth.password_change', detail: null, ip, created_at: now() })
   json(res, 200, { ok: true })
 })
 
@@ -317,7 +368,135 @@ export function ipPrefix(ip: string): string {
   return v4.split(':').slice(0, 4).join(':')
 }
 
+// ── 用户 ────────────────────────────────────────────────────
+
+/**
+ * 多用户的分界线画在哪：**管理员只能建号删号，看不到别人的数据。**
+ *
+ * 一家人合用一台网关，一个人的卡收银行验证码、另一个人的卡收工作短信，
+ * 互相能读对方的短信是荒谬的。所以没有「管理员查看全部」这种功能——
+ * 留个后门，多用户就白做了。管理员唯一的额外权力是决定谁能用这台网关。
+ */
+route('GET', '/api/users', async ({ user, res, deps }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理用户' })
+  const users = await deps.store.listUsers()
+  // 顺带给出每个人有多少台设备，删号前好知道自己在删什么
+  const devices = await deps.store.listAllDevices()
+  json(res, 200, {
+    users: users.map((u) => ({
+      ...publicUser(u),
+      devices: devices.filter((d) => d.user_id === u.id && d.status !== 'revoked').length,
+      is_me: u.id === user.id,
+    })),
+  })
+})
+
+/**
+ * 建号。
+ *
+ * 口令与 TOTP 密钥都由服务端生成并**只显示这一次**：让管理员替别人想一个口令，
+ * 想出来的多半是「123456」，而这个账号能看到对方所有的银行验证码。
+ * 对方登录后自己改口令即可。
+ */
+route('POST', '/api/users', async ({ user, res, body, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理用户' })
+
+  const b = body as { name?: string; role?: string }
+  const name = (b?.name ?? '').trim()
+  const check = validateUserName(name)
+  if (!check.ok) return json(res, 400, { error: check.error })
+  if (await deps.store.getUserByName(name)) return json(res, 409, { error: '这个用户名已经有人用了' })
+
+  const password = generatePassword()
+  const secret = generateTotpSecret()
+  const id = newId('usr')
+  await deps.store.upsertUser({
+    id, name,
+    password_hash: await hashPassword(password),
+    totp_secret: secret,
+    role: b?.role === 'admin' ? 'admin' : 'member',
+    bot_token: generateSessionToken(),
+    disabled: false, created_at: now(),
+  })
+  await deps.store.audit({ user_id: user.id, actor: user.name, action: 'user.create', detail: name, ip, created_at: now() })
+
+  const uri = totpUri(secret, name)
+  // 口令与二维码只在这里出现一次，此后服务端只留哈希
+  json(res, 200, { id, name, password, secret, uri, qr: toSvg(uri) })
+})
+
+/** 停用 / 启用。停用后手里的会话立刻失效，但数据还在，可以随时恢复。 */
+route('PUT', '/api/users/:id', async ({ user, res, params, body, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理用户' })
+  const target = await deps.store.getUser(params.id!)
+  if (!target) return json(res, 404, { error: '用户不存在' })
+  if (target.id === user.id) return json(res, 400, { error: '不能停用自己' })
+
+  const disabled = (body as { disabled?: boolean })?.disabled === true
+  await deps.store.upsertUser({ ...target, disabled })
+  if (disabled) await deps.store.revokeAllSessions(target.id)
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: disabled ? 'user.disable' : 'user.enable',
+    detail: target.name, ip, created_at: now(),
+  })
+  json(res, 200, { ok: true })
+})
+
+/**
+ * 删号。**连同这个人的全部数据一起删**。
+ *
+ * 不留数据：留着的话，下一个同名用户会继承上一个人的短信，
+ * 而「账号删了消息还在库里」本身就违背了多用户的初衷。
+ * 所以要求显式确认，且不能删自己——把自己删了就没人能建号了。
+ */
+route('DELETE', '/api/users/:id', async ({ user, res, params, url, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理用户' })
+  const target = await deps.store.getUser(params.id!)
+  if (!target) return json(res, 404, { error: '用户不存在' })
+  if (target.id === user.id) return json(res, 400, { error: '不能删除自己' })
+  if (url.searchParams.get('confirm') !== '1') {
+    return json(res, 400, { error: '删除用户会连同他的设备、消息、规则一起删掉，需要显式确认' })
+  }
+
+  const n = await deps.store.deleteUser(target.id)
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'user.delete',
+    detail: `${target.name}：${Object.entries(n).map(([k, v]) => `${k} ${v}`).join('、')}`,
+    ip, created_at: now(),
+  })
+  log.warn('用户已删除', { name: target.name, removed: n })
+  json(res, 200, { ok: true, removed: n })
+})
+
+/** 重置某人的口令与 TOTP。对方把手机丢了、或者忘了口令时用。 */
+route('POST', '/api/users/:id/reset', async ({ user, res, params, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理用户' })
+  const target = await deps.store.getUser(params.id!)
+  if (!target) return json(res, 404, { error: '用户不存在' })
+
+  const password = generatePassword()
+  const secret = generateTotpSecret()
+  await deps.store.upsertUser({ ...target, password_hash: await hashPassword(password), totp_secret: secret })
+  await deps.store.revokeAllSessions(target.id)
+  await deps.store.audit({ user_id: user.id, actor: user.name, action: 'user.reset', detail: target.name, ip, created_at: now() })
+
+  const uri = totpUri(secret, target.name)
+  json(res, 200, { name: target.name, password, secret, uri, qr: toSvg(uri) })
+})
+
 // ── 设备与配对 ──────────────────────────────────────────────
+
+/**
+ * 取一台**属于这个人**的设备。
+ *
+ * `getDevice` 故意不带作用域（WS 握手时只有 device_id），所以每一个
+ * 面向界面的设备接口都必须走这里。不属于自己的一律当「不存在」——
+ * 返回 409 之类的具体错误等于告诉对方「这台设备真的存在，只是不归你」。
+ */
+async function ownedDevice(deps: ApiDeps, userId: string, id: string) {
+  const d = await deps.store.getDevice(id)
+  return d && d.user_id === userId ? d : null
+}
 
 /** 网络状态只用于展示：解析失败就当没有，不要让一条脏数据把整个设备列表打挂。 */
 function parseNet(raw: string | null): unknown {
@@ -329,8 +508,8 @@ function parseNet(raw: string | null): unknown {
   }
 }
 
-route('GET', '/api/devices', async ({ res, deps }) => {
-  const devices = await deps.store.listDevices()
+route('GET', '/api/devices', async ({ user, res, deps }) => {
+  const devices = await deps.store.listDevices(user.id)
   const online = new Set(deps.hub.onlineDevices())
   json(res, 200, {
     devices: devices.map((d) => ({
@@ -365,10 +544,10 @@ function wsUrlFrom(baseUrl: string | null | undefined): string | null {
   return null
 }
 
-route('POST', '/api/devices/pairing-code', async ({ res, body, deps }) => {
+route('POST', '/api/devices/pairing-code', async ({ user, res, body, deps }) => {
   const name = (body as { name?: string })?.name?.trim()
   if (!name) return json(res, 400, { error: '缺少 name' })
-  const r = await createPairing(deps.store, name)
+  const r = await createPairing(deps.store, user.id, name)
   const ws = wsUrlFrom(deps.baseUrl)
   json(res, 200, {
     code: r.code,
@@ -388,10 +567,10 @@ route('POST', '/api/devices/pairing-code', async ({ res, body, deps }) => {
  * 审计尤其重要——能定位这台设备的人，也能看到你全部的验证码，
  * 所以至少要留下谁在什么时候查过的痕迹。
  */
-route('POST', '/api/devices/:id/locate', async ({ res, params, deps, ip }) => {
+route('POST', '/api/devices/:id/locate', async ({ user, res, params, deps, ip }) => {
   if (!deps.locateDevice) return json(res, 500, { error: '未接入定位' })
   const id = params.id!
-  const device = await deps.store.getDevice(id)
+  const device = await ownedDevice(deps, user.id, id)
   if (!device) return json(res, 404, { error: '设备不存在' })
 
   await deps.store.audit({ actor: 'admin', action: 'device.locate', detail: id, ip, created_at: now() })
@@ -402,8 +581,8 @@ route('POST', '/api/devices/:id/locate', async ({ res, params, deps, ip }) => {
 })
 
 /** 读取上次定位结果。同样写审计。 */
-route('GET', '/api/devices/:id/location', async ({ res, params, deps, ip }) => {
-  const d = await deps.store.getDevice(params.id!)
+route('GET', '/api/devices/:id/location', async ({ user, res, params, deps, ip }) => {
+  const d = await ownedDevice(deps, user.id, params.id!)
   if (!d?.location_enc) return json(res, 404, { error: '还没有定位记录' })
   await deps.store.audit({ actor: 'admin', action: 'device.location_read', detail: params.id!, ip, created_at: now() })
   json(res, 200, {
@@ -412,9 +591,10 @@ route('GET', '/api/devices/:id/location', async ({ res, params, deps, ip }) => {
   })
 })
 
-route('DELETE', '/api/devices/:id/token', async ({ res, params, deps, ip }) => {
+route('DELETE', '/api/devices/:id/token', async ({ user, res, params, deps, ip }) => {
   const id = params.id!
-  await deps.store.revokeDevice(id)
+  if (!(await ownedDevice(deps, user.id, id))) return json(res, 404, { error: '设备不存在' })
+  await deps.store.revokeDevice(id, user.id)
   deps.hub.get(id)?.close(4001, 'AUTH_DEVICE_REVOKED')
   await deps.store.audit({ actor: 'console', action: 'device.revoke', detail: id, ip, created_at: now() })
   json(res, 200, { ok: true })
@@ -430,22 +610,23 @@ route('DELETE', '/api/devices/:id/token', async ({ res, params, deps, ip }) => {
  * 被计划任务或规则引用时拒绝删除并说清楚是谁在引用——静默删掉会让保号任务
  * 永远跳过、让限定设备的规则永远不命中，两种都是不报错的失效。
  */
-route('DELETE', '/api/devices/:id', async ({ res, params, url, deps, ip }) => {
+route('DELETE', '/api/devices/:id', async ({ user, res, params, url, deps, ip }) => {
   const id = params.id!
-  const device = await deps.store.getDevice(id)
+  // 归属先判：不是自己的一律「不存在」，不能先报 409 暴露它真的在
+  const device = await ownedDevice(deps, user.id, id)
   if (!device) return json(res, 404, { error: '设备不存在' })
   if (device.status !== 'revoked') {
     return json(res, 409, { error: '请先吊销这台设备，再删除记录' })
   }
 
-  const tasks = (await deps.store.listTasks()).filter((t) => t.device_id === id)
+  const tasks = (await deps.store.listTasks(user.id)).filter((t) => t.device_id === id)
   if (tasks.length > 0) {
     return json(res, 409, {
       error: `还有计划任务绑定着这台设备：${tasks.map((t) => t.name).join('、')}。请先改掉或删掉这些任务。`,
     })
   }
 
-  const rules = (await deps.store.listRules()).filter((r) => {
+  const rules = (await deps.store.listRules(user.id)).filter((r) => {
     try { return ((JSON.parse(r.match_json) as { device_ids?: string[] }).device_ids ?? []).includes(id) }
     catch { return false }
   })
@@ -463,11 +644,11 @@ route('DELETE', '/api/devices/:id', async ({ res, params, url, deps, ip }) => {
   let events = 0
   let outbound = 0
   if (purge) {
-    events = await deps.store.deleteEvents({ device_id: id })
-    outbound = await deps.store.deleteOutboundByDevice(id)
+    events = await deps.store.deleteEvents({ user_id: user.id, device_id: id })
+    outbound = await deps.store.deleteOutboundByDevice(id, user.id)
   }
 
-  await deps.store.deleteDevice(id)
+  await deps.store.deleteDevice(id, user.id)
   log.warn('设备记录已删除', { device_id: id, name: device.name, purge, events, outbound })
   await deps.store.audit({
     actor: 'admin', action: 'device.delete',
@@ -478,7 +659,7 @@ route('DELETE', '/api/devices/:id', async ({ res, params, url, deps, ip }) => {
 })
 
 /** Agent 调用，无需鉴权——配对码本身就是凭证。 */
-route('POST', '/api/pair', async ({ res, body, deps, ip }) => {
+route('POST', '/api/pair', async ({ user, res, body, deps, ip }) => {
   if (rateLimited(ip)) {
     log.warn('配对请求超出限速', { ip })
     return json(res, 429, { error: '尝试过于频繁' })
@@ -494,15 +675,15 @@ route('POST', '/api/pair', async ({ res, body, deps, ip }) => {
 
 // ── 渠道 ────────────────────────────────────────────────────
 
-route('GET', '/api/channels', async ({ res, deps }) => {
-  const rows = await deps.store.listChannels()
+route('GET', '/api/channels', async ({ user, res, deps }) => {
+  const rows = await deps.store.listChannels(user.id)
   // 绝不返回配置明文：里面是 Bot token
   json(res, 200, {
     channels: rows.map((c) => ({ id: c.id, type: c.type, name: c.name, enabled: c.enabled, created_at: c.created_at })),
   })
 })
 
-route('POST', '/api/channels', async ({ res, body, deps, ip }) => {
+route('POST', '/api/channels', async ({ user, res, body, deps, ip }) => {
   const b = body as { type?: string; name?: string; config?: unknown; enabled?: boolean }
   const provider = b.type ? PROVIDERS[b.type] : undefined
   if (!provider) return json(res, 400, { error: `未知渠道类型 ${b.type}` })
@@ -515,7 +696,7 @@ route('POST', '/api/channels', async ({ res, body, deps, ip }) => {
   const id = newId('ch')
   await deps.store.audit({ actor: 'admin', action: 'channel.create', detail: `${b.type}:${b.name ?? b.type}`, ip, created_at: now() })
   await deps.store.upsertChannel({
-    id, type: b.type!, name: b.name ?? b.type!,
+    id, user_id: user.id, type: b.type!, name: b.name ?? b.type!,
     config_enc: await deps.cipher.encrypt(JSON.stringify(parsed.data)),
     enabled: b.enabled ?? true, created_at: now(),
   })
@@ -529,8 +710,8 @@ route('POST', '/api/channels', async ({ res, body, deps, ip }) => {
  * 解密旧配置 → 用请求里的非空字段覆盖 → 校验 → 重新加密。
  * 否则用户每次改个名字都得重新输一遍 token。
  */
-route('PUT', '/api/channels/:id', async ({ res, params, body, deps, ip }) => {
-  const c = await deps.store.getChannel(params.id!)
+route('PUT', '/api/channels/:id', async ({ user, res, params, body, deps, ip }) => {
+  const c = await deps.store.getChannel(params.id!, user.id)
   if (!c) return json(res, 404, { error: '渠道不存在' })
 
   const b = body as { name?: string; enabled?: boolean; config?: Record<string, unknown> }
@@ -554,7 +735,7 @@ route('PUT', '/api/channels/:id', async ({ res, params, body, deps, ip }) => {
   }
 
   await deps.store.upsertChannel({
-    id: c.id, type: c.type,
+    id: c.id, user_id: user.id, type: c.type,
     name: b.name?.trim() || c.name,
     config_enc: configEnc,
     enabled: b.enabled ?? c.enabled,
@@ -571,7 +752,7 @@ route('PUT', '/api/channels/:id', async ({ res, params, body, deps, ip }) => {
  * 发一条消息，Telegram 才允许 Bot 主动发消息过去。这个接口顺带验证了这一点：
  * 取不到更新就说明还没发过。
  */
-route('POST', '/api/channels/telegram/discover-chat', async ({ res, body }) => {
+route('POST', '/api/channels/telegram/discover-chat', async ({ user, res, body }) => {
   const token = (body as { bot_token?: string })?.bot_token?.trim()
   if (!token) return json(res, 400, { error: '缺少 bot_token' })
 
@@ -617,9 +798,9 @@ route('POST', '/api/channels/telegram/discover-chat', async ({ res, body }) => {
   })
 })
 
-route('DELETE', '/api/channels/:id', async ({ res, params, deps, ip }) => {
-  const c = await deps.store.getChannel(params.id!)
-  await deps.store.deleteChannel(params.id!)
+route('DELETE', '/api/channels/:id', async ({ user, res, params, deps, ip }) => {
+  const c = await deps.store.getChannel(params.id!, user.id)
+  await deps.store.deleteChannel(params.id!, user.id)
   // 删除必须留痕：渠道没了等于通知全断，而这种故障是静默的
   await deps.store.audit({
     actor: 'admin', action: 'channel.delete',
@@ -632,8 +813,8 @@ route('DELETE', '/api/channels/:id', async ({ res, params, deps, ip }) => {
  * 渠道测试。不是可选功能：配错渠道是这类系统最常见的故障，
  * 而故障时你收不到任何通知——这是个静默失败（计划 §7.4）。
  */
-route('POST', '/api/channels/:id/test', async ({ res, params, deps }) => {
-  const c = await deps.store.getChannel(params.id!)
+route('POST', '/api/channels/:id/test', async ({ user, res, params, deps }) => {
+  const c = await deps.store.getChannel(params.id!, user.id)
   if (!c) return json(res, 404, { error: '渠道不存在' })
 
   const provider = PROVIDERS[c.type]
@@ -654,9 +835,9 @@ route('POST', '/api/channels/:id/test', async ({ res, params, deps }) => {
 
 // ── 规则 ────────────────────────────────────────────────────
 
-route('GET', '/api/rules', async ({ res, deps }) => {
-  const rows = await deps.store.listRules()
-  const live = new Set((await deps.store.listChannels()).map((c) => c.id))
+route('GET', '/api/rules', async ({ user, res, deps }) => {
+  const rows = await deps.store.listRules(user.id)
+  const live = new Set((await deps.store.listChannels(user.id)).map((c) => c.id))
   json(res, 200, {
     rules: rows.map((r) => {
       const action = JSON.parse(r.action_json) as { channels?: string[] }
@@ -670,7 +851,7 @@ route('GET', '/api/rules', async ({ res, deps }) => {
   })
 }, true, false, 'bot')
 
-route('POST', '/api/rules', async ({ res, body, deps, ip }) => {
+route('POST', '/api/rules', async ({ user, res, body, deps, ip }) => {
   const b = body as { id?: string; name?: string; priority?: number; enabled?: boolean; match?: unknown; action?: unknown }
   const m = RuleMatch.safeParse(b.match ?? {})
   const a = RuleAction.safeParse(b.action ?? {})
@@ -681,7 +862,7 @@ route('POST', '/api/rules', async ({ res, body, deps, ip }) => {
   const id = b.id ?? newId('rule')
   await deps.store.audit({ actor: 'admin', action: b.id ? 'rule.update' : 'rule.create', detail: `${id}:${b.name ?? ''}`, ip, created_at: now() })
   await deps.store.upsertRule({
-    id, name: b.name ?? '未命名规则', priority: b.priority ?? 100,
+    id, user_id: user.id, name: b.name ?? '未命名规则', priority: b.priority ?? 100,
     enabled: b.enabled ?? true,
     match_json: JSON.stringify(m.data), action_json: JSON.stringify(a.data),
     created_at: now(),
@@ -689,8 +870,8 @@ route('POST', '/api/rules', async ({ res, body, deps, ip }) => {
   json(res, 200, { id })
 })
 
-route('DELETE', '/api/rules/:id', async ({ res, params, deps, ip }) => {
-  await deps.store.deleteRule(params.id!)
+route('DELETE', '/api/rules/:id', async ({ user, res, params, deps, ip }) => {
+  await deps.store.deleteRule(params.id!, user.id)
   await deps.store.audit({ actor: 'admin', action: 'rule.delete', detail: params.id!, ip, created_at: now() })
   json(res, 200, { ok: true })
 })
@@ -701,7 +882,7 @@ route('DELETE', '/api/rules/:id', async ({ res, params, deps, ip }) => {
  * 没有这个功能，规则写错的反馈周期是「等下一条真实短信」——
  * 调试成本高到会让人放弃使用规则引擎。
  */
-route('POST', '/api/rules/test', async ({ res, body, deps }) => {
+route('POST', '/api/rules/test', async ({ user, res, body, deps }) => {
   const b = body as { match?: unknown; action?: unknown; limit?: number }
   const m = RuleMatch.safeParse(b.match ?? {})
   const a = RuleAction.safeParse(b.action ?? {})
@@ -712,8 +893,8 @@ route('POST', '/api/rules/test', async ({ res, body, deps }) => {
     match: m.data, action: a.data,
   }
 
-  const rows = await deps.store.listEvents({ limit: Math.min(b.limit ?? 50, 200), offset: 0 })
-  const devNames = new Map((await deps.store.listDevices()).map((d) => [d.id, d.name]))
+  const rows = await deps.store.listEvents({ user_id: user.id, limit: Math.min(b.limit ?? 50, 200), offset: 0 })
+  const devNames = new Map((await deps.store.listDevices(user.id)).map((d) => [d.id, d.name]))
   const tz = await timezone(deps.store)
   const results = await Promise.all(rows.map(async (e) => {
     const ev = {
@@ -754,7 +935,7 @@ route('POST', '/api/rules/test', async ({ res, body, deps }) => {
 })
 
 /** 一键写入建议的初始规则集。规则定义在 core/seeds.ts，两端共用同一份语义。 */
-route('POST', '/api/rules/seed', async ({ res, body, deps }) => {
+route('POST', '/api/rules/seed', async ({ user, res, body, deps }) => {
   const chIds = ((body as { channels?: string[] })?.channels ?? []).filter(Boolean)
   if (chIds.length === 0) return json(res, 400, { error: '请先选择至少一个渠道' })
 
@@ -762,7 +943,7 @@ route('POST', '/api/rules/seed', async ({ res, body, deps }) => {
   const seeds = buildSeedRules(chIds, () => newId('rule'))
   for (const r of seeds) {
     await deps.store.upsertRule({
-      id: r.id, name: r.name, priority: r.priority, enabled: true,
+      id: r.id, user_id: user.id, name: r.name, priority: r.priority, enabled: true,
       match_json: JSON.stringify(r.match), action_json: JSON.stringify(r.action), created_at: t,
     })
   }
@@ -798,7 +979,7 @@ export async function barkAccess(store: Store): Promise<BarkAccess> {
   return 'push'
 }
 
-route('GET', '/api/bark/info', async ({ res, deps }) => {
+route('GET', '/api/bark/info', async ({ user, res, deps }) => {
   json(res, 200, {
     // 网关推送走内部地址，不绕公网；渠道配置里就该填这个
     upstream: deps.barkUpstream ?? null,
@@ -811,7 +992,7 @@ route('GET', '/api/bark/info', async ({ res, deps }) => {
   })
 })
 
-route('POST', '/api/bark/access', async ({ res, body, deps, ip }) => {
+route('POST', '/api/bark/access', async ({ user, res, body, deps, ip }) => {
   const v = (body as { access?: string })?.access
   if (v !== 'off' && v !== 'push' && v !== 'full') {
     return json(res, 400, { error: 'access 必须是 off / push / full' })
@@ -823,19 +1004,26 @@ route('POST', '/api/bark/access', async ({ res, body, deps, ip }) => {
 
 // ── Bot service token ───────────────────────────────────────
 
-export async function getOrCreateBotToken(store: Store): Promise<string> {
-  const existing = await store.getSetting(S_BOT_TOKEN)
-  if (existing) return existing
+/**
+ * 每个用户一个 Bot service token。
+ *
+ * 不能共用一个：Bot 拿它调自己的 REST API，token 决定了它能看到谁的数据。
+ * 共用就意味着女朋友的 Bot 能读你的短信——多用户在别处做得再干净，
+ * 这一个口子就全漏了。
+ */
+export async function botTokenFor(store: Store, userId: string): Promise<string> {
+  const u = await store.getUser(userId)
+  if (!u) return ''
+  if (u.bot_token) return u.bot_token
   const t = generateSessionToken()
-  await store.setSetting(S_BOT_TOKEN, t)
+  await store.upsertUser({ ...u, bot_token: t })
   return t
 }
 
 /** 吊销并重发。Telegram 账号疑似被盗时用，不影响 Web 会话。 */
-route('POST', '/api/bot/rotate-token', async ({ res, deps, ip }) => {
-  const t = generateSessionToken()
-  await deps.store.setSetting(S_BOT_TOKEN, t)
-  await deps.store.audit({ actor: 'admin', action: 'bot.token_rotate', detail: null, ip, created_at: now() })
+route('POST', '/api/bot/rotate-token', async ({ user, res, deps, ip }) => {
+  await deps.store.upsertUser({ ...user, bot_token: generateSessionToken() })
+  await deps.store.audit({ user_id: user.id, actor: user.name, action: 'bot.token_rotate', detail: null, ip, created_at: now() })
   json(res, 200, { ok: true })
 })
 
@@ -846,9 +1034,9 @@ route('POST', '/api/bot/rotate-token', async ({ res, deps, ip }) => {
  *
  * 保号只是其中一种用法；同一套机制也能做每日提醒、每周汇报之类的事。
  */
-route('GET', '/api/tasks', async ({ res, deps }) => {
+route('GET', '/api/tasks', async ({ user, res, deps }) => {
   const tz = await timezone(deps.store)
-  const rows = await deps.store.listTasks()
+  const rows = await deps.store.listTasks(user.id)
   const items = await Promise.all(rows.map(async (r) => {
     const text = await deps.cipher.decrypt(r.content_enc).catch(() => '')
     const t = parseTask(r, text)
@@ -865,7 +1053,7 @@ route('GET', '/api/tasks', async ({ res, deps }) => {
   json(res, 200, { tasks: items, timezone: tz })
 })
 
-route('POST', '/api/tasks', async ({ res, body, deps, ip }) => {
+route('POST', '/api/tasks', async ({ user, res, body, deps, ip }) => {
   const b = body as Record<string, unknown>
   const sched = Schedule.safeParse(b.schedule)
   if (!sched.success) {
@@ -882,9 +1070,9 @@ route('POST', '/api/tasks', async ({ res, body, deps, ip }) => {
   }
 
   const id = String(b.id ?? '') || newId('task')
-  const existing = await deps.store.getTask(id)
+  const existing = await deps.store.getTask(id, user.id)
   await deps.store.upsertTask({
-    id,
+    id, user_id: user.id,
     name: String(b.name ?? '').trim() || '未命名任务',
     enabled, device_id: deviceId, to_number: to,
     content_enc: await deps.cipher.encrypt(String(b.text ?? '')),
@@ -902,8 +1090,8 @@ route('POST', '/api/tasks', async ({ res, body, deps, ip }) => {
   json(res, 200, { id })
 })
 
-route('DELETE', '/api/tasks/:id', async ({ res, params, deps, ip }) => {
-  await deps.store.deleteTask(params.id!)
+route('DELETE', '/api/tasks/:id', async ({ user, res, params, deps, ip }) => {
+  await deps.store.deleteTask(params.id!, user.id)
   await deps.store.audit({ actor: 'admin', action: 'task.delete', detail: params.id!, ip, created_at: now() })
   json(res, 200, { ok: true })
 })
@@ -912,9 +1100,9 @@ route('DELETE', '/api/tasks/:id', async ({ res, params, deps, ip }) => {
  * 立即测试。走与定时执行完全相同的代码路径——否则「测得通」不代表「定时能通」。
  * 不推进排期、不计入失败统计。
  */
-route('POST', '/api/tasks/:id/test', async ({ res, params, deps, ip }) => {
+route('POST', '/api/tasks/:id/test', async ({ user, res, params, deps, ip }) => {
   if (!deps.runTask) return json(res, 500, { error: '未接入计划任务' })
-  const row = await deps.store.getTask(params.id!)
+  const row = await deps.store.getTask(params.id!, user.id)
   if (!row) return json(res, 404, { error: '任务不存在' })
 
   const task = parseTask(row, await deps.cipher.decrypt(row.content_enc))
@@ -954,11 +1142,11 @@ export async function loadNotifyCapture(store: Store): Promise<NotifyCaptureConf
   }
 }
 
-route('GET', '/api/notify-capture', async ({ res, deps }) => {
+route('GET', '/api/notify-capture', async ({ user, res, deps }) => {
   json(res, 200, await loadNotifyCapture(deps.store))
 })
 
-route('POST', '/api/notify-capture', async ({ res, body, deps, ip }) => {
+route('POST', '/api/notify-capture', async ({ user, res, body, deps, ip }) => {
   const b = body as Partial<NotifyCaptureConfig>
   const cfg: NotifyCaptureConfig = {
     enabled: b.enabled === true,
@@ -988,8 +1176,9 @@ route('POST', '/api/notify-capture', async ({ res, body, deps, ip }) => {
  * 实时捕获只能看见「启用之后」发生的事，装网关之前的记录躺在手机本地。
  * 导入的记录只归档不推送——几千条旧短信照常推送就是几千条通知。
  */
-route('POST', '/api/devices/:id/import-history', async ({ res, params, body, deps, ip }) => {
+route('POST', '/api/devices/:id/import-history', async ({ user, res, params, body, deps, ip }) => {
   if (!deps.importHistory) return json(res, 500, { error: '未接入' })
+  if (!(await ownedDevice(deps, user.id, params.id!))) return json(res, 404, { error: '设备不存在' })
   const b = body as { days?: number; limit?: number }
   const days = Number(b?.days)
   // days<=0 或没给表示不限时间
@@ -1014,8 +1203,9 @@ route('POST', '/api/devices/:id/import-history', async ({ res, params, body, dep
  *
  * 安全边界全部在 core/fingerprint.ts 的 planReconcile 里，这里只负责取数据。
  */
-route('POST', '/api/devices/:id/reconcile', async ({ res, params, body, deps, ip }) => {
+route('POST', '/api/devices/:id/reconcile', async ({ user, res, params, body, deps, ip }) => {
   if (!deps.importHistory || !deps.listFingerprints) return json(res, 500, { error: '未接入' })
+  if (!(await ownedDevice(deps, user.id, params.id!))) return json(res, 404, { error: '设备不存在' })
   const b = body as { days?: number; limit?: number; apply?: boolean }
   const days = Number(b?.days)
   const since = Number.isFinite(days) && days > 0 ? now() - days * 86_400_000 : null
@@ -1032,6 +1222,7 @@ route('POST', '/api/devices/:id/reconcile', async ({ res, params, body, deps, ip
 
   // 第三步：把网关里这台设备的短信与通话拿出来算指纹
   const rows = await deps.store.listEvents({
+    user_id: user.id,
     device_id: id,
     ...(since !== null ? { since } : {}),
     limit: 50_000, offset: 0,
@@ -1059,7 +1250,7 @@ route('POST', '/api/devices/:id/reconcile', async ({ res, params, body, deps, ip
     // 预览：把要删的挑几条出来，让人看清删的是什么再决定
     const preview = await Promise.all(
       plan.stale.slice(0, 5).map(async (sid) => {
-        const e = await deps.store.getEvent(sid)
+        const e = await deps.store.getEvent(sid, user.id)
         if (!e) return null
         return {
           from: await deps.cipher.decrypt(e.sender_enc),
@@ -1081,7 +1272,7 @@ route('POST', '/api/devices/:id/reconcile', async ({ res, params, body, deps, ip
 
   let deleted = 0
   for (const sid of plan.stale) {
-    if (await deps.store.deleteEvent(sid)) deleted++
+    if (await deps.store.deleteEvent(sid, user.id)) deleted++
   }
   if (deleted > 0) {
     log.warn('镜像同步删除了手机上已不存在的记录', { device_id: id, deleted })
@@ -1094,8 +1285,9 @@ route('POST', '/api/devices/:id/reconcile', async ({ res, params, body, deps, ip
 })
 
 /** 让设备列出已安装应用，供控制台挑选。 */
-route('POST', '/api/devices/:id/apps', async ({ res, params, deps }) => {
+route('POST', '/api/devices/:id/apps', async ({ user, res, params, deps }) => {
   if (!deps.listApps) return json(res, 500, { error: '未接入' })
+  if (!(await ownedDevice(deps, user.id, params.id!))) return json(res, 404, { error: '设备不存在' })
   const r = await deps.listApps(params.id!)
   if (!r.ok) return json(res, 502, { error: r.error ?? '查询失败' })
   json(res, 200, r.apps)
@@ -1124,11 +1316,11 @@ const newSecret = (): string =>
 // 去掉 0/O/1/l/I：口令要靠手打进短信，形近字符会让人白试几次
 const SECRET_ALPHABET = 'abcdefghjkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789'
 
-route('GET', '/api/sms-command', async ({ res, deps }) => {
+route('GET', '/api/sms-command', async ({ user, res, deps }) => {
   json(res, 200, await loadSmsCommand(deps.store))
 })
 
-route('POST', '/api/sms-command', async ({ res, body, deps, ip }) => {
+route('POST', '/api/sms-command', async ({ user, res, body, deps, ip }) => {
   const b = body as Partial<SmsCommandConfig> & { regenerate?: boolean }
   const cur = await loadSmsCommand(deps.store)
   const cfg: SmsCommandConfig = {
@@ -1155,11 +1347,11 @@ route('POST', '/api/sms-command', async ({ res, body, deps, ip }) => {
 
 // ── 电量告警 ────────────────────────────────────────────────
 
-route('GET', '/api/battery-alerts', async ({ res, deps }) => {
+route('GET', '/api/battery-alerts', async ({ user, res, deps }) => {
   json(res, 200, await loadBatteryConfig(deps.store))
 })
 
-route('POST', '/api/battery-alerts', async ({ res, body, deps, ip }) => {
+route('POST', '/api/battery-alerts', async ({ user, res, body, deps, ip }) => {
   const b = body as Record<string, unknown>
   const clamp = (v: unknown) => {
     const n = Number(v)
@@ -1188,11 +1380,11 @@ export async function timezone(store: Store): Promise<string> {
   return (await store.getSetting(S_TIMEZONE)) ?? DEFAULT_TZ
 }
 
-route('GET', '/api/timezone', async ({ res, deps }) => {
+route('GET', '/api/timezone', async ({ user, res, deps }) => {
   json(res, 200, { timezone: await timezone(deps.store) })
 })
 
-route('POST', '/api/timezone', async ({ res, body, deps, ip }) => {
+route('POST', '/api/timezone', async ({ user, res, body, deps, ip }) => {
   const tz = String((body as { timezone?: string })?.timezone ?? '').trim()
   // 用 Intl 自己校验，比维护一份时区白名单可靠
   try {
@@ -1207,13 +1399,13 @@ route('POST', '/api/timezone', async ({ res, body, deps, ip }) => {
 
 // ── 总览统计 ────────────────────────────────────────────────
 
-route('GET', '/api/stats', async ({ res, deps }) => {
-  const devices = await deps.store.listDevices()
+route('GET', '/api/stats', async ({ user, res, deps }) => {
+  const devices = await deps.store.listDevices(user.id)
   const online = new Set(deps.hub.onlineDevices())
   const dayAgo = now() - 86_400_000
 
-  const todayEvents = (await deps.store.listEvents({ limit: 500, offset: 0, since: dayAgo })).length
-  const outbound = await deps.store.listOutbound(200, 0)
+  const todayEvents = (await deps.store.listEvents({ user_id: user.id, limit: 500, offset: 0, since: dayAgo })).length
+  const outbound = await deps.store.listOutbound(200, 0, { user_id: user.id })
   const todayOutbound = outbound.filter((o) => o.created_at >= dayAgo)
 
   json(res, 200, {
@@ -1229,8 +1421,8 @@ route('GET', '/api/stats', async ({ res, deps }) => {
       outbound: todayOutbound.length,
       outbound_failed: todayOutbound.filter((o) => o.status === 'failed').length,
     },
-    channels: (await deps.store.listChannels()).filter((c) => c.enabled).length,
-    rules: (await deps.store.listRules()).filter((r) => r.enabled).length,
+    channels: (await deps.store.listChannels(user.id)).filter((c) => c.enabled).length,
+    rules: (await deps.store.listRules(user.id)).filter((r) => r.enabled).length,
   })
 }, true, false, 'bot')
 
@@ -1253,7 +1445,7 @@ function outboundRateLimited(): boolean {
   return false
 }
 
-route('POST', '/api/outbound', async ({ res, body, deps, ip }) => {
+route('POST', '/api/outbound', async ({ user, res, body, deps, ip }) => {
   const b = body as { device_id?: string; to?: string; text?: string; sim_slot?: number | null }
   if (!b.device_id || !b.to || !b.text) return json(res, 400, { error: '缺少 device_id / to / text' })
   if (b.text.length > 4096) return json(res, 400, { error: '内容过长' })
@@ -1271,7 +1463,7 @@ route('POST', '/api/outbound', async ({ res, body, deps, ip }) => {
   const id = `cmd_${crypto.randomUUID()}`
   const t = now()
   await deps.store.createOutbound({
-    id, device_id: b.device_id, to_number: b.to,
+    id, user_id: user.id, device_id: b.device_id, to_number: b.to,
     content_enc: await deps.cipher.encrypt(b.text),
     sim_slot: simSlotOf(b.sim_slot),
     status: 'pending', error: null, created_at: t, updated_at: t,
@@ -1293,7 +1485,7 @@ route('POST', '/api/outbound', async ({ res, body, deps, ip }) => {
   json(res, 202, { id, status: 'pending' })
 }, true, false, 'bot')
 
-route('GET', '/api/outbound/:id', async ({ res, params, deps }) => {
+route('GET', '/api/outbound/:id', async ({ user, res, params, deps }) => {
   const o = await deps.store.getOutbound(params.id!)
   if (!o) return json(res, 404, { error: '任务不存在' })
   const dev = await deps.store.getDevice(o.device_id)
@@ -1308,8 +1500,8 @@ route('GET', '/api/outbound/:id', async ({ res, params, deps }) => {
 }, true, false, 'bot')
 
 /** 删除一条发送记录。任务本身不会被撤回——短信早就发出去了，删的只是这条记录。 */
-route('DELETE', '/api/outbound/:id', async ({ res, params, deps, ip }) => {
-  const ok = await deps.store.deleteOutbound(params.id!)
+route('DELETE', '/api/outbound/:id', async ({ user, res, params, deps, ip }) => {
+  const ok = await deps.store.deleteOutbound(params.id!, user.id)
   if (!ok) return json(res, 404, { error: '记录不存在' })
   await deps.store.audit({
     actor: 'admin', action: 'outbound.delete', detail: params.id!, ip, created_at: now(),
@@ -1325,12 +1517,13 @@ const OUTBOUND_STATUS = new Set(['pending', 'accepted', 'sent', 'delivered', 'fa
  * 与 /api/events 不同，这里的筛选全部走 SQL：收件人号码是明文列，
  * 只有正文是密文——而按正文搜发件记录几乎没有场景，就不做了。
  */
-route('GET', '/api/outbound', async ({ res, url, deps }) => {
+route('GET', '/api/outbound', async ({ user, res, url, deps }) => {
   const q = url.searchParams
   const limit = Math.min(Math.max(Number(q.get('limit') ?? 50), 1), 200)
   const offset = Math.max(Number(q.get('offset') ?? 0), 0)
   const status = q.get('status')
   const filter = {
+    user_id: user.id,
     device_id: q.get('device') || null,
     status: status && OUTBOUND_STATUS.has(status) ? (status as OutboundRecord['status']) : null,
     to: q.get('to')?.trim() || null,
@@ -1339,7 +1532,7 @@ route('GET', '/api/outbound', async ({ res, url, deps }) => {
     deps.store.listOutbound(limit, offset, filter),
     deps.store.countOutbound(filter),
   ])
-  const devs = await deps.store.listDevices()
+  const devs = await deps.store.listDevices(user.id)
   const names = new Map(devs.map((d) => [d.id, d.name]))
   const sims = new Map(devs.map((d) => [d.id, simsOf(d.net_json)]))
   json(res, 200, {
@@ -1393,11 +1586,11 @@ const DEEP_ROW_CAP = 200_000
  * 控制台原先是拉最近 200 条再在前端找——Bark 通知点进来的是几天前那条时，
  * 就会显示「消息不存在」。而 Bark 深链恰恰是这个项目最主要的入口。
  */
-route('GET', '/api/events/:id', async ({ res, params, deps }) => {
-  const e = await deps.store.getEvent(params.id!)
+route('GET', '/api/events/:id', async ({ user, res, params, deps }) => {
+  const e = await deps.store.getEvent(params.id!, user.id)
   if (!e) return json(res, 404, { error: '消息不存在或已删除' })
   const dev = await deps.store.getDevice(e.device_id)
-  const ruleNames = new Map((await deps.store.listRules()).map((r) => [r.id, r.name]))
+  const ruleNames = new Map((await deps.store.listRules(user.id)).map((r) => [r.id, r.name]))
   json(res, 200, {
     id: e.id,
     device_id: e.device_id,
@@ -1418,8 +1611,8 @@ route('GET', '/api/events/:id', async ({ res, params, deps }) => {
 }, true, false, 'bot')
 
 /** 删除单条消息。删了就没了，没有回收站——这一点在界面上要说清楚。 */
-route('DELETE', '/api/events/:id', async ({ res, params, deps, ip }) => {
-  const ok = await deps.store.deleteEvent(params.id!)
+route('DELETE', '/api/events/:id', async ({ user, res, params, deps, ip }) => {
+  const ok = await deps.store.deleteEvent(params.id!, user.id)
   if (!ok) return json(res, 404, { error: '消息不存在' })
   await deps.store.audit({
     actor: 'admin', action: 'event.delete', detail: params.id!, ip, created_at: now(),
@@ -1435,12 +1628,13 @@ route('DELETE', '/api/events/:id', async ({ res, params, deps, ip }) => {
  *
  * 只认 SQL 能过滤的维度。关键词过滤要逐条解密，条件写错就是不可逆的批量误删。
  */
-route('POST', '/api/events/bulk-delete', async ({ res, body, deps, ip }) => {
+route('POST', '/api/events/bulk-delete', async ({ user, res, body, deps, ip }) => {
   const b = body as { device?: string; kind?: string; direction?: string; since?: number; until?: number; confirm?: boolean }
   if (b?.confirm !== true) return json(res, 400, { error: '缺少确认' })
 
   const kind = b.kind === 'sms' || b.kind === 'call' || b.kind === 'notification' ? b.kind : undefined
   const filter: EventFilter = {
+    user_id: user.id,
     ...(kind ? { kind } : {}),
     ...(b.device ? { device_id: b.device } : {}),
     ...(b.direction === 'in' || b.direction === 'out' ? { direction: b.direction } : {}),
@@ -1458,7 +1652,7 @@ route('POST', '/api/events/bulk-delete', async ({ res, body, deps, ip }) => {
   json(res, 200, { deleted })
 })
 
-route('GET', '/api/events', async ({ res, url, deps }) => {
+route('GET', '/api/events', async ({ user, res, url, deps }) => {
   const p = url.searchParams
   const limit = Math.min(Math.max(Number(p.get('limit') ?? 30), 1), 200)
   const offset = Math.max(Number(p.get('offset') ?? 0), 0)
@@ -1467,6 +1661,7 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
   const kind: 'sms' | 'call' | 'notification' | undefined =
     kindParam === 'sms' || kindParam === 'call' || kindParam === 'notification' ? kindParam : undefined
   const filter: EventFilter = {
+    user_id: user.id,
     ...(kind ? { kind } : {}),
     ...(p.get('device') ? { device_id: p.get('device')! } : {}),
     ...(p.get('direction') === 'in' || p.get('direction') === 'out' ? { direction: p.get('direction') as 'in' | 'out' } : {}),
@@ -1478,11 +1673,11 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
   const from = p.get('from')?.trim().toLowerCase() ?? ''
   const needsDecryptFilter = q !== '' || from !== ''
 
-  const allDevices = await deps.store.listDevices()
+  const allDevices = await deps.store.listDevices(user.id)
   const deviceNames = new Map(allDevices.map((d) => [d.id, d.name]))
   const deviceSims = new Map(allDevices.map((d) => [d.id, simsOf(d.net_json)]))
   // 命中规则存的是 id，直接显示等于让人对着一串 rule_3f2a... 猜是哪条
-  const ruleNames = new Map((await deps.store.listRules()).map((r) => [r.id, r.name]))
+  const ruleNames = new Map((await deps.store.listRules(user.id)).map((r) => [r.id, r.name]))
   const decrypt = async (e: Awaited<ReturnType<typeof deps.store.getEvent>> & object) => ({
     id: e.id,
     device_id: e.device_id,
@@ -1556,10 +1751,10 @@ route('GET', '/api/events', async ({ res, url, deps }) => {
  */
 const THREAD_SCAN = 1500
 
-route('GET', '/api/threads', async ({ res, url, deps }) => {
+route('GET', '/api/threads', async ({ user, res, url, deps }) => {
   const scan = Math.min(Math.max(Number(url.searchParams.get('scan') ?? THREAD_SCAN), 100), 20_000)
 
-  const rows = await deps.store.listEvents({ kind: 'sms', limit: scan, offset: 0 })
+  const rows = await deps.store.listEvents({ user_id: user.id, kind: 'sms', limit: scan, offset: 0 })
   const items = await Promise.all(rows.map(async (e) => ({
     from: await deps.cipher.decrypt(e.sender_enc),
     text: await deps.cipher.decrypt(e.content_enc),
@@ -1571,7 +1766,7 @@ route('GET', '/api/threads', async ({ res, url, deps }) => {
 
   // 网关自己发出去的也要出现在会话里：控制台发完一条，它就该在对话里，
   // 否则「我刚发的那条呢」只能去另一个页面找
-  const sent = await deps.store.listOutbound(scan, 0, { device_id: null, status: null, to: null })
+  const sent = await deps.store.listOutbound(scan, 0, { user_id: user.id, device_id: null, status: null, to: null })
   for (const o of sent) {
     items.push({
       from: o.to_number,
@@ -1597,12 +1792,12 @@ route('GET', '/api/threads', async ({ res, url, deps }) => {
  * 事件流与网关的发送记录合并成同一条时间线——在手机上它们本来就是一条对话。
  * 号码用归一化后的键做**部分匹配**，所以 +86 前缀写法不同的记录都能捞到。
  */
-route('GET', '/api/threads/:key', async ({ res, params, url, deps }) => {
+route('GET', '/api/threads/:key', async ({ user, res, params, url, deps }) => {
   const key = params.key!
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 200), 1), 500)
   const scan = Math.min(Math.max(Number(url.searchParams.get('scan') ?? 8000), 100), 200_000)
 
-  const rows = await deps.store.listEvents({ kind: 'sms', limit: scan, offset: 0 })
+  const rows = await deps.store.listEvents({ user_id: user.id, kind: 'sms', limit: scan, offset: 0 })
   const events: ThreadItem[] = []
   let number = ''
   for (const e of rows) {
@@ -1624,7 +1819,7 @@ route('GET', '/api/threads/:key', async ({ res, params, url, deps }) => {
   const outbound: ThreadItem[] = []
   // 号码里可能带空格与横杠（「+86 138 0013 8000」），SQL 的 LIKE 匹配不上归一化后的键，
   // 只能取一批回来逐条归一化再比
-  for (const o of await deps.store.listOutbound(scan, 0, { device_id: null, status: null, to: null })) {
+  for (const o of await deps.store.listOutbound(scan, 0, { user_id: user.id, device_id: null, status: null, to: null })) {
     if (threadKey(o.to_number) !== key) continue
     if (!number) number = o.to_number
     outbound.push({
@@ -1640,7 +1835,7 @@ route('GET', '/api/threads/:key', async ({ res, params, url, deps }) => {
     return json(res, 404, { error: '这个号码没有往来记录' })
   }
 
-  const devs = await deps.store.listDevices()
+  const devs = await deps.store.listDevices(user.id)
   const names = new Map(devs.map((d) => [d.id, d.name]))
   const sims = new Map(devs.map((d) => [d.id, simsOf(d.net_json)]))
   const items = mergeThread(events, outbound).map((x) => ({
@@ -1678,10 +1873,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
     return true
   }
 
-  if (match.auth && !(await checkAuth(req, deps, ip, match.scope))) {
-    // 未认证一律 404，不返回 401——不确认接口存在（计划 §6.3）
-    json(res, 404, { error: 'not found' })
-    return true
+  let user = ANON
+  if (match.auth) {
+    const who = await checkAuth(req, deps, ip, match.scope)
+    if (!who) {
+      // 未认证一律 404，不返回 401——不确认接口存在（计划 §6.3）
+      json(res, 404, { error: 'not found' })
+      return true
+    }
+    user = who
   }
 
   const m = match.pattern.exec(url.pathname)!
@@ -1699,7 +1899,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
   }
 
   try {
-    await match.handler({ req, res, url, params, body, deps, ip })
+    await match.handler({ req, res, url, params, body, deps, ip, user })
   } catch (e) {
     log.error('API 处理异常', { path: url.pathname, error: String(e) })
     if (!res.headersSent) json(res, 500, { error: 'internal error' })
@@ -1713,36 +1913,46 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, deps:
  * 会话额外校验 UA 与 IP 段——凭证被盗后换台设备或换个网段就用不了。
  * 每次通过都顺延有效期：30 分钟是「无操作超时」，不是「登录后强制下线」。
  */
-async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string, scope: Scope): Promise<boolean> {
+async function checkAuth(req: IncomingMessage, deps: ApiDeps, ip: string, scope: Scope): Promise<UserRecord | null> {
   const h = req.headers.authorization
-  if (!h?.startsWith('Bearer ')) return false
+  if (!h?.startsWith('Bearer ')) return null
   const presented = h.slice(7)
 
-  // Bot 的 service token 只在标记为 bot scope 的路由上有效
+  // Bot 的 service token 只在标记为 bot scope 的路由上有效。
+  // 每个用户一个 token，据此定位主人——Bot 取到的只能是自己主人的数据
   if (scope === 'bot') {
-    const bot = await deps.store.getSetting(S_BOT_TOKEN)
-    if (bot && timingSafeEqual(presented, bot)) return true
+    const owner = await deps.store.getUserByBotToken(presented)
+    if (owner && !owner.disabled) return owner
   }
 
   const sess = await deps.store.getSession(await hashToken(presented))
   if (sess) {
     const t = now()
-    if (sess.revoked || sess.expires_at < t) return false
+    if (sess.revoked || sess.expires_at < t) return null
     if (!timingSafeEqual(sess.ua_hash, await hashToken(req.headers['user-agent'] ?? ''))) {
       log.warn('会话 UA 不匹配，已拒绝', { ip })
-      return false
+      return null
     }
     // 受信任的会话不校验 IP 段：手机在 WiFi 与流量之间切换、换个基站，
     // IP 段就变了，严格绑定会让「保持登录」名存实亡。UA 绑定仍然保留。
     if (!sess.trusted && sess.ip_prefix !== ipPrefix(ip)) {
       log.warn('会话 IP 段不匹配，已拒绝', { ip })
-      return false
+      return null
     }
+    const owner = await deps.store.getUser(sess.user_id)
+    // 账号被删或被停用时，手里的会话立刻作废
+    if (!owner || owner.disabled) return null
     await deps.store.touchSession(sess.token_hash, t + (sess.trusted ? TRUSTED_SESSION_TTL_MS : SESSION_TTL_MS))
-    return true
+    return owner
   }
 
-  return timingSafeEqual(presented, deps.adminToken)
+  // 应急用的长期管理 token（GW_ADMIN_TOKEN / data/admin.token）。
+  // 它代表「机器的主人」，落到第一个管理员账号上
+  if (timingSafeEqual(presented, deps.adminToken)) {
+    const admins = (await deps.store.listUsers()).filter((u) => u.role === 'admin' && !u.disabled)
+    return admins[0] ?? null
+  }
+  return null
 }
 
 const MAX_BODY = 256 * 1024

@@ -16,9 +16,10 @@ export interface TaskDeps {
   /** 用户时区，IANA 名称如 Asia/Tokyo */
   timezone: string
   onlineDevices(): string[]
-  send(deviceId: string, to: string, text: string, simSlot: number | null): Promise<boolean>
+  send(userId: string, deviceId: string, to: string, text: string, simSlot: number | null): Promise<boolean>
   deviceName?(id: string): string
-  alert(title: string, body: string): Promise<void>
+  /** 告警发给任务的主人，不是发给所有人 */
+  alert(userId: string, title: string, body: string): Promise<void>
   now?: () => number
 }
 
@@ -91,7 +92,7 @@ export async function runTask(deps: TaskDeps, task: ParsedTask, force = false): 
     return { sent: false, reason: `设备不在线（${which}）` }
   }
 
-  const ok = await deps.send(device, task.to, task.text, task.sim_slot).catch(() => false)
+  const ok = await deps.send(task.user_id, device, task.to, task.text, task.sim_slot).catch(() => false)
 
   if (force) {
     log.info('计划任务手动测试', { task_id: task.id, ok })
@@ -107,7 +108,7 @@ export async function runTask(deps: TaskDeps, task: ParsedTask, force = false): 
 
   // 一次性任务执行后自动停用，避免它永远挂在列表里显示「没有后续执行」
   if (task.schedule.type === 'once') {
-    await deps.store.setTaskEnabled(task.id, false)
+    await deps.store.setTaskEnabled(task.id, task.user_id, false)
   }
 
   if (ok) {
@@ -123,6 +124,7 @@ export async function runTask(deps: TaskDeps, task: ParsedTask, force = false): 
   if (n >= ALERT_AFTER_FAILURES) {
     const which = task.device_id ? (deps.deviceName?.(task.device_id) ?? task.device_id) : '设备'
     await deps.alert(
+      task.user_id,
       `⚠️ 计划任务「${task.name}」连续失败`,
       `${which} 上的任务已连续 ${n} 次未能执行。` +
       `若这是保号任务，号码长期零消费可能被停机，届时验证码将完全收不到且不会有任何提示。` +
@@ -142,7 +144,8 @@ export async function tick(
   deps: TaskDeps,
   decrypt: (enc: Uint8Array) => Promise<string>,
 ): Promise<void> {
-  for (const row of await deps.store.listTasks()) {
+  // 调度器要跑所有人的任务，作用域在每条任务自己的 user_id 上
+  for (const row of await deps.store.listAllTasks()) {
     const text = await decrypt(row.content_enc).catch(() => null)
     if (text === null) {
       log.error('任务内容解密失败，已跳过', { task_id: row.id })

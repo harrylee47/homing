@@ -16,7 +16,7 @@ import { makeFrame, newCmdId } from '../../core/frames.js'
 import { AppListResult, FingerprintList, ImportResult, LocationResult, type DownstreamFrame } from '../../core/protocol.js'
 import { PROVIDERS } from '../../core/notifier.js'
 import { TelegramConfig } from '../../core/providers/telegram.js'
-import { barkAccess, getOrCreateBotToken, handleApi, isInitialized, loadNotifyCapture, loadSmsCommand, timezone } from './api.js'
+import { barkAccess, botTokenFor, handleApi, isInitialized, loadNotifyCapture, loadSmsCommand, timezone } from './api.js'
 import { TelegramBot } from './bot.js'
 import { isBarkAllowed, isBarkPath, proxyBark } from './barkproxy.js'
 import { serveStatic } from './static.js'
@@ -38,8 +38,41 @@ setDefaultResultOrder('ipv4first')
 const cfg = loadConfig()
 const store = new SqliteStore(cfg.dbPath)
 await store.migrate()
-
+await migrateSingleUser()
 await backfillSeedRules()
+
+/**
+ * 从单用户升级到多用户。
+ *
+ * 老库里口令与 TOTP 存在 settings 表、数据没有归属列。这里把它们搬进 users 表，
+ * 再把所有无主数据认领给这个人——不认领的话，他升级后打开控制台会看到
+ * 空空如也：设备、规则、几千条历史消息都还在库里，只是谁都查不到。
+ *
+ * 只在「一个用户都没有」时执行一次。
+ */
+async function migrateSingleUser(): Promise<void> {
+  if ((await store.listUsers()).length > 0) return
+
+  const pw = await store.getSetting('admin_password_hash')
+  const totp = await store.getSetting('totp_secret')
+  // 还没走过向导：让向导去建第一个用户，这里没事可做
+  if (!pw || !totp) return
+
+  const { generateSessionToken } = await import('../../core/auth.js')
+  const id = 'usr_first'
+  await store.upsertUser({
+    id, name: 'admin', password_hash: pw, totp_secret: totp,
+    role: 'admin', bot_token: generateSessionToken(),
+    disabled: false, created_at: Date.now(),
+  })
+  const claimed = await store.claimOrphans(id)
+  log.info('已升级为多用户：原有数据归入 admin', { claimed })
+  await store.audit({
+    user_id: id, actor: 'system', action: 'user.migrate_single',
+    detail: Object.entries(claimed).map(([k, v]) => `${k} ${v}`).join('、'),
+    ip: null, created_at: Date.now(),
+  })
+}
 
 /**
  * 老部署补齐新增的预置规则。
@@ -59,8 +92,13 @@ function newId(prefix: string): string {
 async function backfillSeedRules(): Promise<void> {
   const cur = Number(await store.getSetting('seed_rules_version') ?? 0)
   if (cur >= SEED_RULES_VERSION) return
+  // 规则是按人存的，每个人各补各的
+  for (const u of await store.listUsers()) await backfillSeedRulesFor(u.id)
+  await store.setSetting('seed_rules_version', String(SEED_RULES_VERSION))
+}
 
-  const existing = await store.listRules()
+async function backfillSeedRulesFor(userId: string): Promise<void> {
+  const existing = await store.listRules(userId)
   // 一条规则都没有说明还没走过向导，交给向导去种，这里只记版本
   if (existing.length > 0) {
     // 新规则跟着现有规则的渠道走：用户已经选好推给谁了，不该再问一遍
@@ -72,7 +110,7 @@ async function backfillSeedRules(): Promise<void> {
     const missing = missingSeedRules(existing.map((r) => r.name), channels, () => newId('rule'))
     for (const r of missing) {
       await store.upsertRule({
-        id: r.id, name: r.name, priority: r.priority, enabled: true,
+        id: r.id, user_id: userId, name: r.name, priority: r.priority, enabled: true,
         match_json: JSON.stringify(r.match), action_json: JSON.stringify(r.action), created_at: t,
       })
     }
@@ -84,7 +122,7 @@ async function backfillSeedRules(): Promise<void> {
       const dir = missingDirection(row.name, match)
       if (!dir) continue
       await store.upsertRule({
-        id: row.id, name: row.name, priority: row.priority, enabled: row.enabled,
+        id: row.id, user_id: userId, name: row.name, priority: row.priority, enabled: row.enabled,
         match_json: JSON.stringify({ ...match, direction: dir }),
         action_json: row.action_json, created_at: row.created_at,
       })
@@ -101,7 +139,7 @@ async function backfillSeedRules(): Promise<void> {
       const next = migratedTemplate(action.template)
       if (next === null) continue
       await store.upsertRule({
-        id: row.id, name: row.name, priority: row.priority, enabled: row.enabled,
+        id: row.id, user_id: userId, name: row.name, priority: row.priority, enabled: row.enabled,
         match_json: row.match_json,
         action_json: JSON.stringify({ ...action, template: next }),
         created_at: row.created_at,
@@ -131,7 +169,6 @@ async function backfillSeedRules(): Promise<void> {
       })
     }
   }
-  await store.setSetting('seed_rules_version', String(SEED_RULES_VERSION))
 }
 
 const cipher = await createCipher(cfg.dek)
@@ -166,15 +203,7 @@ const wss = createWsServer({
  */
 async function alertLoginLockout(ip: string, attempts: number): Promise<void> {
   try {
-    const channels = await store.listChannels()
-    const targets = []
-    for (const c of channels) {
-      if (!c.enabled) continue
-      targets.push({
-        id: c.id, type: c.type, name: c.name,
-        config: JSON.parse(await cipher.decrypt(c.config_enc)), enabled: true,
-      })
-    }
+    const targets = await adminChannels()
     if (targets.length === 0) return
     await dispatch(targets, {
       title: '⚠️ 控制台登录告警',
@@ -305,7 +334,7 @@ const apiDeps = {
   baseUrl: cfg.baseUrl,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
   onUnknownIpLogin: (ip: string) => void (async () => {
-    const channels = await liveChannels()
+    const channels = await adminChannels()
     if (channels.length === 0) return
     const { dispatch } = await import('../../core/notifier.js')
     await dispatch(channels, {
@@ -410,12 +439,13 @@ async function syncBots(): Promise<void> {
 async function syncBotsInner(): Promise<void> {
   if (!(await isInitialized(store))) return
 
-  const wanted = new Map<string, { token: string; chat: string }>()
-  for (const c of await store.listChannels()) {
+  // 跨用户：每个人可以有自己的 Bot，各自只能取到自己的数据（见下面的 service token）
+  const wanted = new Map<string, { token: string; chat: string; owner: string }>()
+  for (const c of await store.listAllChannels()) {
     if (!c.enabled || c.type !== 'telegram') continue
     try {
       const cfg = TelegramConfig.parse(JSON.parse(await cipher.decrypt(c.config_enc)))
-      wanted.set(c.id, { token: cfg.bot_token, chat: cfg.chat_id })
+      wanted.set(c.id, { token: cfg.bot_token, chat: cfg.chat_id, owner: c.user_id })
     } catch (e) {
       log.error('Bot 渠道配置不可用，已跳过', { channel_id: c.id, error: String(e) })
     }
@@ -425,9 +455,11 @@ async function syncBotsInner(): Promise<void> {
     if (!wanted.has(id)) { bot.stop(); bots.delete(id); log.info('Bot 已停止', { channel_id: id }) }
   }
 
-  const serviceToken = await getOrCreateBotToken(store)
   for (const [id, w] of wanted) {
     if (bots.has(id)) continue
+    // 每个 Bot 用自己主人的 token：它只能取到那个人的数据
+    const serviceToken = await botTokenFor(store, w.owner)
+    if (!serviceToken) { log.warn('Bot 渠道找不到归属用户，已跳过', { channel_id: id }); continue }
     const bot = new TelegramBot(
       { store, apiBase: `http://127.0.0.1:${cfg.port}`, serviceToken },
       w.token, new Set([w.chat]), id,
@@ -441,10 +473,21 @@ async function syncBotsInner(): Promise<void> {
 setTimeout(() => void syncBots(), 2000)
 const botTimer = setInterval(() => void syncBots(), 60_000)
 
-/** 已解密的启用渠道。监控与保号告警共用。 */
-async function liveChannels() {
+/**
+ * 机器主人的渠道：登录失败、异地登录这类**与账号无关**的告警发给他。
+ *
+ * 这类告警发生在还不知道是谁登录的时候，只能发给第一个管理员——
+ * 他是这台机器的主人，被人敲门理应由他知道。
+ */
+async function adminChannels() {
+  const admin = (await store.listUsers()).find((u) => u.role === 'admin' && !u.disabled)
+  return admin ? liveChannels(admin.id) : []
+}
+
+/** 某个用户已解密的启用渠道。监控与保号告警共用。 */
+async function liveChannels(userId: string) {
   const out = []
-  for (const c of await store.listChannels()) {
+  for (const c of await store.listChannels(userId)) {
     if (!c.enabled) continue
     const provider = PROVIDERS[c.type]
     if (!provider) continue
@@ -472,7 +515,7 @@ const monitorTimer = setInterval(() => {
 /** 设备名缓存，仅用于告警文案；取不到就退回 id，不值得为它阻塞。 */
 const deviceNameCache = new Map<string, string>()
 const refreshDeviceNames = async () => {
-  for (const d of await store.listDevices()) deviceNameCache.set(d.id, d.name)
+  for (const d of await store.listAllDevices()) deviceNameCache.set(d.id, d.name)
 }
 void refreshDeviceNames()
 
@@ -485,11 +528,11 @@ const taskDeps = async () => ({
   timezone: await timezone(store),
   onlineDevices: () => hub.onlineDevices(),
   deviceName: (id: string) => deviceNameCache.get(id) ?? id,
-  send: async (deviceId: string, to: string, text: string, simSlot: number | null = null) => {
+  send: async (userId: string, deviceId: string, to: string, text: string, simSlot: number | null = null) => {
     const id = `cmd_${crypto.randomUUID()}`
     const t = Date.now()
     await store.createOutbound({
-      id, device_id: deviceId, to_number: to,
+      id, user_id: userId, device_id: deviceId, to_number: to,
       content_enc: await cipher.encrypt(text), sim_slot: simSlot,
       status: 'pending', error: null, created_at: t, updated_at: t,
     })
@@ -500,8 +543,8 @@ const taskDeps = async () => ({
     await store.advanceOutbound(id, 'failed', '设备离线', Date.now())
     return false
   },
-  alert: async (title: string, body: string) => {
-    const channels = await liveChannels()
+  alert: async (userId: string, title: string, body: string) => {
+    const channels = await liveChannels(userId)
     if (channels.length === 0) return
     const { dispatch } = await import('../../core/notifier.js')
     await dispatch(channels, {

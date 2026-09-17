@@ -38,17 +38,21 @@ export interface PairingResult {
 }
 
 /** 控制台调用：生成配对码。返回明文，只显示这一次。 */
-export async function createPairing(store: Store, deviceName: string, now = Date.now()): Promise<{ code: string; expires_at: number }> {
+export async function createPairing(
+  store: Store, userId: string, deviceName: string, now = Date.now(),
+): Promise<{ code: string; expires_at: number }> {
   const code = generatePairingCode()
   const expires_at = now + PAIRING_TTL_MS
   await store.createPairingCode({
+    // 配对码归属谁，兑换出来的设备就归属谁——设备是一切数据归属的源头
+    user_id: userId,
     code_hash: await hashToken(code),
     device_name: deviceName,
     expires_at,
     used_at: null,
     created_at: now,
   })
-  await store.audit({ actor: 'console', action: 'pairing.create', detail: deviceName, ip: null, created_at: now })
+  await store.audit({ user_id: userId, actor: 'console', action: 'pairing.create', detail: deviceName, ip: null, created_at: now })
   return { code, expires_at }
 }
 
@@ -74,6 +78,7 @@ export async function redeemPairing(
   const token = generateToken()
   const device: DeviceRecord = {
     id: newDeviceId(),
+    user_id: record.user_id,
     name: record.device_name,
     token_hash: await hashToken(token),
     status: 'offline',
@@ -87,7 +92,7 @@ export async function redeemPairing(
     created_at: now,
   }
   await store.createDevice(device)
-  await store.audit({ actor: 'agent', action: 'pairing.redeem', detail: device.id, ip: null, created_at: now })
+  await store.audit({ user_id: device.user_id, actor: 'agent', action: 'pairing.redeem', detail: device.id, ip: null, created_at: now })
   log.info('设备配对成功', { device_id: device.id, name: device.name })
 
   return { device_id: device.id, token, device_name: device.name }

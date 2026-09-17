@@ -22,8 +22,8 @@ const stub: Provider<{ tag: string }> = {
 }
 registerProvider(stub as unknown as Provider<never>)
 
-const evt = (o: Partial<MatchableEvent> & { imported?: boolean } = {}): MatchableEvent & { imported?: boolean } => ({
-  device_id: 'dev_1', kind: 'sms', from: '95533',
+const evt = (o: Partial<MatchableEvent> & { imported?: boolean; user_id?: string } = {}) => ({
+  user_id: 'u1', device_id: 'dev_1', kind: 'sms' as const, from: '95533',
   content: '【建设银行】您的验证码是 123456，5分钟内有效', occurred_at: 1_700_000_000_000, ...o,
 })
 
@@ -33,14 +33,14 @@ describe('事件处理管线', () => {
 
   const addChannel = async (id: string, enabled = true) => {
     store.channels.set(id, {
-      id, type: 'stub', name: id,
+      id, user_id: 'u1', type: 'stub', name: id,
       config_enc: await cipher.encrypt(JSON.stringify({ tag: id })),
       enabled, created_at: 0,
     })
   }
   const addRule = (id: string, priority: number, match: Partial<RuleMatch>, action: Partial<RuleAction>) => {
     store.rules.set(id, {
-      id, name: id, priority, enabled: true,
+      id, user_id: 'u1', name: id, priority, enabled: true,
       match_json: JSON.stringify(RuleMatch.parse(match)),
       action_json: JSON.stringify(RuleAction.parse(action)),
       created_at: 0,
@@ -53,7 +53,7 @@ describe('事件处理管线', () => {
     sent.length = 0
     failTimes = 0
     store.events.set('evt_1', {
-      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
+      id: 'evt_1', user_id: 'u1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
     })
@@ -142,7 +142,7 @@ describe('事件处理管线', () => {
   it('坏规则被跳过，不影响其他规则生效', async () => {
     await addChannel('ch_a')
     store.rules.set('bad', {
-      id: 'bad', name: 'bad', priority: 1, enabled: true,
+      user_id: 'u1', id: 'bad', name: 'bad', priority: 1, enabled: true,
       match_json: '{ this is not json', action_json: '{}', created_at: 0,
     })
     addRule('good', 10, {}, { channels: ['ch_a'] })
@@ -153,7 +153,7 @@ describe('事件处理管线', () => {
   it('渠道配置解不开时跳过该渠道而非整体失败', async () => {
     await addChannel('ch_ok')
     store.channels.set('ch_bad', {
-      id: 'ch_bad', type: 'stub', name: 'bad',
+      id: 'ch_bad', user_id: 'u1', type: 'stub', name: 'bad',
       config_enc: new Uint8Array([1, 2, 3]), enabled: true, created_at: 0,
     })
     await processEvent({ store, cipher, retryBaseMs: 1 }, 'evt_1', evt())
@@ -163,7 +163,7 @@ describe('事件处理管线', () => {
   it('老渠道配置缺少新字段时，schema 默认值仍然生效', async () => {
     // 模拟「新增配置项之前就存下的渠道」：config 里没有 tag 之外的字段
     store.channels.set('ch_old', {
-      id: 'ch_old', type: 'stub', name: 'old',
+      id: 'ch_old', user_id: 'u1', type: 'stub', name: 'old',
       config_enc: await cipher.encrypt(JSON.stringify({ tag: 'old', extra: 'ignored' })),
       enabled: true, created_at: 0,
     })
@@ -196,7 +196,7 @@ describe('多设备时标出来源', () => {
 
   const addDevice = (id: string, name: string) => {
     store.devices.set(id, {
-      id, name, token_hash: 'h', status: 'offline',
+      id, user_id: 'u1', name, token_hash: 'h', status: 'offline',
       last_seen_at: null, battery: null, charging: null, location_enc: null, location_at: null, net_json: null, app_version: null, created_at: 0,
     })
   }
@@ -207,12 +207,12 @@ describe('多设备时标出来源', () => {
     sent.length = 0
     failTimes = 0
     store.events.set('evt_1', {
-      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
+      id: 'evt_1', user_id: 'u1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
     })
     store.channels.set('ch_a', {
-      id: 'ch_a', type: 'stub', name: 'ch_a',
+      id: 'ch_a', user_id: 'u1', type: 'stub', name: 'ch_a',
       config_enc: await cipher.encrypt(JSON.stringify({ tag: 'a' })),
       enabled: true, created_at: 0,
     })
@@ -242,7 +242,7 @@ describe('多设备时标出来源', () => {
   it('模板里的 {device} 是设备名而不是 id', async () => {
     addDevice('dev_1', 'JP-Gateway-01')
     store.rules.set('r', {
-      id: 'r', name: 'r', priority: 10, enabled: true,
+      user_id: 'u1', id: 'r', name: 'r', priority: 10, enabled: true,
       match_json: JSON.stringify(RuleMatch.parse({})),
       action_json: JSON.stringify(RuleAction.parse({ channels: ['ch_a'], template: '{device}: {content}' })),
       created_at: 0,
@@ -259,14 +259,14 @@ describe('时区：规则时段与 {time} 占位符', () => {
 
   const addChannel = async (id: string) => {
     store.channels.set(id, {
-      id, type: 'stub', name: id,
+      id, user_id: 'u1', type: 'stub', name: id,
       config_enc: await cipher.encrypt(JSON.stringify({ tag: id })),
       enabled: true, created_at: 0,
     })
   }
   const addRule = (id: string, match: Partial<RuleMatch>, action: Partial<RuleAction>) => {
     store.rules.set(id, {
-      id, name: id, priority: 10, enabled: true,
+      id, user_id: 'u1', name: id, priority: 10, enabled: true,
       match_json: JSON.stringify(RuleMatch.parse(match)),
       action_json: JSON.stringify(RuleAction.parse(action)),
       created_at: 0,
@@ -281,7 +281,7 @@ describe('时区：规则时段与 {time} 占位符', () => {
     cipher = await createCipher(generateDek())
     sent.length = 0
     store.events.set('evt_tz', {
-      id: 'evt_tz', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
+      id: 'evt_tz', user_id: 'u1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: AT, received_at: AT, matched_rules: null, created_at: AT,
     })
@@ -343,12 +343,12 @@ describe('历史导入只归档不推送', () => {
     cipher = await createCipher(generateDek())
     sent.length = 0
     store.events.set('evt_1', {
-      id: 'evt_1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
+      id: 'evt_1', user_id: 'u1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 0, received_at: 0, matched_rules: null, created_at: 0,
     })
     store.channels.set('ch_1', {
-      id: 'ch_1', type: 'stub', name: 'ch_1',
+      id: 'ch_1', user_id: 'u1', type: 'stub', name: 'ch_1',
       config_enc: await cipher.encrypt(JSON.stringify({ tag: 'ch_1' })),
       enabled: true, created_at: 0,
     })
@@ -361,7 +361,7 @@ describe('历史导入只归档不推送', () => {
 
   it('但规则命中照样记录下来，历史里还能按规则筛', async () => {
     store.rules.set('r1', {
-      id: 'r1', name: '验证码', priority: 10, enabled: true,
+      id: 'r1', user_id: 'u1', name: '验证码', priority: 10, enabled: true,
       match_json: JSON.stringify(RuleMatch.parse({ content_contains: ['验证码'] })),
       action_json: JSON.stringify(RuleAction.parse({ channels: ['ch_1'] })),
       created_at: 0,
@@ -385,7 +385,7 @@ describe('短信应用的通知是短信的回声', () => {
 
   const addSms = async (at: number, content = SMS, device = 'dev_1') => {
     store.events.set(`sms_${at}`, {
-      id: `sms_${at}`, device_id: device, kind: 'sms', direction: 'in', sim_slot: null,
+      id: `sms_${at}`, user_id: 'u1', device_id: device, kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: await cipher.encrypt('10690442001808'),
       content_enc: await cipher.encrypt(content),
       enc_ver: 1, occurred_at: at, received_at: at, matched_rules: null, created_at: at,
@@ -400,12 +400,12 @@ describe('短信应用的通知是短信的回声', () => {
     cipher = await createCipher(generateDek())
     sent.length = 0
     store.events.set('evt_n', {
-      id: 'evt_n', device_id: 'dev_1', kind: 'notification', direction: 'in', sim_slot: null,
+      id: 'evt_n', user_id: 'u1', device_id: 'dev_1', kind: 'notification', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: AT + 1000, received_at: 0, matched_rules: null, created_at: 0,
     })
     store.channels.set('ch_1', {
-      id: 'ch_1', type: 'stub', name: 'ch_1',
+      id: 'ch_1', user_id: 'u1', type: 'stub', name: 'ch_1',
       config_enc: await cipher.encrypt(JSON.stringify({ tag: 'ch_1' })),
       enabled: true, created_at: 0,
     })
@@ -421,7 +421,7 @@ describe('短信应用的通知是短信的回声', () => {
   it('但照样归档 —— 历史里该有这条', async () => {
     await addSms(AT)
     store.rules.set('r1', {
-      id: 'r1', name: '应用通知', priority: 10, enabled: true,
+      id: 'r1', user_id: 'u1', name: '应用通知', priority: 10, enabled: true,
       match_json: JSON.stringify(RuleMatch.parse({ kind: ['notification'] })),
       action_json: JSON.stringify(RuleAction.parse({ channels: ['ch_1'] })),
       created_at: 0,
@@ -465,7 +465,7 @@ describe('删除消息', () => {
 
   const add = (id: string, over: Partial<Parameters<MemoryStore['insertEvent']>[0]> = {}) =>
     store.events.set(id, {
-      id, device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
+      id, user_id: 'u1', device_id: 'dev_1', kind: 'sms', direction: 'in', sim_slot: null,
       sender_enc: new Uint8Array(), content_enc: new Uint8Array(),
       enc_ver: 1, occurred_at: 1_700_000_000_000, received_at: 0,
       matched_rules: null, created_at: 0, ...over,
@@ -475,17 +475,17 @@ describe('删除消息', () => {
 
   it('删单条', async () => {
     add('a'); add('b')
-    expect(await store.deleteEvent('a')).toBe(true)
+    expect(await store.deleteEvent('a', 'u1')).toBe(true)
     expect(store.events.size).toBe(1)
   })
 
   it('删不存在的返回 false，而不是假装成功', async () => {
-    expect(await store.deleteEvent('nope')).toBe(false)
+    expect(await store.deleteEvent('nope', 'u1')).toBe(false)
   })
 
   it('按设备删只动那台设备的', async () => {
     add('a'); add('b', { device_id: 'dev_2' }); add('c')
-    expect(await store.deleteEvents({ device_id: 'dev_1' })).toBe(2)
+    expect(await store.deleteEvents({ user_id: 'u1',  device_id: 'dev_1' })).toBe(2)
     expect([...store.events.keys()]).toEqual(['b'])
   })
 
@@ -493,13 +493,13 @@ describe('删除消息', () => {
     add('a', { kind: 'call' })
     add('b', { kind: 'call', occurred_at: 1_600_000_000_000 })
     add('c')
-    expect(await store.deleteEvents({ kind: 'call', since: 1_650_000_000_000 })).toBe(1)
+    expect(await store.deleteEvents({ user_id: 'u1',  kind: 'call', since: 1_650_000_000_000 })).toBe(1)
     expect([...store.events.keys()].sort()).toEqual(['b', 'c'])
   })
 
   it('不带条件就是清空——调用方必须自己确认过', async () => {
     add('a'); add('b')
-    expect(await store.deleteEvents({})).toBe(2)
+    expect(await store.deleteEvents({ user_id: 'u1' })).toBe(2)
     expect(store.events.size).toBe(0)
   })
 })
@@ -510,35 +510,35 @@ describe('删除设备记录', () => {
   beforeEach(async () => {
     store = new MemoryStore()
     store.devices.set('dev_1', {
-      id: 'dev_1', name: '旧手机', token_hash: 'x', status: 'offline',
+      id: 'dev_1', user_id: 'u1', name: '旧手机', token_hash: 'x', status: 'offline',
       last_seen_at: null, battery: null, charging: null, net_json: null,
       location_enc: null, location_at: null, app_version: null, created_at: 0,
     })
   })
 
   it('吊销会作废凭证，之后才谈得上删除', async () => {
-    await store.revokeDevice('dev_1')
+    await store.revokeDevice('dev_1', 'u1')
     const d = store.devices.get('dev_1')!
     expect(d.status).toBe('revoked')
     expect(d.token_hash).toBe('')
   })
 
   it('删掉设备记录', async () => {
-    expect(await store.deleteDevice('dev_1')).toBe(true)
+    expect(await store.deleteDevice('dev_1', 'u1')).toBe(true)
     expect(store.devices.size).toBe(0)
   })
 
   it('删不存在的返回 false', async () => {
-    expect(await store.deleteDevice('nope')).toBe(false)
+    expect(await store.deleteDevice('nope', 'u1')).toBe(false)
   })
 
   it('只清这台设备的发送记录，别的设备不受影响', async () => {
     const mk = (id: string, dev: string) => store.outbound.set(id, {
-      id, device_id: dev, to_number: '138', content_enc: new Uint8Array(),
+      id, user_id: 'u1', device_id: dev, to_number: '138', content_enc: new Uint8Array(),
       sim_slot: null, status: 'sent', error: null, created_at: 0, updated_at: 0,
     })
     mk('a', 'dev_1'); mk('b', 'dev_1'); mk('c', 'dev_2')
-    expect(await store.deleteOutboundByDevice('dev_1')).toBe(2)
+    expect(await store.deleteOutboundByDevice('dev_1', 'u1')).toBe(2)
     expect([...store.outbound.keys()]).toEqual(['c'])
   })
 })

@@ -9,6 +9,8 @@ import type { RuleAction, RuleMatch } from './rules.js'
 
 export interface DeviceRecord {
   id: string
+  /** 归属用户。设备是一切数据的源头，它的归属决定了消息的归属 */
+  user_id: string
   name: string
   /** 凭证哈希，绝不存明文（计划 §6.1） */
   token_hash: string
@@ -34,6 +36,8 @@ export interface DeviceRecord {
 /** 落库的事件。敏感字段已加密，core 层拿到的是密文。 */
 export interface StoredEvent {
   id: string
+  /** 归属用户。从设备继承——设备属于谁，它报上来的消息就属于谁 */
+  user_id: string
   device_id: string
   kind: EventKind
   /** in=收到，out=设备发出。老记录为 null，按 in 处理 */
@@ -50,8 +54,14 @@ export interface StoredEvent {
   created_at: number
 }
 
-/** 只按索引列筛选的条件。正文与号码是密文，只能在内存里过滤。 */
+/**
+ * 只按索引列筛选的条件。正文与号码是密文，只能在内存里过滤。
+ *
+ * `user_id` 是**必填**的，故意的：多用户下漏掉一个作用域条件，
+ * 就是把别人的银行验证码摆到你眼前。让它成为类型错误，而不是靠人记得写。
+ */
 export interface EventFilter {
+  user_id: string
   kind?: EventKind | undefined
   device_id?: string | undefined
   /** 收/发方向。老记录 direction 为 NULL，按 'in' 处理 */
@@ -73,6 +83,8 @@ export type InsertEventResult = 'stored' | 'duplicate'
 /** 渠道。config 加密存储——里面是 Bot token 这类凭证。 */
 export interface ChannelRecord {
   id: string
+  /** 归属用户 */
+  user_id: string
   type: string
   name: string
   config_enc: Uint8Array
@@ -82,6 +94,8 @@ export interface ChannelRecord {
 
 export interface RuleRecord {
   id: string
+  /** 归属用户 */
+  user_id: string
   name: string
   priority: number
   enabled: boolean
@@ -97,6 +111,8 @@ export interface RuleRecord {
  * 只存哈希：配对码在 TTL 内等价于设备凭证，泄露即可注册任意设备。
  */
 export interface PairingCodeRecord {
+  /** 归属用户。兑换出来的设备就归这个人 */
+  user_id: string
   code_hash: string
   device_name: string
   expires_at: number
@@ -113,6 +129,8 @@ export interface PairingCodeRecord {
  */
 export interface OutboundRecord {
   id: string
+  /** 归属用户 */
+  user_id: string
   device_id: string
   to_number: string
   content_enc: Uint8Array
@@ -126,6 +144,8 @@ export interface OutboundRecord {
 
 /** 发送记录的筛选条件。收件人号码是明文列，可以直接走 SQL。 */
 export interface OutboundFilter {
+  /** 必填，理由同 EventFilter */
+  user_id: string
   device_id?: string | null
   status?: OutboundRecord['status'] | null
   /** 收件人号码的部分匹配 */
@@ -134,6 +154,8 @@ export interface OutboundFilter {
 
 /** 会话。token 只存哈希；绑定 UA 与 IP 段，减少凭证被盗后异地复用（计划 §6.3）。 */
 export interface SessionRecord {
+  /** 登录的是谁 */
+  user_id: string
   token_hash: string
   ua_hash: string
   ip_prefix: string
@@ -158,6 +180,8 @@ export interface SessionRecord {
  * 而这个映射一丢，用户引用回复旧消息就会失败——恰恰是最常用的交互。
  */
 export interface MessageRefRecord {
+  /** 归属用户 */
+  user_id: string
   channel_id: string
   /** 渠道侧的消息标识，如 Telegram 的 message_id */
   ref: string
@@ -183,6 +207,8 @@ export interface MessageRefRecord {
  */
 export interface TaskRecord {
   id: string
+  /** 归属用户 */
+  user_id: string
   name: string
   enabled: boolean
   /** 空串表示任意在线设备，仅适用于单设备部署 */
@@ -204,15 +230,52 @@ export interface TaskRecord {
   created_at: number
 }
 
+/**
+ * 一个用户。
+ *
+ * 多用户不是「给控制台加几个账号」，而是**各自一套完全独立的数据**：
+ * 设备、渠道、规则、任务、消息、通话，互相看不见。同住一个屋檐下的两个人
+ * 各自插着自己的卡，凭什么要互相能读对方的银行验证码。
+ *
+ * 管理员的特权只有一样：建号与删号。**看不到别人的消息**——
+ * 那正是多用户要解决的问题，留个后门就等于没做。
+ */
+export interface UserRecord {
+  id: string
+  /** 登录名。区分大小写地存，比对时按小写 */
+  name: string
+  password_hash: string
+  /** TOTP 密钥。与旧版单用户一致明文存——它和 DEK 一样躺在同一个库里 */
+  totp_secret: string
+  role: 'admin' | 'member'
+  /** Bot 的 service token。每个用户一个，Bot 据此只能取到自己主人的数据 */
+  bot_token: string
+  disabled: boolean
+  created_at: number
+}
+
 export interface Store {
   /** 启动时执行迁移。必须幂等。 */
   migrate(): Promise<void>
 
+  // 用户
+  listUsers(): Promise<UserRecord[]>
+  getUser(id: string): Promise<UserRecord | null>
+  /** 按登录名查，大小写不敏感 */
+  getUserByName(name: string): Promise<UserRecord | null>
+  /** 按 bot service token 查。Bot 请求据此定位主人 */
+  getUserByBotToken(token: string): Promise<UserRecord | null>
+  upsertUser(u: UserRecord): Promise<void>
+  /** 连同这个用户的全部数据一起删。返回各类删了多少条 */
+  deleteUser(id: string): Promise<Record<string, number>>
+
   // 设备
+  /** 按 id 取，不带作用域：WS 握手时只有 device_id，归属由返回的记录给出 */
   getDevice(id: string): Promise<DeviceRecord | null>
-  listDevices(): Promise<DeviceRecord[]>
+  listDevices(userId: string): Promise<DeviceRecord[]>
+  /** 跨用户列出。只给巡检类用途（离线告警、在线数统计），不得用于任何面向界面的读取 */
+  listAllDevices(): Promise<DeviceRecord[]>
   createDevice(d: DeviceRecord): Promise<void>
-  /** 握手成功后更新在线状态与遥测 */
   /** 更新心跳与电量等。**不得把 revoked 状态改回去**——吊销是终态。 */
   touchDevice(id: string, patch: Partial<Pick<DeviceRecord, 'status' | 'last_seen_at' | 'battery' | 'charging' | 'app_version'>>): Promise<void>
   /** 记录最近一次定位。单独一个方法，避免定位数据混进高频的心跳更新里 */
@@ -225,43 +288,47 @@ export interface Store {
    * 得跑到手机跟前重新配对。吊销是那个「我确认这台不要了」的动作，
    * 删除只是事后打扫。
    *
-   * @returns 是否真的删掉了
+   * @returns 是否真的删掉了（不属于这个用户时为 false）
    */
-  deleteDevice(id: string): Promise<boolean>
+  deleteDevice(id: string, userId: string): Promise<boolean>
   /** 删除这台设备的全部发送记录，返回条数。删设备时可选一并清理。 */
-  deleteOutboundByDevice(deviceId: string): Promise<number>
+  deleteOutboundByDevice(deviceId: string, userId: string): Promise<number>
   /**
    * 吊销设备：置为 revoked **并作废凭证**。
    *
    * 两件事缺一不可——只改状态的话，断线时的 touchDevice 会把它覆盖回 offline，
    * 设备拿着原 token 重连就又活了。实现必须保证吊销后无法再握手成功。
    */
-  revokeDevice(id: string): Promise<void>
+  revokeDevice(id: string, userId: string): Promise<void>
 
   // 渠道
-  listChannels(): Promise<ChannelRecord[]>
-  getChannel(id: string): Promise<ChannelRecord | null>
+  listChannels(userId: string): Promise<ChannelRecord[]>
+  /** 跨用户列出。只给 Bot 轮询器这类基础设施用 */
+  listAllChannels(): Promise<ChannelRecord[]>
+  getChannel(id: string, userId: string): Promise<ChannelRecord | null>
   upsertChannel(c: ChannelRecord): Promise<void>
-  deleteChannel(id: string): Promise<void>
+  deleteChannel(id: string, userId: string): Promise<void>
 
   // 规则
-  listRules(): Promise<RuleRecord[]>
+  listRules(userId: string): Promise<RuleRecord[]>
   upsertRule(r: RuleRecord): Promise<void>
-  deleteRule(id: string): Promise<void>
+  deleteRule(id: string, userId: string): Promise<void>
 
   // 配对码
   createPairingCode(p: PairingCodeRecord): Promise<void>
-  /** 按哈希取出未使用且未过期的配对码 */
+  /** 按哈希取出未使用且未过期的配对码。不带作用域：兑换时还不知道是谁 */
   takePairingCode(codeHash: string, now: number): Promise<PairingCodeRecord | null>
 
   // 计划任务
-  listTasks(): Promise<TaskRecord[]>
-  getTask(id: string): Promise<TaskRecord | null>
+  listTasks(userId: string): Promise<TaskRecord[]>
+  /** 跨用户列出，给调度器用 */
+  listAllTasks(): Promise<TaskRecord[]>
+  getTask(id: string, userId: string): Promise<TaskRecord | null>
   upsertTask(t: TaskRecord): Promise<void>
-  deleteTask(id: string): Promise<void>
+  deleteTask(id: string, userId: string): Promise<void>
   /** 只更新执行状态，不动配置——避免执行时把用户正在编辑的配置覆盖回去 */
   updateTaskRun(id: string, patch: { last_run_at: number; last_status: 'ok' | 'failed'; fail_count: number }): Promise<void>
-  setTaskEnabled(id: string, enabled: boolean): Promise<void>
+  setTaskEnabled(id: string, userId: string, enabled: boolean): Promise<void>
 
   // 推送消息映射
   putMessageRef(r: MessageRefRecord): Promise<void>
@@ -269,7 +336,7 @@ export interface Store {
   /** 清理过期映射，保留期由调用方决定（计划 §11.4 建议 7 天） */
   cleanupMessageRefs(before: number): Promise<void>
 
-  // 设置（管理员口令哈希、TOTP 密钥、初始化标记）
+  // 设置（部署级的全局配置：初始化标记、预置规则版本、Bark 对外可达性）
   getSetting(key: string): Promise<string | null>
   setSetting(key: string, value: string): Promise<void>
 
@@ -278,19 +345,20 @@ export interface Store {
   getSession(tokenHash: string): Promise<SessionRecord | null>
   touchSession(tokenHash: string, expiresAt: number): Promise<void>
   revokeSession(tokenHash: string): Promise<void>
-  /** 全端下线：改口令或发现异常时使用 */
-  revokeAllSessions(): Promise<void>
+  /** 全端下线：改口令或发现异常时使用。只下线这个用户自己的会话 */
+  revokeAllSessions(userId: string): Promise<void>
   /** 清理过期会话，启动时与定期调用 */
   cleanupSessions(now: number): Promise<void>
 
   // 发送任务
   createOutbound(o: OutboundRecord): Promise<void>
+  /** 不带作用域：回执要按 cmd_id 找回记录，那时只有 id */
   getOutbound(id: string): Promise<OutboundRecord | null>
-  listOutbound(limit: number, offset: number, filter?: OutboundFilter): Promise<OutboundRecord[]>
+  listOutbound(limit: number, offset: number, filter: OutboundFilter): Promise<OutboundRecord[]>
   /** 分页要的总数。过滤条件与 listOutbound 一致。 */
-  countOutbound(filter?: OutboundFilter): Promise<number>
+  countOutbound(filter: OutboundFilter): Promise<number>
   /** 删除一条发送记录。返回是否真的删掉了 */
-  deleteOutbound(id: string): Promise<boolean>
+  deleteOutbound(id: string, userId: string): Promise<boolean>
   /**
    * 状态机推进。只允许前进不允许后退：delivered 之后再收到 sent 必须忽略，
    * 因为多段短信的回执顺序不保证。
@@ -298,7 +366,8 @@ export interface Store {
   advanceOutbound(id: string, status: OutboundRecord['status'], error: string | null, at: number): Promise<void>
 
   // 审计
-  audit(entry: { actor: string | null; action: string; detail: string | null; ip: string | null; created_at: number }): Promise<void>
+  /** 审计日志。user_id 可选——它是日志不是查询面，漏填只是少一个筛选维度 */
+  audit(entry: { user_id?: string | null; actor: string | null; action: string; detail: string | null; ip: string | null; created_at: number }): Promise<void>
 
   // 事件
   /**
@@ -306,14 +375,14 @@ export interface Store {
    * 这是断网补传不产生重复记录的唯一保证（计划 §5.4）。
    */
   insertEvent(e: StoredEvent): Promise<InsertEventResult>
-  getEvent(id: string): Promise<StoredEvent | null>
+  getEvent(id: string, userId: string): Promise<StoredEvent | null>
   listEvents(q: EventQuery): Promise<StoredEvent[]>
   /** 满足索引列条件的总数，用于分页。不含正文/号码过滤。 */
   countEvents(f: EventFilter): Promise<number>
   /** 记录命中的规则 id，事件已入库后回填 */
   setMatchedRules(eventId: string, ruleIds: string[]): Promise<void>
-  /** 删除单条。返回是否真的删掉了（不存在时为 false） */
-  deleteEvent(id: string): Promise<boolean>
+  /** 删除单条。返回是否真的删掉了（不存在或不属于这个用户时为 false） */
+  deleteEvent(id: string, userId: string): Promise<boolean>
   /**
    * 按条件批量删除，返回删除条数。
    *

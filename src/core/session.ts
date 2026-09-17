@@ -59,6 +59,8 @@ export const CLOSE_PROTOCOL_ERROR = 4002
 export class DeviceSession {
   private state: 'awaiting_hello' | 'authenticated' | 'closed' = 'awaiting_hello'
   private deviceId: string | null = null
+  /** 这台设备的主人。事件的归属从它继承，不由 Agent 上报——那是可以伪造的 */
+  private userId = ''
   private readonly now: () => number
   private readonly config: AgentConfig
 
@@ -175,6 +177,7 @@ export class DeviceSession {
 
     this.state = 'authenticated'
     this.deviceId = device.id
+    this.userId = device.user_id
     await this.deps.store.touchDevice(device.id, {
       status: 'online',
       last_seen_at: this.now(),
@@ -235,6 +238,7 @@ export class DeviceSession {
       const ts = this.now()
       result = await this.deps.store.insertEvent({
         id: e.id,
+        user_id: this.userId,
         device_id: e.device_id,
         kind: e.kind,
         direction: e.extra.direction ?? 'in',
@@ -283,7 +287,7 @@ export class DeviceSession {
   ): void => {
     void processEvent(
       { store: this.deps.store, cipher: this.deps.cipher, baseUrl: this.deps.baseUrl ?? null },
-      eventId, e,
+      eventId, { ...e, user_id: this.userId },
     )
   }
 
@@ -297,6 +301,7 @@ export class DeviceSession {
    */
   private async isDuplicateImport(e: EventPayload): Promise<boolean> {
     const rows = await this.deps.store.listEvents({
+      user_id: this.userId,
       device_id: e.device_id,
       kind: e.kind,
       since: e.occurred_at - DEDUP_WINDOW_MS,

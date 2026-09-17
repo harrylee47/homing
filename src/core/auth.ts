@@ -162,6 +162,35 @@ export const SESSION_TTL_MS = 30 * 60 * 1000
  */
 export const TRUSTED_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
+/**
+ * 给新用户的初始口令。
+ *
+ * 由服务端生成而不是让管理员自己想一个：替别人想口令，想出来的多半是
+ * 「123456」，而这个账号能看到对方所有的银行验证码。
+ *
+ * 去掉形近字符（O/0、I/l/1），因为它多半要靠口头或截图传给对方。
+ */
+export function generatePassword(): string {
+  const A = 'abcdefghijkmnpqrstuvwxyz'
+  const B = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+  const D = '23456789'
+  const S = '!@#$%^&*'
+  const all = A + B + D + S
+  const pick = (set: string, n = 1): string => {
+    const b = crypto.getRandomValues(new Uint8Array(n))
+    return Array.from(b, (x) => set[x % set.length]).join('')
+  }
+  // 四类各保底一个，剩下的随机——否则生成出来的可能过不了自己的校验
+  const raw = (pick(A) + pick(B) + pick(D) + pick(S) + pick(all, 10)).split('')
+  // Fisher–Yates，别让保底的那四个永远在开头
+  const r = crypto.getRandomValues(new Uint32Array(raw.length))
+  for (let i = raw.length - 1; i > 0; i--) {
+    const j = r[i]! % (i + 1)
+    ;[raw[i], raw[j]] = [raw[j]!, raw[i]!]
+  }
+  return raw.join('')
+}
+
 export function generateSessionToken(): string {
   const b = crypto.getRandomValues(new Uint8Array(32))
   return toHex(b)

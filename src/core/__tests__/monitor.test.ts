@@ -15,14 +15,14 @@ const stub: Provider<Record<string, never>> = {
 registerProvider(stub as unknown as Provider<never>)
 
 const NOW = 1_757_894_400_000
-const channels = async () => [{ id: 'ch', type: 'monitorstub', name: 'ch', config: {}, enabled: true }]
+const channels = async () => [{ id: 'ch', user_id: 'u1', type: 'monitorstub', name: 'ch', config: {}, enabled: true }]
 
 describe('掉线告警', () => {
   let store: MemoryStore
 
   const device = (over: Record<string, unknown> = {}) => {
     store.devices.set('dev_1', {
-      id: 'dev_1', name: 'JP-Gateway-01', token_hash: 'h', status: 'offline',
+      id: 'dev_1', user_id: 'u1', name: 'JP-Gateway-01', token_hash: 'h', status: 'offline',
       last_seen_at: NOW - (OFFLINE_ALERT_SEC + 60) * 1000,
       battery: 50, charging: null, location_enc: null, location_at: null, app_version: '0.1.0', created_at: 0, ...over,
     } as never)
@@ -120,7 +120,7 @@ describe('电量告警', () => {
 
   const dev = (over: Record<string, unknown> = {}) => {
     store.devices.set('dev_1', {
-      id: 'dev_1', name: 'JP-Gateway-01', token_hash: 'h', status: 'online',
+      id: 'dev_1', user_id: 'u1', name: 'JP-Gateway-01', token_hash: 'h', status: 'online',
       last_seen_at: Date.now(), battery: 50, charging: false, location_enc: null, location_at: null,
       app_version: '0.1.0', created_at: 0, ...over,
     } as never)

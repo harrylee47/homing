@@ -9,8 +9,8 @@ const at = (y: number, mo: number, d: number, h: number, mi = 0) => wallTimeToEp
 
 describe('计划任务', () => {
   let store: MemoryStore
-  let send: ReturnType<typeof vi.fn<(d: string, to: string, t: string, s: number | null) => Promise<boolean>>>
-  let alert: ReturnType<typeof vi.fn<(t: string, b: string) => Promise<void>>>
+  let send: ReturnType<typeof vi.fn<(u: string, d: string, to: string, t: string, s: number | null) => Promise<boolean>>>
+  let alert: ReturnType<typeof vi.fn<(u: string, t: string, b: string) => Promise<void>>>
 
   const deps = (now: number, online: string[] = ['dev_jp']) => ({
     store, timezone: TZ, onlineDevices: () => online, send, alert,
@@ -19,7 +19,7 @@ describe('计划任务', () => {
   })
 
   const task = (over: Partial<ParsedTask> = {}): ParsedTask => ({
-    id: 'task_1', name: '保号', enabled: true, device_id: 'dev_jp',
+    id: 'task_1', user_id: 'u1', name: '保号', enabled: true, device_id: 'dev_jp',
     to: '13800138000', text: '保号', sim_slot: null,
     schedule: Schedule.parse({ type: 'daily', time: '09:00' }),
     last_run_at: null, last_status: null, fail_count: 0,
@@ -28,7 +28,7 @@ describe('计划任务', () => {
   })
 
   const record = (t: ParsedTask): TaskRecord => ({
-    id: t.id, name: t.name, enabled: t.enabled, device_id: t.device_id,
+    id: t.id, user_id: t.user_id, name: t.name, enabled: t.enabled, device_id: t.device_id,
     to_number: t.to, content_enc: new TextEncoder().encode(t.text),
     sim_slot: t.sim_slot, schedule_json: JSON.stringify(t.schedule),
     last_run_at: t.last_run_at, last_status: t.last_status,
@@ -37,14 +37,14 @@ describe('计划任务', () => {
 
   beforeEach(() => {
     store = new MemoryStore()
-    send = vi.fn<(d: string, to: string, t: string, s: number | null) => Promise<boolean>>(async () => true)
-    alert = vi.fn<(t: string, b: string) => Promise<void>>(async () => {})
+    send = vi.fn<(u: string, d: string, to: string, t: string, s: number | null) => Promise<boolean>>(async () => true)
+    alert = vi.fn<(u: string, t: string, b: string) => Promise<void>>(async () => {})
   })
 
   describe('保号是按卡的事', () => {
     it('任务指定了卡槽就从那张卡发 —— 双卡机上两张卡各自都要保', async () => {
       await runTask(deps(at(2026, 9, 16, 9, 1)), task({ sim_slot: 1 }))
-      expect(send).toHaveBeenCalledWith('dev_jp', '13800138000', '保号', 1)
+      expect(send).toHaveBeenCalledWith('u1', 'dev_jp', '13800138000', '保号', 1)
     })
   })
 
@@ -69,7 +69,7 @@ describe('计划任务', () => {
   describe('执行条件', () => {
     it('到点执行', async () => {
       await runTask(deps(at(2026, 9, 16, 9, 1)), task())
-      expect(send).toHaveBeenCalledWith('dev_jp', '13800138000', '保号', null)
+      expect(send).toHaveBeenCalledWith('u1', 'dev_jp', '13800138000', '保号', null)
     })
 
     it('未到点不执行', async () => {
@@ -114,7 +114,7 @@ describe('计划任务', () => {
 
     it('未指定设备时回落到任意在线设备', async () => {
       await runTask(deps(at(2026, 9, 16, 9, 1), ['dev_any']), task({ device_id: '' }))
-      expect(send).toHaveBeenCalledWith('dev_any', '13800138000', '保号', null)
+      expect(send).toHaveBeenCalledWith('u1', 'dev_any', '13800138000', '保号', null)
     })
   })
 
@@ -123,7 +123,7 @@ describe('计划任务', () => {
       const t = task({ schedule: Schedule.parse({ type: 'once', at: at(2026, 9, 16, 9, 0) }) })
       await store.upsertTask(record(t))
       await runTask(deps(at(2026, 9, 16, 9, 1)), t)
-      expect((await store.getTask('task_1'))!.enabled).toBe(false)
+      expect((await store.getTask('task_1', 'u1'))!.enabled).toBe(false)
     })
 
     it('过期的一次性任务不执行', async () => {
@@ -158,15 +158,17 @@ describe('计划任务', () => {
     it('告警点名任务与设备', async () => {
       send.mockResolvedValue(false)
       await runTask(deps(at(2026, 9, 16, 9, 1)), task({ fail_count: 1, name: '国内卡保号', device_id: 'dev_jp' }))
-      expect(alert.mock.calls[0]![0]).toContain('国内卡保号')
-      expect(alert.mock.calls[0]![1]).toContain('日本卡')
+      // 第一个参数现在是「告警发给谁」——多用户下不能发给所有人
+      expect(alert.mock.calls[0]![0]).toBe('u1')
+      expect(alert.mock.calls[0]![1]).toContain('国内卡保号')
+      expect(alert.mock.calls[0]![2]).toContain('日本卡')
     })
 
     it('成功后失败计数清零', async () => {
       const t = task({ fail_count: 3 })
       await store.upsertTask(record(t))
       await runTask(deps(at(2026, 9, 16, 9, 1)), t)
-      expect((await store.getTask('task_1'))!.fail_count).toBe(0)
+      expect((await store.getTask('task_1', 'u1'))!.fail_count).toBe(0)
     })
   })
 
@@ -184,7 +186,7 @@ describe('计划任务', () => {
       const t = task()
       await store.upsertTask(record(t))
       await runTask(deps(at(2026, 9, 16, 9, 1)), t, true)
-      const saved = (await store.getTask('task_1'))!
+      const saved = (await store.getTask('task_1', 'u1'))!
       expect(saved.last_run_at).toBeNull()
       expect(saved.fail_count).toBe(0)
     })
@@ -219,10 +221,10 @@ describe('计划任务', () => {
     it('各自独立排期与失败计数', async () => {
       await store.upsertTask(record(task({ id: 'a', device_id: 'dev_jp' })))
       await store.upsertTask(record(task({ id: 'b', device_id: 'dev_cn' })))
-      send.mockImplementation(async (d) => d !== 'dev_cn')
+      send.mockImplementation(async (_u, d) => d !== 'dev_cn')
       await tick(deps(at(2026, 9, 16, 9, 1), ['dev_jp', 'dev_cn']), async (e) => new TextDecoder().decode(e))
-      expect((await store.getTask('a'))!.fail_count).toBe(0)
-      expect((await store.getTask('b'))!.fail_count).toBe(1)
+      expect((await store.getTask('a', 'u1'))!.fail_count).toBe(0)
+      expect((await store.getTask('b', 'u1'))!.fail_count).toBe(1)
     })
 
     it('一个任务抛异常不影响其他任务', async () => {

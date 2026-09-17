@@ -19,12 +19,26 @@ import type {
   PairingCodeRecord,
   SessionRecord,
   TaskRecord,
+  UserRecord,
   RuleRecord,
   Store,
   StoredEvent,
 } from '../../core/store.js'
 
 const MIGRATIONS: string[] = [
+  // ── 多用户 ──────────────────────────────────────────────
+  // 每个用户一套完全独立的数据。管理员的特权只有建号删号，
+  // 看不到别人的消息——那正是多用户要解决的问题，留个后门就等于没做
+  `CREATE TABLE IF NOT EXISTS users (
+     id            TEXT PRIMARY KEY,
+     name          TEXT NOT NULL,
+     password_hash TEXT NOT NULL,
+     totp_secret   TEXT NOT NULL,
+     role          TEXT NOT NULL DEFAULT 'member',
+     bot_token     TEXT NOT NULL DEFAULT '',
+     disabled      INTEGER NOT NULL DEFAULT 0,
+     created_at    INTEGER NOT NULL
+   )`,
   `CREATE TABLE IF NOT EXISTS devices (
      id           TEXT PRIMARY KEY,
      name         TEXT NOT NULL,
@@ -35,11 +49,6 @@ const MIGRATIONS: string[] = [
      app_version  TEXT,
      created_at   INTEGER NOT NULL
    )`,
-  // 增量迁移：老库没有这一列。SQLite 没有 IF NOT EXISTS 形式的 ADD COLUMN，
-  // 由 migrate() 捕获重复添加的错误
-  `ALTER TABLE devices ADD COLUMN charging INTEGER`,
-  `ALTER TABLE devices ADD COLUMN location_enc BLOB`,
-  `ALTER TABLE devices ADD COLUMN location_at INTEGER`,
   `CREATE TABLE IF NOT EXISTS events (
      id            TEXT PRIMARY KEY,
      device_id     TEXT NOT NULL REFERENCES devices(id),
@@ -52,15 +61,6 @@ const MIGRATIONS: string[] = [
      matched_rules TEXT,
      created_at    INTEGER NOT NULL
    )`,
-  `CREATE INDEX IF NOT EXISTS idx_events_time ON events(occurred_at DESC)`,
-  `CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, occurred_at DESC)`,
-  `CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_id, occurred_at DESC)`,
-  `ALTER TABLE events ADD COLUMN direction TEXT`,
-  // 双卡：这条是哪张卡收到的。不建索引——它只用于展示与规则匹配，
-  // 而规则匹配发生在内存里（正文本来就是密文，一样要逐条过）
-  `ALTER TABLE events ADD COLUMN sim_slot INTEGER`,
-  `ALTER TABLE devices ADD COLUMN net_json TEXT`,
-  `ALTER TABLE sessions ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0`,
   `CREATE TABLE IF NOT EXISTS channels (
      id         TEXT PRIMARY KEY,
      type       TEXT NOT NULL,
@@ -78,7 +78,6 @@ const MIGRATIONS: string[] = [
      action_json TEXT NOT NULL,
      created_at  INTEGER NOT NULL
    )`,
-  `CREATE INDEX IF NOT EXISTS idx_rules_priority ON rules(priority)`,
   `CREATE TABLE IF NOT EXISTS pairing_codes (
      code_hash   TEXT PRIMARY KEY,
      device_name TEXT NOT NULL,
@@ -94,7 +93,6 @@ const MIGRATIONS: string[] = [
      ip         TEXT,
      created_at INTEGER NOT NULL
    )`,
-  `CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS outbound (
      id          TEXT PRIMARY KEY,
      device_id   TEXT NOT NULL,
@@ -106,7 +104,6 @@ const MIGRATIONS: string[] = [
      created_at  INTEGER NOT NULL,
      updated_at  INTEGER NOT NULL
    )`,
-  `CREATE INDEX IF NOT EXISTS idx_outbound_time ON outbound(created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS settings (
      key   TEXT PRIMARY KEY,
      value TEXT NOT NULL
@@ -119,7 +116,6 @@ const MIGRATIONS: string[] = [
      expires_at INTEGER NOT NULL,
      revoked    INTEGER NOT NULL DEFAULT 0
    )`,
-  `CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at)`,
   `CREATE TABLE IF NOT EXISTS message_refs (
      channel_id TEXT NOT NULL,
      ref        TEXT NOT NULL,
@@ -129,9 +125,6 @@ const MIGRATIONS: string[] = [
      created_at INTEGER NOT NULL,
      PRIMARY KEY (channel_id, ref)
    )`,
-  `CREATE INDEX IF NOT EXISTS idx_msgrefs_time ON message_refs(created_at)`,
-  // 回复要用原消息那张卡，不只是原设备
-  `ALTER TABLE message_refs ADD COLUMN sim_slot INTEGER`,
   `CREATE TABLE IF NOT EXISTS tasks (
      id            TEXT PRIMARY KEY,
      name          TEXT NOT NULL,
@@ -145,8 +138,52 @@ const MIGRATIONS: string[] = [
      fail_count    INTEGER NOT NULL DEFAULT 0,
      created_at    INTEGER NOT NULL
    )`,
+
+  // ── 增量迁移 ──────────────────────────────────────────
+  // 全部放在建表之后：SQLite 没有 IF NOT EXISTS 形式的 ADD COLUMN，
+  // 而 ALTER 排在对应的 CREATE 之前时，全新库上会直接报「no such table」——
+  // 这条崩的是**新装**而不是升级，测不出来，装的人只看到容器起不来
+  // 增量迁移：老库没有这一列。SQLite 没有 IF NOT EXISTS 形式的 ADD COLUMN，
+  // 由 migrate() 捕获重复添加的错误
+  `ALTER TABLE devices ADD COLUMN charging INTEGER`,
+  `ALTER TABLE devices ADD COLUMN location_enc BLOB`,
+  `ALTER TABLE devices ADD COLUMN location_at INTEGER`,
+  `ALTER TABLE events ADD COLUMN direction TEXT`,
+  // 双卡：这条是哪张卡收到的。不建索引——它只用于展示与规则匹配，
+  // 而规则匹配发生在内存里（正文本来就是密文，一样要逐条过）
+  `ALTER TABLE events ADD COLUMN sim_slot INTEGER`,
+  `ALTER TABLE devices ADD COLUMN net_json TEXT`,
+  `ALTER TABLE sessions ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0`,
+  // 回复要用原消息那张卡，不只是原设备
+  `ALTER TABLE message_refs ADD COLUMN sim_slot INTEGER`,
+
+  // 归属列。老库里这一列为空，由 main.ts 的 backfillOwner 一次性认领给首个管理员
+  `ALTER TABLE devices ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE events ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE channels ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE rules ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE tasks ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE outbound ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE message_refs ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE pairing_codes ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE audit_log ADD COLUMN user_id TEXT`,
   // 保号是按卡的事：双卡机上两张卡各自都要定期产生使用记录
   `ALTER TABLE tasks ADD COLUMN sim_slot INTEGER`,
+
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_name ON users(LOWER(name))`,
+  `CREATE INDEX IF NOT EXISTS idx_events_time ON events(occurred_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, occurred_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_id, occurred_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_rules_priority ON rules(priority)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_outbound_time ON outbound(created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_msgrefs_time ON message_refs(created_at)`,
+  // 每一次列表查询都带 user_id，索引跟上
+  `CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, occurred_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_outbound_user ON outbound(user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id)`,
 ]
 
 /** 状态机的前进顺序。数字大者为更后的状态，用于拒绝倒退的回执。 */
@@ -158,9 +195,10 @@ const OUTBOUND_RANK: Record<string, number> = {
  * 发送记录的 WHERE 拼装。收件人是明文列，模糊匹配用 LIKE——号码里不会出现
  * % 与 _ 之外的通配语义，但仍要转义，否则用户输入 % 会变成「查全部」。
  */
-function outboundWhere(f?: OutboundFilter): { where: string; args: (string | number)[] } {
-  const parts: string[] = []
-  const args: (string | number)[] = []
+function outboundWhere(f: OutboundFilter): { where: string; args: (string | number)[] } {
+  // 同 buildWhere：作用域条件永远在第一位
+  const parts: string[] = ['user_id = ?']
+  const args: (string | number)[] = [f.user_id]
   if (f?.device_id) { parts.push('device_id = ?'); args.push(f.device_id) }
   if (f?.status) { parts.push('status = ?'); args.push(f.status) }
   if (f?.to) {
@@ -201,12 +239,68 @@ export class SqliteStore implements Store {
     }
   }
 
+  // ── 用户 ──────────────────────────────────────────────
+
+  async listUsers(): Promise<UserRecord[]> {
+    const rows = this.db.prepare('SELECT * FROM users ORDER BY created_at').all() as unknown as RawUser[]
+    return rows.map(toUser)
+  }
+
+  async getUser(id: string): Promise<UserRecord | null> {
+    const row = this.db.prepare('SELECT * FROM users WHERE id = ?').get(id)
+    return row ? toUser(row as unknown as RawUser) : null
+  }
+
+  async getUserByName(name: string): Promise<UserRecord | null> {
+    const row = this.db.prepare('SELECT * FROM users WHERE LOWER(name) = LOWER(?)').get(name)
+    return row ? toUser(row as unknown as RawUser) : null
+  }
+
+  async getUserByBotToken(token: string): Promise<UserRecord | null> {
+    if (!token) return null
+    const row = this.db.prepare('SELECT * FROM users WHERE bot_token = ?').get(token)
+    return row ? toUser(row as unknown as RawUser) : null
+  }
+
+  async upsertUser(u: UserRecord): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO users (id, name, password_hash, totp_secret, role, bot_token, disabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, password_hash=excluded.password_hash,
+           totp_secret=excluded.totp_secret, role=excluded.role, bot_token=excluded.bot_token,
+           disabled=excluded.disabled`,
+      )
+      .run(u.id, u.name, u.password_hash, u.totp_secret, u.role, u.bot_token, u.disabled ? 1 : 0, u.created_at)
+  }
+
+  /**
+   * 删号连数据一起删。
+   *
+   * 留着数据不删的话，下一个同名用户会继承上一个人的短信——
+   * 而「删了账号但消息还在库里」本身就违背了多用户的初衷。
+   */
+  async deleteUser(id: string): Promise<Record<string, number>> {
+    const n: Record<string, number> = {}
+    for (const t of ['events', 'outbound', 'message_refs', 'tasks', 'rules', 'channels', 'devices', 'pairing_codes', 'sessions']) {
+      n[t] = Number(this.db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(id).changes)
+    }
+    this.db.prepare('DELETE FROM users WHERE id = ?').run(id)
+    return n
+  }
+
   async getDevice(id: string): Promise<DeviceRecord | null> {
     const row = this.db.prepare('SELECT * FROM devices WHERE id = ?').get(id)
     return row ? toDevice(row as unknown as RawDevice) : null
   }
 
-  async listDevices(): Promise<DeviceRecord[]> {
+  async listDevices(userId: string): Promise<DeviceRecord[]> {
+    const rows = this.db.prepare('SELECT * FROM devices WHERE user_id = ? ORDER BY created_at')
+      .all(userId) as unknown as RawDevice[]
+    return rows.map(toDevice)
+  }
+
+  async listAllDevices(): Promise<DeviceRecord[]> {
     const rows = this.db.prepare('SELECT * FROM devices ORDER BY created_at').all() as unknown as RawDevice[]
     return rows.map(toDevice)
   }
@@ -214,10 +308,10 @@ export class SqliteStore implements Store {
   async createDevice(d: DeviceRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO devices (id, name, token_hash, status, last_seen_at, battery, charging, app_version, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO devices (id, user_id, name, token_hash, status, last_seen_at, battery, charging, app_version, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(d.id, d.name, d.token_hash, d.status, d.last_seen_at, d.battery,
+      .run(d.id, d.user_id, d.name, d.token_hash, d.status, d.last_seen_at, d.battery,
         d.charging === null ? null : d.charging ? 1 : 0, d.app_version, d.created_at)
     // location_* 由 setDeviceLocation 写入，创建时留空
   }
@@ -239,12 +333,14 @@ export class SqliteStore implements Store {
     this.db.prepare(`UPDATE devices SET ${set} WHERE id = ? AND status != 'revoked'`).run(...vals, id)
   }
 
-  async deleteDevice(id: string): Promise<boolean> {
-    return Number(this.db.prepare('DELETE FROM devices WHERE id = ?').run(id).changes) > 0
+  async deleteDevice(id: string, userId: string): Promise<boolean> {
+    return Number(this.db.prepare('DELETE FROM devices WHERE id = ? AND user_id = ?')
+      .run(id, userId).changes) > 0
   }
 
-  async deleteOutboundByDevice(deviceId: string): Promise<number> {
-    return Number(this.db.prepare('DELETE FROM outbound WHERE device_id = ?').run(deviceId).changes)
+  async deleteOutboundByDevice(deviceId: string, userId: string): Promise<number> {
+    return Number(this.db.prepare('DELETE FROM outbound WHERE device_id = ? AND user_id = ?')
+      .run(deviceId, userId).changes)
   }
 
   /**
@@ -258,8 +354,9 @@ export class SqliteStore implements Store {
    * 也就是说，吊销恰好在「设备在线」这个最要紧的场景下无效——而手机丢了要紧急
    * 吊销时，它多半正在线。
    */
-  async revokeDevice(id: string): Promise<void> {
-    this.db.prepare(`UPDATE devices SET status = 'revoked', token_hash = '' WHERE id = ?`).run(id)
+  async revokeDevice(id: string, userId: string): Promise<void> {
+    this.db.prepare(`UPDATE devices SET status = 'revoked', token_hash = '' WHERE id = ? AND user_id = ?`)
+      .run(id, userId)
   }
 
   /**
@@ -270,18 +367,18 @@ export class SqliteStore implements Store {
     const r = this.db
       .prepare(
         `INSERT OR IGNORE INTO events
-           (id, device_id, kind, direction, sim_slot, sender_enc, content_enc, enc_ver, occurred_at, received_at, matched_rules, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, user_id, device_id, kind, direction, sim_slot, sender_enc, content_enc, enc_ver, occurred_at, received_at, matched_rules, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        e.id, e.device_id, e.kind, e.direction, e.sim_slot, e.sender_enc, e.content_enc,
+        e.id, e.user_id, e.device_id, e.kind, e.direction, e.sim_slot, e.sender_enc, e.content_enc,
         e.enc_ver, e.occurred_at, e.received_at, e.matched_rules, e.created_at,
       )
     return Number(r.changes) > 0 ? 'stored' : 'duplicate'
   }
 
-  async getEvent(id: string): Promise<StoredEvent | null> {
-    const row = this.db.prepare('SELECT * FROM events WHERE id = ?').get(id)
+  async getEvent(id: string, userId: string): Promise<StoredEvent | null> {
+    const row = this.db.prepare('SELECT * FROM events WHERE id = ? AND user_id = ?').get(id, userId)
     return row ? ({ sim_slot: null, ...(row as object) } as unknown as StoredEvent) : null
   }
 
@@ -300,7 +397,7 @@ export class SqliteStore implements Store {
     return Number(row.c)
   }
 
-  async deleteEvent(id: string): Promise<boolean> {
+  async deleteEvent(id: string, userId: string): Promise<boolean> {
     const r = this.db.prepare('DELETE FROM events WHERE id = ?').run(id)
     return Number(r.changes) > 0
   }
@@ -318,13 +415,20 @@ export class SqliteStore implements Store {
 
   // ── 渠道 ──────────────────────────────────────────────
 
-  async listChannels(): Promise<ChannelRecord[]> {
+  async listAllChannels(): Promise<ChannelRecord[]> {
     const rows = this.db.prepare('SELECT * FROM channels ORDER BY created_at').all() as unknown as RawChannel[]
     return rows.map(toChannel)
   }
 
-  async getChannel(id: string): Promise<ChannelRecord | null> {
-    const row = this.db.prepare('SELECT * FROM channels WHERE id = ?').get(id) as unknown as RawChannel | undefined
+  async listChannels(userId: string): Promise<ChannelRecord[]> {
+    const rows = this.db.prepare('SELECT * FROM channels WHERE user_id = ? ORDER BY created_at')
+      .all(userId) as unknown as RawChannel[]
+    return rows.map(toChannel)
+  }
+
+  async getChannel(id: string, userId: string): Promise<ChannelRecord | null> {
+    const row = this.db.prepare('SELECT * FROM channels WHERE id = ? AND user_id = ?')
+      .get(id, userId) as unknown as RawChannel | undefined
     return row ? toChannel(row) : null
   }
 
@@ -339,14 +443,15 @@ export class SqliteStore implements Store {
       .run(c.id, c.type, c.name, c.config_enc, c.enabled ? 1 : 0, c.created_at)
   }
 
-  async deleteChannel(id: string): Promise<void> {
-    this.db.prepare('DELETE FROM channels WHERE id = ?').run(id)
+  async deleteChannel(id: string, userId: string): Promise<void> {
+    this.db.prepare('DELETE FROM channels WHERE id = ? AND user_id = ?').run(id, userId)
   }
 
   // ── 规则 ──────────────────────────────────────────────
 
-  async listRules(): Promise<RuleRecord[]> {
-    const rows = this.db.prepare('SELECT * FROM rules ORDER BY priority, id').all() as unknown as RawRule[]
+  async listRules(userId: string): Promise<RuleRecord[]> {
+    const rows = this.db.prepare('SELECT * FROM rules WHERE user_id = ? ORDER BY priority, id')
+      .all(userId) as unknown as RawRule[]
     return rows.map((r) => ({ ...r, enabled: r.enabled === 1 }))
   }
 
@@ -361,16 +466,16 @@ export class SqliteStore implements Store {
       .run(r.id, r.name, r.priority, r.enabled ? 1 : 0, r.match_json, r.action_json, r.created_at)
   }
 
-  async deleteRule(id: string): Promise<void> {
-    this.db.prepare('DELETE FROM rules WHERE id = ?').run(id)
+  async deleteRule(id: string, userId: string): Promise<void> {
+    this.db.prepare('DELETE FROM rules WHERE id = ? AND user_id = ?').run(id, userId)
   }
 
   // ── 配对码 ────────────────────────────────────────────
 
   async createPairingCode(p: PairingCodeRecord): Promise<void> {
     this.db
-      .prepare('INSERT INTO pairing_codes (code_hash, device_name, expires_at, used_at, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(p.code_hash, p.device_name, p.expires_at, p.used_at, p.created_at)
+      .prepare('INSERT INTO pairing_codes (code_hash, user_id, device_name, expires_at, used_at, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(p.code_hash, p.user_id, p.device_name, p.expires_at, p.used_at, p.created_at)
   }
 
   /**
@@ -391,10 +496,10 @@ export class SqliteStore implements Store {
   async createOutbound(o: OutboundRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO outbound (id, device_id, to_number, content_enc, sim_slot, status, error, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO outbound (id, user_id, device_id, to_number, content_enc, sim_slot, status, error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(o.id, o.device_id, o.to_number, o.content_enc, o.sim_slot, o.status, o.error, o.created_at, o.updated_at)
+      .run(o.id, o.user_id, o.device_id, o.to_number, o.content_enc, o.sim_slot, o.status, o.error, o.created_at, o.updated_at)
   }
 
   async getOutbound(id: string): Promise<OutboundRecord | null> {
@@ -402,18 +507,19 @@ export class SqliteStore implements Store {
     return row ? (row as unknown as OutboundRecord) : null
   }
 
-  async listOutbound(limit: number, offset: number, filter?: OutboundFilter): Promise<OutboundRecord[]> {
+  async listOutbound(limit: number, offset: number, filter: OutboundFilter): Promise<OutboundRecord[]> {
     const { where, args } = outboundWhere(filter)
     return this.db
       .prepare(`SELECT * FROM outbound ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
       .all(...args, limit, offset) as unknown as OutboundRecord[]
   }
 
-  async deleteOutbound(id: string): Promise<boolean> {
-    return Number(this.db.prepare('DELETE FROM outbound WHERE id = ?').run(id).changes) > 0
+  async deleteOutbound(id: string, userId: string): Promise<boolean> {
+    return Number(this.db.prepare('DELETE FROM outbound WHERE id = ? AND user_id = ?')
+      .run(id, userId).changes) > 0
   }
 
-  async countOutbound(filter?: OutboundFilter): Promise<number> {
+  async countOutbound(filter: OutboundFilter): Promise<number> {
     const { where, args } = outboundWhere(filter)
     const r = this.db.prepare(`SELECT COUNT(*) AS n FROM outbound ${where}`).get(...args) as { n: number }
     return r.n
@@ -437,13 +543,19 @@ export class SqliteStore implements Store {
 
   // ── 计划任务 ──────────────────────────────────────────
 
-  async listTasks(): Promise<TaskRecord[]> {
+  async listTasks(userId: string): Promise<TaskRecord[]> {
+    const rows = this.db.prepare('SELECT * FROM tasks WHERE user_id = ? ORDER BY created_at')
+      .all(userId) as unknown as (Omit<TaskRecord, 'enabled'> & { enabled: number })[]
+    return rows.map((r) => ({ ...r, enabled: r.enabled === 1, sim_slot: r.sim_slot ?? null }))
+  }
+
+  async listAllTasks(): Promise<TaskRecord[]> {
     const rows = this.db.prepare('SELECT * FROM tasks ORDER BY created_at').all() as unknown as (Omit<TaskRecord, 'enabled'> & { enabled: number })[]
     return rows.map((r) => ({ ...r, enabled: r.enabled === 1, sim_slot: r.sim_slot ?? null }))
   }
 
-  async getTask(id: string): Promise<TaskRecord | null> {
-    const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as
+  async getTask(id: string, userId: string): Promise<TaskRecord | null> {
+    const row = this.db.prepare('SELECT * FROM tasks WHERE id = ? AND user_id = ?').get(id, userId) as
       | (Omit<TaskRecord, 'enabled'> & { enabled: number }) | undefined
     return row ? { ...row, enabled: row.enabled === 1, sim_slot: row.sim_slot ?? null } : null
   }
@@ -462,16 +574,16 @@ export class SqliteStore implements Store {
         t.schedule_json, t.last_run_at, t.last_status, t.fail_count, t.created_at)
   }
 
-  async deleteTask(id: string): Promise<void> {
-    this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
+  async deleteTask(id: string, userId: string): Promise<void> {
+    this.db.prepare('DELETE FROM tasks WHERE id = ? AND user_id = ?').run(id, userId)
   }
 
   async setDeviceLocation(id: string, enc: Uint8Array, at: number): Promise<void> {
     this.db.prepare('UPDATE devices SET location_enc = ?, location_at = ? WHERE id = ?').run(enc, at, id)
   }
 
-  async setTaskEnabled(id: string, enabled: boolean): Promise<void> {
-    this.db.prepare('UPDATE tasks SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
+  async setTaskEnabled(id: string, userId: string, enabled: boolean): Promise<void> {
+    this.db.prepare('UPDATE tasks SET enabled = ? WHERE id = ? AND user_id = ?').run(enabled ? 1 : 0, id, userId)
   }
 
   async updateTaskRun(id: string, p: { last_run_at: number; last_status: 'ok' | 'failed'; fail_count: number }): Promise<void> {
@@ -485,12 +597,12 @@ export class SqliteStore implements Store {
   async putMessageRef(r: MessageRefRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO message_refs (channel_id, ref, event_id, sender, device_id, sim_slot, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO message_refs (channel_id, ref, event_id, user_id, sender, device_id, sim_slot, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(channel_id, ref) DO UPDATE SET event_id=excluded.event_id,
-           sender=excluded.sender, sim_slot=excluded.sim_slot`,
+           sender=excluded.sender, sim_slot=excluded.sim_slot, user_id=excluded.user_id`,
       )
-      .run(r.channel_id, r.ref, r.event_id, r.sender, r.device_id, r.sim_slot, r.created_at)
+      .run(r.channel_id, r.ref, r.event_id, r.user_id, r.sender, r.device_id, r.sim_slot, r.created_at)
   }
 
   async getMessageRef(channelId: string, ref: string): Promise<MessageRefRecord | null> {
@@ -517,8 +629,8 @@ export class SqliteStore implements Store {
 
   async createSession(s: SessionRecord): Promise<void> {
     this.db
-      .prepare('INSERT INTO sessions (token_hash, ua_hash, ip_prefix, created_at, expires_at, revoked, trusted) VALUES (?, ?, ?, ?, ?, 0, ?)')
-      .run(s.token_hash, s.ua_hash, s.ip_prefix, s.created_at, s.expires_at, s.trusted ? 1 : 0)
+      .prepare('INSERT INTO sessions (token_hash, user_id, ua_hash, ip_prefix, created_at, expires_at, revoked, trusted) VALUES (?, ?, ?, ?, ?, ?, 0, ?)')
+      .run(s.token_hash, s.user_id, s.ua_hash, s.ip_prefix, s.created_at, s.expires_at, s.trusted ? 1 : 0)
   }
 
   async getSession(tokenHash: string): Promise<SessionRecord | null> {
@@ -536,8 +648,8 @@ export class SqliteStore implements Store {
     this.db.prepare('UPDATE sessions SET revoked = 1 WHERE token_hash = ?').run(tokenHash)
   }
 
-  async revokeAllSessions(): Promise<void> {
-    this.db.prepare('UPDATE sessions SET revoked = 1').run()
+  async revokeAllSessions(userId: string): Promise<void> {
+    this.db.prepare('UPDATE sessions SET revoked = 1 WHERE user_id = ?').run(userId)
   }
 
   async cleanupSessions(now: number): Promise<void> {
@@ -546,10 +658,29 @@ export class SqliteStore implements Store {
 
   // ── 审计 ──────────────────────────────────────────────
 
-  async audit(e: { actor: string | null; action: string; detail: string | null; ip: string | null; created_at: number }): Promise<void> {
+  async audit(e: { user_id?: string | null; actor: string | null; action: string; detail: string | null; ip: string | null; created_at: number }): Promise<void> {
     this.db
-      .prepare('INSERT INTO audit_log (actor, action, detail, ip, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(e.actor, e.action, e.detail, e.ip, e.created_at)
+      .prepare('INSERT INTO audit_log (user_id, actor, action, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(e.user_id ?? null, e.actor, e.action, e.detail, e.ip, e.created_at)
+  }
+
+  /**
+   * 把老库里没有归属的数据认领给第一个管理员。
+   *
+   * 多用户之前，所有数据都只属于「那个人」。升级时不认领的话，
+   * 他打开控制台会看到空空如也——设备、规则、几千条历史消息全在库里，
+   * 只是 user_id 是空串，谁都查不到。
+   *
+   * 只认领空串：已经有主的数据一律不动。
+   */
+  async claimOrphans(userId: string): Promise<Record<string, number>> {
+    const n: Record<string, number> = {}
+    for (const t of ['devices', 'events', 'channels', 'rules', 'tasks', 'outbound', 'message_refs', 'pairing_codes']) {
+      n[t] = Number(this.db.prepare(`UPDATE ${t} SET user_id = ? WHERE user_id = '' OR user_id IS NULL`).run(userId).changes)
+    }
+    // 会话不认领：让升级后所有人重新登录一次，顺便把「谁是谁」重新确认一遍
+    this.db.prepare(`DELETE FROM sessions WHERE user_id = '' OR user_id IS NULL`).run()
+    return n
   }
 
   async close(): Promise<void> {
@@ -567,8 +698,10 @@ const toChannel = (r: RawChannel): ChannelRecord => ({ ...r, enabled: r.enabled 
 
 /** 只用索引列构造 WHERE。正文与号码是密文，SQL 搜不了。 */
 function buildWhere(f: EventFilter): { clause: string; args: (string | number)[] } {
-  const where: string[] = []
-  const args: (string | number)[] = []
+  // user_id 永远在第一个条件上。它不是可选项——多用户下漏掉它，
+  // 就是把别人的银行验证码摆到你眼前
+  const where: string[] = ['user_id = ?']
+  const args: (string | number)[] = [f.user_id]
   if (f.kind) { where.push('kind = ?'); args.push(f.kind) }
   if (f.device_id) { where.push('device_id = ?'); args.push(f.device_id) }
   // 升级前入库的记录 direction 为 NULL，语义上就是「收到的」
@@ -578,6 +711,9 @@ function buildWhere(f: EventFilter): { clause: string; args: (string | number)[]
   if (f.until !== undefined) { where.push('occurred_at <= ?'); args.push(f.until) }
   return { clause: where.length ? `WHERE ${where.join(' AND ')}` : '', args }
 }
+
+interface RawUser extends Omit<UserRecord, 'disabled'> { disabled: number }
+const toUser = (r: RawUser): UserRecord => ({ ...r, disabled: r.disabled === 1 })
 
 interface RawDevice extends Omit<DeviceRecord, 'charging'> { charging: number | null }
 const toDevice = (r: RawDevice): DeviceRecord => ({

@@ -17,7 +17,7 @@ describe('发送任务状态机', () => {
 
   const seed = async (status: 'pending' | 'accepted' | 'sent' | 'delivered' = 'pending') => {
     await store.createOutbound({
-      id: CMD, device_id: DEVICE, to_number: '13800138000',
+      user_id: 'u1', id: CMD, device_id: DEVICE, to_number: '13800138000',
       content_enc: await cipher.encrypt('测试'), sim_slot: null,
       status, error: null, created_at: NOW, updated_at: NOW,
     })
@@ -30,7 +30,7 @@ describe('发送任务状态机', () => {
     store = new MemoryStore()
     cipher = await createCipher(generateDek())
     store.devices.set(DEVICE, {
-      id: DEVICE, name: 't', token_hash: await hashToken(TOKEN), status: 'offline',
+      id: DEVICE, user_id: 'u1', name: 't', token_hash: await hashToken(TOKEN), status: 'offline',
       last_seen_at: null, battery: null, charging: null, location_enc: null, location_at: null, net_json: null, app_version: null, created_at: NOW,
     })
     session = new DeviceSession({ store, cipher, hub: new MemoryHub(), now: () => NOW, onStored: () => {} })

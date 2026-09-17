@@ -8,10 +8,15 @@ const nav = $('#nav')
 const TOKEN_KEY = 'gw_token'
 /** 登录前想去的那一页，登录成功后跳回去 */
 const BACK_KEY = 'gw_back'
+/** 上次登录的用户名，只作为输入框的默认值 */
+const LAST_USER_KEY = 'gw_user'
+/** 当前登录的人。用于显示「你是谁」与判断要不要显示用户管理 */
+let me = null
 let token = localStorage.getItem(TOKEN_KEY) || ''
 
 const setToken = (t) => {
   token = t || ''
+  if (!t) me = null
   if (t) localStorage.setItem(TOKEN_KEY, t)
   else localStorage.removeItem(TOKEN_KEY)
 }
@@ -498,8 +503,12 @@ async function setup() {
     ${brand('第一次使用，先做两件事')}
     <div class="steps"><div class="on"></div><div id="s2"></div></div>
     <div class="card">
-      <p class="muted">这台服务器将存放你的全部短信内容，包括银行验证码。先设置管理员口令。</p>
-      <label>管理员口令（至少 8 位，含英文 / 数字 / 符号中的两类）</label>
+      <p class="muted">这台服务器将存放你的全部短信内容，包括银行验证码。先建一个管理员账号。</p>
+      <label>用户名</label>
+      <input id="name" value="admin" autocomplete="username">
+      <div class="muted">字母、数字、- 和 _，2–24 个字符。之后可以再建别的账号，
+      每个人的设备、消息、规则完全独立，互相看不见。</div>
+      <label>口令（至少 8 位，含英文 / 数字 / 符号中的两类）</label>
       <input id="pw" type="password" autocomplete="new-password">
       <label>再输一次</label>
       <input id="pw2" type="password" autocomplete="new-password">
@@ -514,7 +523,9 @@ async function setup() {
     if (bad) return ($('#err').textContent = bad)
     $('#next').disabled = true
     try {
-      const r = await api('/setup/password', { method: 'POST', body: { password: pw }, allow404: true })
+      const r = await api('/setup/password', {
+        method: 'POST', body: { password: pw, name: $('#name').value.trim() }, allow404: true,
+      })
       setupTotp(r)
     } catch (e) {
       $('#err').textContent = e.message
@@ -568,6 +579,8 @@ function login() {
     ${brand('把消息带到你身边')}
     ${back ? '<div class="card tight muted">登录后回到你要看的那条消息。</div>' : ''}
     <div class="card">
+      <label>用户名</label>
+      <input id="user" autocomplete="username" value="${esc(localStorage.getItem(LAST_USER_KEY) || '')}" placeholder="留空则按管理员登录">
       <label>口令</label>
       <input id="pw" type="password" autocomplete="current-password">
       <label>两步验证码</label>
@@ -587,9 +600,16 @@ function login() {
     try {
       const r = await api('/auth/login', {
         method: 'POST', allow404: true,
-        body: { password: $('#pw').value, code: $('#code').value, trust: $('#trust').checked },
+        body: {
+          name: $('#user').value.trim(),
+          password: $('#pw').value, code: $('#code').value, trust: $('#trust').checked,
+        },
       })
       setToken(r.token)
+      // 记住上次登录的用户名：一家人共用一台机器时，每次都要重打一遍很烦。
+      // 只是个输入框的默认值，不构成任何凭证
+      try { localStorage.setItem(LAST_USER_KEY, r.user?.name || '') } catch { /* 隐私模式 */ }
+      me = r.user || null
       // 回到当初想去的那一页
       const to = sessionStorage.getItem(BACK_KEY)
       sessionStorage.removeItem(BACK_KEY)
@@ -2428,9 +2448,115 @@ async function devices() {
 
 // ── 设置 ────────────────────────────────────────────────────
 
+/**
+ * 用户管理。
+ *
+ * 管理员能做的只有建号、停用、重置、删号——**看不到别人的数据**。
+ * 留一个「管理员查看全部」的后门，多用户就白做了。
+ */
+async function paintUsers() {
+  const box = $('#users')
+  if (!box) return
+  try {
+    const { users } = await api('/users')
+    box.innerHTML = `<div class="list">${users.map((u) => `
+      <div class="item">
+        <div class="row">
+          <b>${esc(u.name)}${u.is_me ? ' <span class="muted">（你）</span>' : ''}</b>
+          ${u.disabled ? '<span class="badge err">已停用</span>' : ''}
+        </div>
+        <span class="muted">${u.role === 'admin' ? '管理员' : '普通用户'} · ${u.devices} 台设备</span>
+        ${u.is_me ? '' : `
+          <!-- 按钮横排在下面一行，不挤在名字旁边：窄屏上三个按钮竖着排会把行撑得很高 -->
+          <div class="row" style="justify-content:flex-start;gap:6px;flex-wrap:wrap;margin-top:8px">
+            <button class="ghost sm" data-reset="${esc(u.id)}">重置口令</button>
+            <button class="ghost sm" data-toggle="${esc(u.id)}" data-on="${u.disabled ? '0' : '1'}">${
+              u.disabled ? '启用' : '停用'}</button>
+            <button class="danger sm" data-del="${esc(u.id)}" data-name="${esc(u.name)}">删除</button>
+          </div>`}
+      </div>`).join('')}</div>`
+
+    for (const b of box.querySelectorAll('[data-toggle]')) {
+      b.onclick = async () => {
+        try {
+          await api(`/users/${encodeURIComponent(b.dataset.toggle)}`, {
+            method: 'PUT', body: { disabled: b.dataset.on === '1' },
+          })
+          toast('已更新')
+          paintUsers()
+        } catch (e) { toast(e.message) }
+      }
+    }
+    for (const b of box.querySelectorAll('[data-reset]')) {
+      b.onclick = async () => {
+        if (!confirm('重置后对方要用新口令和新的二维码重新登录，旧的立刻作废。继续？')) return
+        try {
+          const r = await api(`/users/${encodeURIComponent(b.dataset.reset)}/reset`, { method: 'POST' })
+          showNewUser(r, '已重置')
+        } catch (e) { toast(e.message) }
+      }
+    }
+    for (const b of box.querySelectorAll('[data-del]')) {
+      b.onclick = async () => {
+        const n = b.dataset.name
+        // 删号连数据一起删，所以要求把名字打一遍——这一步不可逆
+        if (prompt(`删除「${n}」会连同他的设备、全部短信、通话、规则一起删掉，不可恢复。\n\n确认请输入用户名：`) !== n) return
+        try {
+          const r = await api(`/users/${encodeURIComponent(b.dataset.del)}?confirm=1`, { method: 'DELETE' })
+          toast(`已删除：${Object.entries(r.removed).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${v}`).join('、') || '无数据'}`)
+          paintUsers()
+        } catch (e) { toast(e.message) }
+      }
+    }
+  } catch (e) {
+    box.innerHTML = `<div class="err-text">${esc(e.message)}</div>`
+  }
+}
+
+/** 新建或重置后，口令与二维码**只显示这一次**。 */
+function showNewUser(r, what = '已创建') {
+  $('#u_new').innerHTML = `
+    <div class="card" style="margin-top:12px">
+      <!-- 不用 h2：它是全大写的，而用户名要原样显示 -->
+      <div style="font-weight:800;margin-bottom:6px">${esc(what)}：${esc(r.name)}</div>
+      <p class="muted">口令和二维码<b>只显示这一次</b>，关掉就没了。让对方当面扫码，
+      并在他登录后立刻自己改口令。</p>
+      <label>初始口令</label>
+      <div class="mono wrap card tight" style="user-select:all">${esc(r.password)}</div>
+      ${r.qr ? `<div class="qr">${r.qr}</div>` : ''}
+      <details>
+        <summary class="muted">扫不了？手动添加</summary>
+        <div class="mono wrap card tight" style="user-select:all">${esc(r.secret)}</div>
+      </details>
+      <div class="btnrow"><button class="ghost sm" id="u_hide">我记下了，隐藏</button></div>
+    </div>`
+  $('#u_hide').onclick = () => { $('#u_new').innerHTML = '' }
+}
+
 async function settings() {
+  // 「我是谁」要先问清楚：用户管理只对管理员显示
+  if (!me) me = (await api('/auth/me').catch(() => null))?.user ?? null
+
   render(`
     <h1>设置</h1>
+    ${me ? `<div class="card tight row">
+      <div class="col grow">
+        <span>当前登录 <b>${esc(me.name)}</b></span>
+        <span class="muted">${me.role === 'admin' ? '管理员 · 可以建号删号，但看不到别人的消息' : '普通用户'}</span>
+      </div>
+    </div>` : ''}
+    ${me?.role === 'admin' ? `
+      <h2>用户</h2>
+      <div class="card">
+        <p class="muted">每个用户各有一套<b>完全独立</b>的设备、渠道、规则和消息，互相看不见。
+        家人合用一台网关时，各自配各自的卡，谁也读不到对方的验证码。</p>
+        <div id="users"><div class="loading">加载中…</div></div>
+        <label>新用户的登录名</label>
+        <input id="u_name" placeholder="字母数字，2–24 位">
+        <div class="btnrow"><button id="u_add" class="sm">创建</button></div>
+        <div id="u_err" class="err-text"></div>
+        <div id="u_new"></div>
+      </div>` : ''}
     <div class="card tight row">
       <span>通知渠道</span>
       <a href="/channels"><button class="ghost sm">管理</button></a>
@@ -2482,10 +2608,28 @@ async function settings() {
       </div>
     </div>`)
 
+  if (me?.role === 'admin') {
+    void paintUsers()
+    $('#u_add').onclick = async () => {
+      const name = $('#u_name').value.trim()
+      if (!name) return ($('#u_err').textContent = '请填用户名')
+      $('#u_add').disabled = true
+      $('#u_err').textContent = ''
+      try {
+        const r = await api('/users', { method: 'POST', body: { name } })
+        $('#u_name').value = ''
+        showNewUser(r)
+        paintUsers()
+      } catch (e) { $('#u_err').textContent = e.message }
+      $('#u_add').disabled = false
+    }
+  }
+
   $('#revokeall').onclick = async () => {
     if (!confirm('断开所有会话？你也会被登出。')) return
     try { await api('/auth/revoke-all', { method: 'POST' }) } catch { /* 已经失效也算成功 */ }
     setToken('')
+    me = null
     toast('已全端下线')
     go('/login')
   }
@@ -2513,6 +2657,7 @@ async function settings() {
   $('#logout').onclick = async () => {
     try { await api('/auth/logout', { method: 'POST' }) } catch { /* 本地清掉即可 */ }
     setToken('')
+    me = null
     go('/login')
   }
 }

@@ -21,7 +21,7 @@ describe('配对', () => {
 
   it('正常流程：生成 → 兑换 → 得到设备与凭证', async () => {
     const store = new MemoryStore()
-    const { code } = await createPairing(store, 'JP-Gateway-01')
+    const { code } = await createPairing(store, 'u1', 'JP-Gateway-01')
     const r = await redeemPairing(store, code)
     expect(r).not.toBeNull()
     expect(r!.device_name).toBe('JP-Gateway-01')
@@ -30,7 +30,7 @@ describe('配对', () => {
 
   it('服务端不存配对码明文，也不存凭证明文', async () => {
     const store = new MemoryStore()
-    const { code } = await createPairing(store, 'x')
+    const { code } = await createPairing(store, 'u1', 'x')
     expect([...store.pairings.keys()]).not.toContain(code)
 
     const r = await redeemPairing(store, code)
@@ -41,7 +41,7 @@ describe('配对', () => {
 
   it('配对码只能用一次', async () => {
     const store = new MemoryStore()
-    const { code } = await createPairing(store, 'x')
+    const { code } = await createPairing(store, 'u1', 'x')
     expect(await redeemPairing(store, code)).not.toBeNull()
     expect(await redeemPairing(store, code)).toBeNull()
     expect(store.devices.size).toBe(1)
@@ -50,14 +50,14 @@ describe('配对', () => {
   it('过期的配对码无效', async () => {
     const store = new MemoryStore()
     const t0 = 1_000_000
-    const { code } = await createPairing(store, 'x', t0)
+    const { code } = await createPairing(store, 'u1', 'x', t0)
     expect(await redeemPairing(store, code, t0 + PAIRING_TTL_MS + 1)).toBeNull()
   })
 
   it('临过期前仍可用', async () => {
     const store = new MemoryStore()
     const t0 = 1_000_000
-    const { code } = await createPairing(store, 'x', t0)
+    const { code } = await createPairing(store, 'u1', 'x', t0)
     expect(await redeemPairing(store, code, t0 + PAIRING_TTL_MS - 1000)).not.toBeNull()
   })
 
@@ -68,21 +68,21 @@ describe('配对', () => {
 
   it('大小写与空格不敏感，便于人工抄写', async () => {
     const store = new MemoryStore()
-    const { code } = await createPairing(store, 'x')
+    const { code } = await createPairing(store, 'u1', 'x')
     expect(await redeemPairing(store, `  ${code.toLowerCase()}  `)).not.toBeNull()
   })
 
   it('每台设备拿到不同的 id 与凭证', async () => {
     const store = new MemoryStore()
-    const a = await redeemPairing(store, (await createPairing(store, 'a')).code)
-    const b = await redeemPairing(store, (await createPairing(store, 'b')).code)
+    const a = await redeemPairing(store, (await createPairing(store, 'u1', 'a')).code)
+    const b = await redeemPairing(store, (await createPairing(store, 'u1', 'b')).code)
     expect(a!.device_id).not.toBe(b!.device_id)
     expect(a!.token).not.toBe(b!.token)
   })
 
   it('留下审计记录', async () => {
     const store = new MemoryStore()
-    const { code } = await createPairing(store, 'x')
+    const { code } = await createPairing(store, 'u1', 'x')
     await redeemPairing(store, code)
     expect(store.audits.map((a) => a.action)).toEqual(['pairing.create', 'pairing.redeem'])
   })
