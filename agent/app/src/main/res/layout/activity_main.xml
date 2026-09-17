@@ -71,5 +71,16 @@
             android:layout_width="match_parent" android:layout_height="wrap_content"
             android:layout_marginTop="8dp" android:text="加入电池优化白名单" />
 
+        <!--
+          作者与版本。这台手机是常年放在角落里的，真出问题时找到它的人（可能是几年后
+          的你自己）需要一个能问的地方；版本号则决定了对方要不要先升级再报问题。
+          autoLink="web" 让 kou.im 可点，不需要额外代码。
+        -->
+        <TextView android:id="@+id/aboutText"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="24dp" android:textSize="12sp"
+            android:alpha="0.6" android:autoLink="web"
+            android:text="@string/about_line" />
+
     </LinearLayout>
 </ScrollView>

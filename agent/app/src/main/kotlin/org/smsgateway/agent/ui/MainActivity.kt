@@ -29,6 +29,8 @@ import org.smsgateway.agent.net.PairPayload
 import org.smsgateway.agent.net.PairingClient
 import org.smsgateway.agent.notification.NotificationCapture
 import org.smsgateway.agent.App
+import org.smsgateway.agent.BuildConfig
+import org.smsgateway.agent.R
 import org.smsgateway.agent.databinding.ActivityMainBinding
 import org.smsgateway.agent.net.ConnState
 import java.text.SimpleDateFormat
@@ -89,6 +91,10 @@ class MainActivity : AppCompatActivity() {
 
         val app = App.get()
         vb.urlInput.setText(app.prefs.serverUrl ?: "")
+
+        // 版本号缀在作者那一行后面。这台手机常年放在角落，真出问题时
+        // 找到它的人（可能是几年后的自己）第一件事就是「这是哪个版本」
+        vb.aboutText.text = "${getString(R.string.about_line)} · v${BuildConfig.VERSION_NAME}"
 
         vb.scanButton.setOnClickListener { scan() }
         // 二维码内容粘进地址框也认：同一台手机上打开控制台时，复制比扫码更顺手。

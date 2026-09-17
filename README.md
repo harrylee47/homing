@@ -375,6 +375,10 @@ A：一条 WebSocket 长连接 + 30 秒心跳，实测一天几个百分点。�
 为将来迁 Cloudflare Workers 预留），Agent 是 Kotlin 原生，控制台是零构建的 vanilla JS。
 测试 430+ 个，`pnpm exec vitest run`。
 
+## 作者
+
+Kou. — [kou.im](https://kou.im)
+
 ## 许可证
 
 [AGPL-3.0](LICENSE)。

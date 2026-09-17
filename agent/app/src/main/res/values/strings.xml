@@ -3,4 +3,6 @@
     <string name="app_name">Homing</string>
     <string name="notification_channel">Homing 服务</string>
     <string name="notification_title">Homing 运行中</string>
+    <!-- 作者与项目地址。版本号由 MainActivity 在运行时补在后面 -->
+    <string name="about_line">Homing · 作者 Kou. · https://kou.im</string>
 </resources>
