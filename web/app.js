@@ -1335,7 +1335,15 @@ async function events() {
     ${msgSegs(kindNow, segLink)}
     ${kindNow === 'sms' ? viewToggle('list') : ''}
     <div class="card">
-      <input id="f_q" placeholder="${kindNow === 'call' ? '搜索号码' : '搜索发件人或正文'}" value="${esc(get('q'))}">
+      <!--
+        搜索要有一颗**看得见的按钮**。回车能搜不等于人知道能回车——手机上尤其：
+        软键盘右下角那颗键长什么样由输入法决定，不同输入法上是「换行」「完成」「前往」，
+        没有一个在说「这里能搜」。所以给一颗按钮，回车那条路照旧留着。
+      -->
+      <div class="searchbar">
+        <input id="f_q" enterkeyhint="search" placeholder="${kindNow === 'call' ? '搜索号码' : '搜索发件人或正文'}" value="${esc(get('q'))}">
+        <button id="f_go" class="sm">搜索</button>
+      </div>
       <details id="adv" ${['from', 'device', 'direction', 'since', 'until'].some((k) => get(k)) ? 'open' : ''}>
         <summary class="muted">更多筛选</summary>
         <label>来源号码</label>
@@ -1352,9 +1360,9 @@ async function events() {
           <option value="in"${get('direction') === 'in' ? ' selected' : ''}>${kindNow === 'call' ? '来电' : '收到的'}</option>
           <option value="out"${get('direction') === 'out' ? ' selected' : ''}>${kindNow === 'call' ? '去电' : '本机发出的'}</option>
         </select>
-        <div style="display:flex;gap:8px">
-          <div class="grow"><label>起始日期</label><input id="f_since" type="date" value="${toDateInput(get('since'))}"></div>
-          <div class="grow"><label>结束日期</label><input id="f_until" type="date" value="${toDateInput(get('until'))}"></div>
+        <div class="daterange">
+          <div><label>起始日期</label><input id="f_since" type="date" value="${toDateInput(get('since'))}"></div>
+          <div><label>结束日期</label><input id="f_until" type="date" value="${toDateInput(get('until'))}"></div>
         </div>
         <div class="btnrow">
           <button id="f_apply" class="sm">应用筛选</button>
@@ -1422,6 +1430,7 @@ async function events() {
   // 清空筛选但保留当前类别：在「通话」页点清空却跳回「全部」是反直觉的
   $('#f_clear').onclick = () => go(kindNow ? `/events?kind=${kindNow}` : '/events')
   $('#f_q').onkeydown = (e) => { if (e.key === 'Enter') apply({}) }
+  $('#f_go').onclick = () => apply({})
 
   try {
     const query = new URLSearchParams(location.search)

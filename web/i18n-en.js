@@ -1243,6 +1243,7 @@ window.I18N_EN = {
   "类型": "Type",
   "拨回": "Call back",
   "回复": "Reply",
+  "搜索": "Search",
   "内容": "Message",
   "发送": "Send",
   "状态": "Status",

@@ -381,6 +381,32 @@ input:focus, select:focus, textarea:focus {
 textarea { min-height: 96px; resize: vertical; }
 
 /*
+ * 搜索框 + 按钮。按钮不跟着输入框拉伸（`flex: 0 0 auto`），
+ * 输入框要 `min-width: 0`——flex 子项默认 `min-width: auto`，
+ * 不写的话长 placeholder 会把按钮挤出卡片。
+ */
+.searchbar { display: flex; gap: 8px; align-items: stretch; }
+.searchbar input { min-width: 0; flex: 1; }
+.searchbar button { flex: 0 0 auto; width: auto; white-space: nowrap; }
+
+/*
+ * 起止日期两栏。
+ *
+ * **不能用 `flex: 1`**：`input[type="date"]` 在 iOS Safari 上按自己的内容定宽
+ * （而且填了值和空着的宽度还不一样），flex 的分配基准是内容宽度，于是两栏一宽一窄，
+ * 右边那个还会捅出卡片。真机截图上就是这个样子。
+ *
+ * 用 `minmax(0, 1fr)` 的网格：两栏严格等宽，`0` 那一半明确允许收缩到比内容还窄。
+ * 再给 date 输入本身补 `min-width: 0`，把它自己的固有宽度也摁掉。
+ *
+ * 窄到放不下时（`auto-fit` + 150px 下限）自动堆成一栏——两个日期框挤成半屏宽时
+ * 本来就点不准。
+ */
+.daterange { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.daterange > div { min-width: 0; }
+input[type="date"] { min-width: 0; max-width: 100%; }
+
+/*
  * 下拉框。系统自带的箭头颜色不跟随我们的配色，深色模式下几乎看不见，
  * 而且各浏览器长得都不一样。自绘一个，顺便给右侧留出箭头的位置。
  */
