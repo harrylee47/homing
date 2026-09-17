@@ -4573,12 +4573,39 @@ async function paintInvites() {
       ? `<div class="notice" style="margin-bottom:10px">注册当前是<b>关闭</b>的，这一页里那 ${live} 个还没用的码现在都注册不了。把上面的开关改成「凭邀请码注册」才生效。</div>`
       : ''
 
-    box.innerHTML = warn + (invites.length ? `<div class="list">${invites.map((i) => {
+    /*
+     * 能不能被批量操作：**已经用掉的不行**。
+     *
+     * 那条记录是历史（谁用什么码开的号），删不掉也改不动——服务端本来就拒绝。
+     * 所以复选框干脆不给，而不是给一个点了会失败的。已过期的仍然可选：
+     * 「把过期的一次清掉」正是这个功能最常见的用法。
+     */
+    const actionable = (i) => !i.used_at
+    const pickable = invites.filter(actionable)
+
+    const bulkBar = pickable.length ? `
+      <div class="row" id="inv_bulkbar" style="margin-bottom:10px;gap:10px;flex-wrap:wrap">
+        <label class="check" style="margin:0;flex:none">
+          <input type="checkbox" id="inv_all"> 全选本页（${pickable.length} 个可选）
+        </label>
+        <span class="muted" id="inv_selcount" style="flex:none"></span>
+      </div>
+      <div class="btnrow" id="inv_bulkacts" style="margin:0 0 12px" hidden>
+        <button class="ghost sm" id="inv_bcopy">复制选中的</button>
+        <button class="ghost sm" id="inv_bpub">设为公开</button>
+        <button class="ghost sm" id="inv_bpriv">设为私有</button>
+        <button class="danger sm" id="inv_bdel">撤销选中的</button>
+      </div>` : ''
+
+    box.innerHTML = warn + bulkBar + (invites.length ? `<div class="list">${invites.map((i) => {
       const state = i.used_at ? `已被 ${esc(i.used_by ?? '某人')} 使用`
         : i.expired ? '已过期'
         : `未使用 · ${fmtDay(i.expires_at)} 前有效`
       return `<div class="item">
         <div class="row">
+          ${actionable(i)
+            ? `<input type="checkbox" class="inv-pick" data-hash="${esc(i.code_hash)}" style="width:auto;flex:none;margin:0" aria-label="选中这个邀请码">`
+            : ''}
           <b class="truncate">${i.note ? esc(i.note) : '（没写备注）'}</b>
           ${i.public ? '<span class="badge plain" style="flex:none">公开</span>' : ''}
           <span class="muted mono" style="font-size:12px;flex:none">${fmt(i.created_at)}</span>
@@ -4602,6 +4629,63 @@ async function paintInvites() {
 
     bindCopy(box)
 
+    // ── 多选与批量操作 ──────────────────────────────────────
+    const picks = () => [...box.querySelectorAll('.inv-pick:checked')].map((c) => c.dataset.hash)
+    const syncBulk = () => {
+      const n = picks().length
+      const cnt = $('#inv_selcount'); const acts = $('#inv_bulkacts'); const all = $('#inv_all')
+      if (cnt) cnt.textContent = n ? `已选 ${n} 个` : ''
+      if (acts) acts.hidden = n === 0
+      // 「全选」自己的状态也要跟着走：手动取消一个之后它还打着勾，
+      // 下一次点它会变成「全不选」，而人以为自己在补全选
+      if (all) {
+        all.checked = n > 0 && n === pickable.length
+        all.indeterminate = n > 0 && n < pickable.length
+      }
+    }
+    for (const c of box.querySelectorAll('.inv-pick')) c.onchange = syncBulk
+    if ($('#inv_all')) {
+      $('#inv_all').onchange = (e) => {
+        for (const c of box.querySelectorAll('.inv-pick')) c.checked = e.target.checked
+        syncBulk()
+      }
+    }
+    syncBulk()
+
+    const bulk = async (action, confirmText) => {
+      const hashes = picks()
+      if (!hashes.length) return
+      if (confirmText && !confirm(confirmText.replace('{n}', String(hashes.length)))) return
+      try {
+        const r = await api('/invites/batch', { method: 'POST', body: { action, hashes } })
+        // 逐条报结果，别只说「完成」：一批里混着已经被用掉的码是常态，
+        // 只说完成的话，人会以为那几条也处理了
+        toast(r.failed?.length ? `成功 ${r.ok} 个，${r.failed.length} 个没动` : `已处理 ${r.ok} 个`)
+        // 正在编辑的那条可能刚被撤掉：表单得退出编辑态，否则下一次
+        // 「保存修改」会打到一个已经不存在的 hash 上
+        if (action === 'delete' && hashes.includes($('#inv_edit')?.value)) $('#inv_reset').click()
+        paintInvites()
+      } catch (e) { toast(e.message) }
+    }
+    if ($('#inv_bdel')) $('#inv_bdel').onclick = () => bulk('delete', '撤销选中的 {n} 个邀请码？还没用的就作废了。')
+    if ($('#inv_bpub')) $('#inv_bpub').onclick = () => bulk('public', '把选中的 {n} 个改成公开码？它们会贴到未登录可达的「通知」页上。')
+    if ($('#inv_bpriv')) $('#inv_bpriv').onclick = () => bulk('private')
+    if ($('#inv_bcopy')) $('#inv_bcopy').onclick = async () => {
+      const chosen = picks().map((h) => invites.find((i) => i.code_hash === h)).filter(Boolean)
+      if (!chosen.length) return
+      // 有链接就复制链接——那才是真正发出去的东西
+      const allUrls = chosen.every((i) => i.url)
+      const lines = chosen.map((i) => i.url || i.code).filter(Boolean).join('\n')
+      if (!lines) return toast('这几条都是加密落库之前发的，取不回明文')
+      try {
+        await navigator.clipboard.writeText(lines)
+        toast(`已复制 ${chosen.length} 条${allUrls ? '注册链接' : '邀请码'}`)
+      } catch {
+        // clipboard 要安全上下文，自托管的人可能跑在 http 的内网地址上
+        toast('这个页面不让脚本写剪贴板，请逐条用「复制」按钮')
+      }
+    }
+
     for (const b of box.querySelectorAll('[data-inv-edit]')) {
       b.onclick = () => {
         const i = invites.find((x) => x.code_hash === b.dataset.invEdit)
@@ -4616,6 +4700,7 @@ async function paintInvites() {
         $('#inv_add').textContent = '保存修改'
         $('#inv_reset').hidden = false
         $('#inv_ttlnote').hidden = false
+        $('#inv_countrow').hidden = true
         $('#inv_note').scrollIntoView({ block: 'center', behavior: 'smooth' })
       }
     }
@@ -4846,18 +4931,36 @@ function resetAnnForm() {
   $('#ann_err').textContent = ''
 }
 
-/** 生成之后把码、链接、二维码一次性摆出来——之后再也拿不到明文 */
+/**
+ * 生成之后把码和链接一次性摆出来。
+ *
+ * 一批的时候**不要**给每个码都摆一遍 copyRow：20 个码就是 40 行，
+ * 还得一个个点复制。改成整块列出来 + 一颗「复制全部」，
+ * 复制出来的是每行一条，正好能直接贴进聊天窗口。
+ */
 function showInvite(r, isPublic = false) {
+  const list = Array.isArray(r.codes) && r.codes.length ? r.codes : [{ code: r.code, url: r.url }]
+  const many = list.length > 1
+  // 有链接就复制链接——那才是真正发出去的东西；没配 GW_BASE_URL 时回落成码本身
+  const lines = list.map((c) => c.url || c.code).join('\n')
+  const allUrls = list.every((c) => c.url)
+
   $('#inv_new').innerHTML = `
     <div class="card" style="margin-top:12px">
-      <div style="font-weight:800;margin-bottom:6px">邀请码已生成</div>
+      <div style="font-weight:800;margin-bottom:6px">${many ? `${list.length} 个邀请码已生成` : '邀请码已生成'}</div>
       <p class="muted">${isPublic
         ? '这是<b>公开码</b>：它已经贴在 <a href="/notice">通知页</a> 上了，谁都能看到、谁先用谁得。'
         : '把它或下面的链接发给对方。链接里的码放在 # 后面，不会进服务器日志。<b>没当场发出去也不要紧</b>——上面的列表里随时找得回来。'}</p>
-      ${copyRow('邀请码', r.code, { big: true })}
-      ${r.url ? copyRow('注册链接', r.url) : '<div class="muted">没配 GW_BASE_URL，给不出链接——让对方自己打开控制台的注册页填码。</div>'}
+      ${many ? `
+        <label>${allUrls ? '注册链接' : '邀请码'}（每行一条）</label>
+        <div class="mono wrap card tight" id="inv_bulklist" style="user-select:all;margin:0;font-size:12px;max-height:220px;overflow:auto">${esc(lines)}</div>
+        <div class="btnrow"><button class="ghost sm" data-copy="inv_bulklist">复制全部 ${list.length} 条</button></div>
+      ` : `
+        ${copyRow('邀请码', r.code, { big: true })}
+        ${r.url ? copyRow('注册链接', r.url) : '<div class="muted">没配 GW_BASE_URL，给不出链接——让对方自己打开控制台的注册页填码。</div>'}
+      `}
       <div class="muted" style="margin-top:8px">码本身在 ${fmt(r.expires_at)} 前有效。</div>
-      ${regOpen ? '' : `<div class="notice" style="margin-top:8px">注意：注册现在是<b>关闭</b>的，这个码发出去对方也注册不了。发之前先把上面的开关改成「凭邀请码注册」。</div>`}
+      ${regOpen ? '' : `<div class="notice" style="margin-top:8px">注意：注册现在是<b>关闭</b>的，${many ? '这些码' : '这个码'}发出去对方也注册不了。发之前先把上面的开关改成「凭邀请码注册」。</div>`}
       <div class="btnrow"><button class="ghost sm" id="inv_hide">我记下了，隐藏</button></div>
     </div>`
   bindCopy($('#inv_new'))
@@ -4992,6 +5095,24 @@ async function settings() {
               <option value="720">30 天</option>
             </select>
           </div>
+        </div>
+        <!--
+          一次生成几个。下拉而不是数字框：这是从一个有限集合里挑出来的值
+          （控制台里不让人手写枚举值），而且顺手把上限说清楚了。
+          编辑一条已有的码时它没有意义，那时候整块藏起来。
+        -->
+        <div id="inv_countrow">
+          <label>一次生成几个</label>
+          <select id="inv_count">
+            <option value="1" selected>1 个</option>
+            <option value="3">3 个</option>
+            <option value="5">5 个</option>
+            <option value="10">10 个</option>
+            <option value="20">20 个</option>
+            <option value="50">50 个（上限）</option>
+          </select>
+          <div class="muted">一批共用同一份备注与有效期。要发条件不同的就分两次。
+          <b>每个码都是一个能看短信明文的账号名额</b>——用不完的记得在下面撤销。</div>
         </div>
         <label class="check"><input type="checkbox" id="inv_public"> 公开码（贴到「通知」页上，谁都看得见）</label>
         <div class="muted">公开码会显示在<b>未登录可达</b>的 /notice 页上——这是它的用途，不是疏漏。
@@ -5187,6 +5308,10 @@ async function settings() {
       $('#inv_add').textContent = '生成邀请码'
       $('#inv_reset').hidden = true
       $('#inv_ttlnote').hidden = true
+      // 改一条已有的码时「一次生成几个」没有意义，藏起来；回到新建态再露出来。
+      // 留着的话它会变成一个点了没反应的控件——比看不见更让人犯嘀咕
+      $('#inv_countrow').hidden = false
+      $('#inv_count').value = '1'
       $('#inv_err').textContent = ''
     }
     $('#inv_reset').onclick = resetInviteForm
@@ -5207,9 +5332,11 @@ async function settings() {
           toast('已保存')
           resetInviteForm()
         } else {
-          const r = await api('/invites', { method: 'POST', body })
+          const count = Number($('#inv_count').value) || 1
+          const r = await api('/invites', { method: 'POST', body: { ...body, count } })
           showInvite(r, body.public)
           $('#inv_note').value = ''
+          $('#inv_count').value = '1'
         }
         paintInvites()
       } catch (e) { $('#inv_err').textContent = e.message }

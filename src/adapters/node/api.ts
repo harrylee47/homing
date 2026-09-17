@@ -1051,6 +1051,15 @@ const generateInviteCode = (): string =>
 const INVITE_TTL_HOURS = [1, 24, 72, 168, 720] as const
 const DEFAULT_INVITE_TTL_HOURS = 168
 
+/**
+ * 一次最多生成多少个码，以及批量操作一次最多处理多少条。
+ *
+ * 不是性能考虑：**每一个码都是一个能看别人银行验证码的账号名额**。
+ * 不封顶的话，一次手滑（或者一个被盗的管理员会话）就能把几百个注册名额
+ * 撒出去，而撤销要一条条来。50 已经远超「给家里人发几个」的实际需要。
+ */
+const MAX_INVITE_BATCH = 50
+
 route('GET', '/api/invites', async ({ user, res, url, deps }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
   const users = new Map((await deps.store.listUsers()).map((u) => [u.id, u.name]))
@@ -1081,35 +1090,60 @@ route('GET', '/api/invites', async ({ user, res, url, deps }) => {
   })
 })
 
+/**
+ * 生成邀请码。`count` 省略就是一个，给了就是一批（上限 MAX_INVITE_BATCH）。
+ *
+ * 一批共用同一份备注 / 有效期 / 公开与否——管理员要发一批，通常就是
+ * 「给同一批人、同样的条件」。要不一样的分两次发。
+ *
+ * 响应保持**向后兼容**：`code` / `url` 仍然是第一个，另外多给一个 `codes` 数组。
+ * 老前端拿到的东西一字未变。
+ */
 route('POST', '/api/invites', async ({ user, res, body, deps, ip }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
-  const b = body as { note?: string; days?: number; ttl_hours?: number; public?: boolean }
-  const code = generateInviteCode()
+  const b = body as { note?: string; days?: number; ttl_hours?: number; public?: boolean; count?: number }
   const t = now()
   const ttlHours = (INVITE_TTL_HOURS as readonly number[]).includes(Number(b?.ttl_hours))
     ? Number(b.ttl_hours)
     : DEFAULT_INVITE_TTL_HOURS
   const expiresAt = t + ttlHours * 3_600_000
   const isPublic = b?.public === true
-  await deps.store.createInvite({
-    code_hash: await hashToken(code),
-    created_by: user.id,
-    note: (b?.note ?? '').trim().slice(0, 64) || null,
-    valid_days: (VALIDITY_DAYS as readonly number[]).includes(Number(b?.days)) ? Number(b.days) : null,
-    expires_at: expiresAt,
-    used_at: null, used_by: null, created_at: t,
-    public: isPublic,
-    // 明文那一列只留给升级前发出的公开码，新建的一律走密文
-    code_plain: null,
-    // 加密存一份，好让它之后还能再显示。见 core/store.ts 上 code_enc 的说明
-    code_enc: await deps.cipher.encrypt(code),
-    self_made: false,
-  })
+  const note = (b?.note ?? '').trim().slice(0, 64) || null
+  const validDays = (VALIDITY_DAYS as readonly number[]).includes(Number(b?.days)) ? Number(b.days) : null
+
+  // 不是整数、小于 1、超过上限，一律当 1：批量生成是个便利功能，
+  // 为一个写歪的数字回 400 只会让人卡在这儿，而「多发了一个码」没有后果
+  const raw = Number(b?.count)
+  const count = Number.isInteger(raw) && raw > 1 ? Math.min(raw, MAX_INVITE_BATCH) : 1
+
+  const codes: string[] = []
+  for (let n = 0; n < count; n++) {
+    const code = generateInviteCode()
+    codes.push(code)
+    await deps.store.createInvite({
+      code_hash: await hashToken(code),
+      created_by: user.id,
+      note,
+      valid_days: validDays,
+      expires_at: expiresAt,
+      used_at: null, used_by: null, created_at: t,
+      public: isPublic,
+      // 明文那一列只留给升级前发出的公开码，新建的一律走密文
+      code_plain: null,
+      // 加密存一份，好让它之后还能再显示。见 core/store.ts 上 code_enc 的说明
+      code_enc: await deps.cipher.encrypt(code),
+      self_made: false,
+    })
+  }
+
   await deps.store.audit({
     user_id: user.id, actor: user.name, action: 'invite.create',
     // 码本身不进审计：审计日志会被看、会被导出，而这个码等于一个账号。
-    // 公开与否要记：它决定了这个码会不会被贴到公网页面上
-    detail: [isPublic ? '公开' : null, b?.note ? `备注 ${b.note}` : null].filter(Boolean).join(' · ') || null,
+    // 公开与否要记：它决定了这个码会不会被贴到公网页面上。
+    // 一批只记一条并带上个数——记 50 条一模一样的会把审计日志冲掉，
+    // 而「一次发了 50 个」本身才是这里值得留下的那句话
+    detail: [count > 1 ? `${count} 个` : null, isPublic ? '公开' : null, note ? `备注 ${note}` : null]
+      .filter(Boolean).join(' · ') || null,
     ip, created_at: t,
   })
 
@@ -1119,8 +1153,71 @@ route('POST', '/api/invites', async ({ user, res, body, deps, ip }) => {
    * fragment 不会发给服务器，因此不会进反代日志、不会进访问日志、
    * 也不会出现在 Referer 里。而这个码等于一个能看银行验证码的账号。
    */
-  const url = registerUrl(deps, code)
-  json(res, 200, { code, url, expires_at: expiresAt })
+  json(res, 200, {
+    code: codes[0], url: registerUrl(deps, codes[0]!), expires_at: expiresAt,
+    count, codes: codes.map((c) => ({ code: c, url: registerUrl(deps, c) })),
+  })
+})
+
+/**
+ * 选中一批，一次处理完：撤销 / 转公开 / 转私有。
+ *
+ * **走 POST 不走 DELETE**：handleApi 只对 POST/PUT 解析 body，
+ * DELETE 带的 body 会被直接丢掉——写成 DELETE 就是个永远为空的死参数
+ * （和删设备那条 `?purge=1` 是同一课）。
+ *
+ * 一条失败不影响其余，逐条报结果：一批里混着已经被用掉的码是常态
+ * （界面上不给选，但请求是可以直接构造的），为一条已用的码把整批回滚，
+ * 管理员只会一次次重试而不知道是哪一条卡住。
+ */
+route('POST', '/api/invites/batch', async ({ user, res, body, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
+  const b = body as { action?: string; hashes?: unknown }
+  const action = b?.action
+  if (action !== 'delete' && action !== 'public' && action !== 'private') {
+    return json(res, 400, { error: '不支持的操作' })
+  }
+  const hashes = Array.isArray(b?.hashes)
+    ? [...new Set(b.hashes.filter((h): h is string => typeof h === 'string' && h.length > 0))]
+    : []
+  if (!hashes.length) return json(res, 400, { error: '没有选中任何邀请码' })
+  if (hashes.length > MAX_INVITE_BATCH) {
+    return json(res, 400, { error: `一次最多处理 ${MAX_INVITE_BATCH} 个` })
+  }
+
+  const t = now()
+  let done = 0
+  const failed: { code_hash: string; error: string }[] = []
+  for (const h of hashes) {
+    if (action === 'delete') {
+      // deleteInvite 自己就拒绝已使用的：已经用掉的那条是历史，不是垃圾
+      if (await deps.store.deleteInvite(h)) done++
+      else failed.push({ code_hash: h, error: '不存在或已被使用' })
+      continue
+    }
+    const cur = await deps.store.getInvite(h)
+    if (!cur) { failed.push({ code_hash: h, error: '邀请码不存在' }); continue }
+    if (cur.used_at !== null) { failed.push({ code_hash: h, error: '已经被用掉了' }); continue }
+    // 只动 public 这一项：备注、两个有效期原样带回去。
+    // 不带的话它们会被 updateInvite 写成 null / 默认值——
+    // 「批量设为公开，顺手把所有备注清空了」这种 bug 极难联想到原因
+    await deps.store.updateInvite(h, {
+      note: cur.note,
+      valid_days: cur.valid_days,
+      expires_at: cur.expires_at,
+      public: action === 'public',
+    })
+    done++
+  }
+
+  await deps.store.audit({
+    user_id: user.id, actor: user.name,
+    action: action === 'delete' ? 'invite.revoke' : 'invite.update',
+    detail: `批量 ${done} 个${failed.length ? `（${failed.length} 个未处理）` : ''}`
+      + (action === 'public' ? ' · 转公开' : action === 'private' ? ' · 转私有' : ''),
+    ip, created_at: t,
+  })
+  json(res, 200, { ok: done, failed })
 })
 
 /**

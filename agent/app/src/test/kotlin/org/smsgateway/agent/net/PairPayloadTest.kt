@@ -12,23 +12,23 @@ import org.junit.Test
  */
 class PairPayloadTest {
 
-    private val url = "wss://smsgw.of.ci/ws"
+    private val url = "wss://gw.example.com/ws"
 
     @Test
     fun `正常的配对码`() {
-        val p = PairPayload.parse("smsgw://pair?url=wss%3A%2F%2Fsmsgw.of.ci%2Fws&code=A1B2C3D4")
+        val p = PairPayload.parse("smsgw://pair?url=wss%3A%2F%2Fgw.example.com%2Fws&code=A1B2C3D4")
         assertEquals(url, p?.url)
         assertEquals("A1B2C3D4", p?.code)
     }
 
     @Test
     fun `参数顺序反过来也认`() {
-        assertEquals(url, PairPayload.parse("smsgw://pair?code=A1B2C3D4&url=wss%3A%2F%2Fsmsgw.of.ci%2Fws")?.url)
+        assertEquals(url, PairPayload.parse("smsgw://pair?code=A1B2C3D4&url=wss%3A%2F%2Fgw.example.com%2Fws")?.url)
     }
 
     @Test
     fun `前后空白`() {
-        assertEquals(url, PairPayload.parse("  smsgw://pair?url=wss%3A%2F%2Fsmsgw.of.ci%2Fws&code=X  ")?.url)
+        assertEquals(url, PairPayload.parse("  smsgw://pair?url=wss%3A%2F%2Fgw.example.com%2Fws&code=X  ")?.url)
     }
 
     @Test
@@ -49,13 +49,13 @@ class PairPayloadTest {
 
     @Test
     fun `缺字段不拿半个去配对`() {
-        assertNull(PairPayload.parse("smsgw://pair?url=wss%3A%2F%2Fsmsgw.of.ci%2Fws"))
+        assertNull(PairPayload.parse("smsgw://pair?url=wss%3A%2F%2Fgw.example.com%2Fws"))
         assertNull(PairPayload.parse("smsgw://pair?code=A1B2C3D4"))
     }
 
     @Test
     fun `协议不对的地址拒绝——https 地址连不上 WS`() {
-        assertNull(PairPayload.parse("smsgw://pair?url=https%3A%2F%2Fsmsgw.of.ci&code=X"))
+        assertNull(PairPayload.parse("smsgw://pair?url=https%3A%2F%2Fgw.example.com&code=X"))
     }
 
     // ── 宽松查找（手工粘贴）────────────────────────────────
@@ -63,19 +63,19 @@ class PairPayloadTest {
     @Test
     fun `粘贴时输入框里还留着上次的地址`() {
         // 真实情况：点进输入框直接粘，是追加不是替换
-        val p = PairPayload.find("wss://old.example.com/wssmsgw://pair?url=wss%3A%2F%2Fsmsgw.of.ci%2Fws&code=A1B2C3D4")
+        val p = PairPayload.find("wss://old.example.com/wssmsgw://pair?url=wss%3A%2F%2Fgw.example.com%2Fws&code=A1B2C3D4")
         assertEquals(url, p?.url)
         assertEquals("A1B2C3D4", p?.code)
     }
 
     @Test
     fun `后面跟着别的文字也能挑出来`() {
-        assertEquals(url, PairPayload.find("配对链接：smsgw://pair?url=wss%3A%2F%2Fsmsgw.of.ci%2Fws&code=X 五分钟内有效")?.url)
+        assertEquals(url, PairPayload.find("配对链接：smsgw://pair?url=wss%3A%2F%2Fgw.example.com%2Fws&code=X 五分钟内有效")?.url)
     }
 
     @Test
     fun `找不到就是找不到`() {
-        assertNull(PairPayload.find("wss://smsgw.of.ci/ws"))
+        assertNull(PairPayload.find("wss://gw.example.com/ws"))
         assertNull(PairPayload.find(null))
     }
 

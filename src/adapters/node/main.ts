@@ -572,6 +572,52 @@ const server = createServer((req, res) => {
     return
   }
 
+  /**
+   * robots.txt 与 sitemap.xml。
+   *
+   * 站点根 `/` 是控制台，`noindex, follow`——门后是全部短信明文。**唯一希望
+   * 被搜到的是落地页 `/welcome`**，而爬虫要先拿到 robots.txt 才知道这件事。
+   *
+   * 两个都得由服务端现生成，不能当静态文件放进 `web/`：sitemap 里必须是**绝对
+   * 地址**，而这份代码在每个自托管实例上跑的域名都不一样（和 /qr/apk.svg 同一条
+   * 理由）。没配 `GW_BASE_URL` 时 sitemap 直接 404——一份指向 localhost 的站点
+   * 地图比没有更糟，它会把错地址喂给搜索引擎。robots.txt 照常给：那几条 Disallow
+   * 不依赖域名，而它们恰恰是最该生效的部分。
+   *
+   * Disallow 的几条不是「隐私保护」（未认证请求本来就返回 404），是别让搜索结果
+   * 里出现一个陌生人的网关登录页——那是给爆破脚本递名单。
+   */
+  if (req.url === '/robots.txt') {
+    const base = cfg.baseUrl?.replace(/\/$/, '')
+    const body = [
+      'User-agent: *',
+      'Allow: /welcome',
+      'Allow: /notice',
+      'Disallow: /api/',
+      'Disallow: /bark/',
+      'Disallow: /login',
+      'Disallow: /register',
+      'Disallow: /recover',
+      'Disallow: /setup',
+      ...(base ? ['', `Sitemap: ${base}/sitemap.xml`] : []),
+      '',
+    ].join('\n')
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=3600' })
+    res.end(body)
+    return
+  }
+
+  if (req.url === '/sitemap.xml') {
+    const base = cfg.baseUrl?.replace(/\/$/, '')
+    if (!base) { res.writeHead(404).end(); return }
+    const urls = ['/welcome', '/notice']
+      .map((u) => `  <url><loc>${base}${u}</loc><changefreq>weekly</changefreq></url>`)
+      .join('\n')
+    res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' })
+    res.end(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`)
+    return
+  }
+
   void handleApi(req, res, apiDeps).then((handled) => {
     if (handled || res.headersSent) return
     // 非 API 路径交给控制台；深链路由由前端处理（计划 §11.2）

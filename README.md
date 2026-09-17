@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rikouu/homing/releases/latest"><img src="https://img.shields.io/github/v/release/rikouu/homing?label=%E4%B8%8B%E8%BD%BD%20APK" alt="release"></a>
+  <a href="web/download/homing.apk"><img src="https://img.shields.io/badge/APK-v0.1.1-66d9ef" alt="APK"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license"></a>
   <a href="https://github.com/rikouu/homing/actions"><img src="https://github.com/rikouu/homing/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
@@ -67,6 +67,10 @@ Telegram / Bark / 自建接口。
 | **多设备** | 几台手机几张卡，每台独立规则与渠道，消息上带设备名 |
 | **双卡** | 认得出消息来自 SIM1 还是 SIM2（带号码尾号），发短信和保号都能指定用哪张卡，规则也能按卡分流 |
 | **全文检索** | 按关键词、号码、时间、设备、类型翻历史，翻多久以前都行 |
+| **和手机对齐** | 手机上删掉的、网关这边多出来的，一次对平；只在手机记录覆盖得到的时间段里动手 |
+| **浏览器推送** | 电脑前不用摸手机：控制台订阅一次，验证码直接弹在系统通知里 |
+| **装成 App** | 控制台可以装到手机主屏 / 电脑桌面，全屏打开、不用每次翻书签 |
+| **邀请注册** | 多用户是靠邀请码开的，可以一次生成一批；公开码会贴到未登录可见的「通知」页上 |
 
 ## 和同类工具比，有什么不一样
 
@@ -165,8 +169,10 @@ sudo bash install.sh
 
 ## 第二步：装手机 App
 
-1. 到 [Releases](https://github.com/rikouu/homing/releases) 下载最新的 `homing-agent.apk`
-2. 传到那台安卓手机上安装（会提示「未知来源」，允许即可）
+1. **用那台安卓手机的浏览器**打开你自己的落地页 `https://<你的地址>/welcome`，
+   点「下载 .apk 安装包」——APK 随网关一起发，不用去别处找。
+   （在电脑上看这一页的话，旁边有二维码，手机扫一下直接下。）
+2. 装上（会提示「未知来源」，允许即可）
 3. 打开 App，点 **申请权限**，把短信、通话、电话状态几项都允许
 4. 回到电脑上的控制台 → **设备** 页 → 填个名字（比如「家里的手机」）→ **生成配对码**
 5. 手机 App 上点 **扫码配对**，对着屏幕上的二维码扫一下
@@ -193,7 +199,7 @@ sudo bash install.sh
 
 ## 第三步：配一个推送渠道
 
-控制台 → **设置** → **通知渠道** → **管理**。
+控制台底部的 **渠道** 页。
 
 ### 方案 A：Telegram（最省事）
 
@@ -215,6 +221,15 @@ sudo bash install.sh
 3. Bark 首页会出现一串设备 Key —— 把 App 里任意一条示例地址整条复制，
    粘到控制台的「或粘贴整条推送地址」框里，Key 会自动填好
 4. 点「测试」
+
+### 还有两个可选渠道
+
+- **ntfy**（安卓推荐）：自建或用公共实例。iPhone 上它的推送要绕 ntfy 官方服务器
+  转一手，而且没有「复制验证码」按钮——所以 iPhone 还是用 Bark。
+- **Webhook**：推给你自己的接口，想接什么就接什么。
+- 另外还有**浏览器通知**：控制台 →「设置 → 浏览器通知」订阅一次，
+  它在渠道页里就是一条普通渠道，可以被规则选中。iPhone 上要先把控制台
+  装成主屏 App，从主屏图标打开才能订阅（Safari 标签页里没有这个能力）。
 
 ### 然后写入推荐规则
 
@@ -319,7 +334,8 @@ sudo bash install.sh
 
 ### 定时发短信（保号）
 
-**任务**页 → 新建。支持每天 / 每周 / 每月 / 每年 / 每隔 N 天，
+**发送**页往下滑，下半部分就是**计划任务** → 新建。
+支持每天 / 每周 / 每月 / 每年 / 每隔 N 天，
 可以指定第一次执行的具体时间。建好后有「立即测试」按钮，先确认能通再等它自己跑。
 
 ---
@@ -385,7 +401,7 @@ A：一条 WebSocket 长连接 + 30 秒心跳，实测一天几个百分点。�
 
 一句话版本：服务端 TypeScript（Node 24，`node:sqlite`，零运行时依赖注入的 `store`/`hub` 接口，
 为将来迁 Cloudflare Workers 预留），Agent 是 Kotlin 原生，控制台是零构建的 vanilla JS。
-测试 430+ 个，`pnpm exec vitest run`。
+测试 750+ 个，`pnpm exec vitest run`。
 
 ## 作者
 

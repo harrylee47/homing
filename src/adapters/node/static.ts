@@ -109,6 +109,15 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
   const headers: Record<string, string> = {
     'content-type': TYPES[ext] ?? 'application/octet-stream',
     /**
+     * 显式给出长度，别让 Node 走分块传输。
+     *
+     * 页面文件无所谓，**APK 那 2.7MB 有所谓**：没有 Content-Length 时
+     * 手机浏览器的下载条是一根走不完的进度条，断了也不能续传——
+     * 而下载它的人正站在手机前、多半用着手机流量。
+     * 已经 stat 过了（上面那个 last-modified 就是它），这里不多一次系统调用。
+     */
+    'content-length': String(stat.size),
+    /**
      * 一律 no-cache（每次校验，不是不缓存）。
      *
      * 本项目没有构建步骤，文件名里没有内容哈希，所以长缓存会让部署后

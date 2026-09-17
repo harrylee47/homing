@@ -99,7 +99,10 @@ c_ok "公网 IP $PUBLIC_IP"
 if [[ -z "$DOMAIN" ]]; then
   # sslip.io 支持把点换成横杠，避免某些证书场景下的通配符问题
   DOMAIN="${PUBLIC_IP//./-}.sslip.io"
-  c_info "没指定域名，使用 $DOMAIN（sslip.io 会把它解析到你的 IP）"
+  # 变量后面紧跟中文时**必须加花括号**：bash 按字节切变量名，「（」的首字节
+  # 会被当成名字的一部分，于是 set -u 下报 "DOMAIN?: unbound variable" 并当场退出。
+  # 一键安装脚本死在第二步，而报错指向一个根本不存在的变量名。
+  c_info "没指定域名，使用 ${DOMAIN}（sslip.io 会把它解析到你的 IP）"
 else
   c_ok "使用自带域名 $DOMAIN"
 fi
@@ -190,6 +193,19 @@ run "chown -R 10001:10001 '$DIR/data'"
 ENV_FILE="$DIR/.env"
 if [[ -f "$ENV_FILE" ]] && grep -q '^GW_DEK=' "$ENV_FILE" 2>/dev/null; then
   c_ok "已有数据密钥，保留不动"
+  # 但**地址要跟着这次的参数走**。原来整块都跳过了，于是
+  # `HOMING_DOMAIN=my.com bash install.sh` 在已装过的机器上换不了域名：
+  # .env 里还是上次那个 sslip.io，配对二维码、Bark 深链全指着旧地址，
+  # 而界面上一切正常——最难查的那一类。
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '   [dry-run] 把 %s 里的 GW_BASE_URL 更新为 %s\n' "$ENV_FILE" "$BASE_URL"
+  elif ! grep -q "^GW_BASE_URL=${BASE_URL}\$" "$ENV_FILE" 2>/dev/null; then
+    tmp=$(mktemp)
+    grep -v '^GW_BASE_URL=' "$ENV_FILE" > "$tmp" || true
+    printf 'GW_BASE_URL=%s\n' "$BASE_URL" >> "$tmp"
+    cat "$tmp" > "$ENV_FILE" && rm -f "$tmp"
+    c_ok "对外地址已更新为 $BASE_URL"
+  fi
 else
   DEK=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
   if [[ $DRY_RUN == 1 ]]; then
@@ -230,6 +246,22 @@ services:
       - ./data:/data
     depends_on:
       - bark
+    # 生产加固。和仓库里那份 docker-compose.yml 保持一致——
+    # 绝大多数自建者走的是这条一键路径，加固只写在另一份里等于没写
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # 日志必须轮转。1 核 1G 的机器上，不轮转的 json-file 会一直长到把盘写满，
+    # 那时候网关不是「慢」，是直接起不来，而且原因完全看不出来
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # 自建 Bark：验证码推送的主通道，不对外暴露端口
   bark:
@@ -237,6 +269,11 @@ services:
     restart: unless-stopped
     volumes:
       - ./bark-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Caddy 负责 HTTPS。证书自动申请、自动续期，不用管
   caddy:
@@ -250,6 +287,11 @@ services:
       - ./caddy-data:/data
     depends_on:
       - gateway
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 YAML
 fi
 

@@ -102,3 +102,42 @@ describe('用邀请码自助续期', () => {
     expect(await store.peekInvite('hr', NOW)).toBeNull()
   })
 })
+
+/**
+ * 批量操作踩过的两处，用存储层守住。
+ *
+ * 接口那一层（`POST /api/invites/batch`）是适配器代码，这里只钉住它依赖的
+ * 存储语义——真正会被改坏的就是这两条。
+ */
+describe('邀请码：批量操作依赖的存储语义', () => {
+  let store: MemoryStore
+  beforeEach(() => { store = new MemoryStore() })
+
+  it('已经用掉的删不动 —— 那条是历史，不是垃圾', async () => {
+    await store.createInvite(invite({ code_hash: 'used' }))
+    await store.takeInvite('used', 'u1', NOW)
+    expect(await store.deleteInvite('used')).toBe(false)
+    // 没用过的照删
+    await store.createInvite(invite({ code_hash: 'free' }))
+    expect(await store.deleteInvite('free')).toBe(true)
+  })
+
+  it('不存在的 hash 返回 false 而不是抛 —— 一批里混着已删的是常态', async () => {
+    expect(await store.deleteInvite('nope')).toBe(false)
+  })
+
+  it('改 public 是整行覆盖：备注与两个有效期必须自己带回去', async () => {
+    await store.createInvite(invite({ code_hash: 'h9', note: '给同事', valid_days: 90 }))
+    const cur = (await store.getInvite('h9'))!
+    // 批量转公开时**照抄**其余字段。只传 public 的话它们会被写成 null——
+    // 「批量设为公开，顺手把所有备注清空了」那种 bug 就是这么来的
+    await store.updateInvite('h9', {
+      note: cur.note, valid_days: cur.valid_days, expires_at: cur.expires_at, public: true,
+    })
+    const after = (await store.getInvite('h9'))!
+    expect(after.public).toBe(true)
+    expect(after.note).toBe('给同事')
+    expect(after.valid_days).toBe(90)
+    expect(after.expires_at).toBe(cur.expires_at)
+  })
+})
