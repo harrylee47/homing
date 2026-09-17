@@ -315,6 +315,7 @@ window.I18N_EN = {
   "把网页存成主屏图标，用起来像个 App。": "Save the web page as a home-screen icon and it behaves like an app. ",
   "2. 按它的提示起名字，最后一步给的那串": "2. Follow its prompts to pick a name. The string it hands you at the last step,",
   "口令需包含英文、数字、符号中的至少两类": "Password must contain at least two of: letters, digits, symbols",
+  "里把它改成「凭邀请码自助注册」才生效。": " at the top of this page and switch it to \"Register with an invite code\".",
   "还没有渠道，去「设置 → 渠道」添加。": "No channels yet — add one under Settings → Channels.",
   "验证码（需同时开启下方「提取验证码」）": "Verification code (also turn on \"Extract verification code\" below)",
   "ntfy 认识一批 emoji 名（如": "ntfy understands a set of emoji names (e.g.",
@@ -424,6 +425,7 @@ window.I18N_EN = {
   "但下列两点属于隔离范围之外：": "Two things fall outside that isolation:",
   "本服务不保证绝对的数据安全。": "This service does not guarantee absolute data security.",
   "要先读完并同意隐私与风险声明": "Read the Privacy and Risk Statement and agree to it first",
+  "：到「管理员」那一栏最上面的": ": open it under Admin → ",
   "没有在线设备，暂时无法回复。": "No device is online, so replying is not possible right now.",
   "App 推送来的验证码走这条": "verification codes that arrive as app notifications go here",
   "还没有规则，当前全部走兜底。": "No rules yet — everything goes through the fallback.",
@@ -818,6 +820,7 @@ window.I18N_EN = {
   "继续往更早搜": "Keep searching earlier",
   "发送记录 →": "Send log →",
   "没有在线设备": "No devices online",
+  "「开放注册」": "\"Open registration\"",
   "内容不能为空": "The message cannot be empty",
   "← 发送短信": "← Send SMS",
   "只归档不推送": "archive only, no push",
@@ -917,6 +920,9 @@ window.I18N_EN = {
   "💬 会话": "💬 Threads",
   "本机发出的": "Sent from this phone",
   "改上限 →": "Change the cap →",
+  "邀请码管理": "Manage invite codes",
+  "你是管理员": "You are the admin",
+  "里打开它。": " at the top of that tab.",
   "用哪台设备": "Which device",
   "已提交发送": "Queued for sending",
   "还没有规则": "No rules yet",
@@ -1011,6 +1017,7 @@ window.I18N_EN = {
   "兜底规则": "Fallback rule",
   "复制正文": "Copy message",
   "发送短信": "Send SMS",
+  "发邀请码": "Create invite codes",
   "请选择…": "Select…",
   "发送记录": "Sent messages",
   "全部状态": "All statuses",
@@ -1830,8 +1837,8 @@ window.I18N_EN = {
    "to": "Exported everything, $1 KB"
   },
   {
-   "pattern": "^的，这一页里那 (\\d+) 个还没用的码现在都注册不了。把上面的开关改成「凭邀请码注册」才生效。$",
-   "to": ". The unused codes on this page ($1 of them) can't be used to register right now. Switch the setting above to \"Register with an invite code\" to make them work."
+   "pattern": "^的，这一页里那 (\\d+) 个还没用的码现在都注册不了。到这一页最上面的$",
+   "to": ". The unused codes on this page ($1 of them) can't be used to register right now. Go to"
   },
   {
    "pattern": "^全选本页（(\\d+) 个可选）$",

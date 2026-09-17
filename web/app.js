@@ -4714,7 +4714,7 @@ async function paintInvites() {
     // 这句数的是**这一页**上的——翻到第三页还说「下面那 12 个」是假话
     const live = invites.filter((i) => !i.used_at && !i.expired).length
     const warn = !regOpen && live > 0
-      ? `<div class="notice" style="margin-bottom:10px">注册当前是<b>关闭</b>的，这一页里那 ${live} 个还没用的码现在都注册不了。把上面的开关改成「凭邀请码注册」才生效。</div>`
+      ? `<div class="notice" style="margin-bottom:10px">注册当前是<b>关闭</b>的，这一页里那 ${live} 个还没用的码现在都注册不了。到这一页最上面的<b>「开放注册」</b>里把它改成「凭邀请码自助注册」才生效。</div>`
       : ''
 
     /*
@@ -5173,7 +5173,16 @@ async function paintSelfInvite() {
       </div>` : ''}
       ${g.can
         ? '<div class="btnrow"><button id="si_go" class="sm">生成邀请码</button></div>'
-        : `<div class="notice">${esc(g.why)}</div>`}
+        : `<div class="notice">${esc(g.why)}${
+          /*
+           * 「没开放自助注册」对**管理员**不是死胡同——开关就在他自己的
+           * 「管理员 → 开放注册」里。只说原因不给下一步，等于让他自己去猜
+           * 那个开关在哪；而这一页刚刚才把它挪过去。
+           * 按 why_code 判断，不按那句中文——文案改一个字就会悄悄失效。
+           */
+          g.why_code === 'reg_closed' && me?.role === 'admin'
+            ? '<br><b>你是管理员</b>：到「管理员」那一栏最上面的<b>开放注册</b>里打开它。'
+            : ''}</div>`}
       <div id="si_out"></div>`
     bindCopy(box)
     const b = $('#si_go')
@@ -5381,7 +5390,19 @@ async function settings() {
 
       </div>
 
-      <div data-pane="invite">
+      <!--
+        **开放注册是管理员的事，不是「邀请朋友」的事。**
+
+        原来这三件东西全挤在「邀请朋友」那一栏里：开放注册开关、管理员批量发码、
+        全站邀请码列表，再加上最上面属于每个人的自助邀请码——四个不同层级的东西
+        堆成一长条，手机上滑到一半分不清正在看哪一个。而普通用户在那一栏里
+        根本看不到后三样，却要为它们让出位置。
+
+        现在按「谁在用」切开：**「邀请朋友」只留每个人自己的那一份**，
+        管理员的三件各占一个模块，且顺序按做事的顺序排——
+        先决定开不开放，再发码，最后管理已发出去的。
+      -->
+      <div data-pane="admin">
       <h2>开放注册</h2>
       <div class="card">
         <p class="muted">开了之后，拿到邀请码的人可以自己注册。
@@ -5396,14 +5417,17 @@ async function settings() {
         <div class="muted">界面上到处写着「联系管理员续期 / 重置」，得让对方知道找谁。
         会显示在注册页、找回页和到期提示里。</div>
         <div class="btnrow"><button id="reg_save" class="sm">保存</button></div>
+      </div>
+      </div>
 
-        <h2 style="margin-top:22px">邀请码</h2>
-        <div id="invites"><div class="loading">加载中…</div></div>
+      <div data-pane="admin">
+      <h2>发邀请码</h2>
+      <div class="card">
         <input type="hidden" id="inv_edit">
         <label>备注（发给谁）</label>
         <input id="inv_note" placeholder="如 给小鱼">
-        <div style="display:flex;gap:8px">
-          <div class="grow">
+        <div class="daterange">
+          <div>
             <label>账号能用多久</label>
             <select id="inv_days">
               <option value="">永久</option>
@@ -5414,7 +5438,7 @@ async function settings() {
               <option value="365">1 年</option>
             </select>
           </div>
-          <div class="grow">
+          <div>
             <label>码本身多久失效</label>
             <select id="inv_ttl">
               <option value="1">1 小时</option>
@@ -5453,6 +5477,13 @@ async function settings() {
         </div>
         <div id="inv_err" class="err-text"></div>
         <div id="inv_new"></div>
+      </div>
+      </div>
+
+      <div data-pane="admin">
+      <h2>邀请码管理</h2>
+      <div class="card">
+        <div id="invites"><div class="loading">加载中…</div></div>
       </div>
       </div>
 
@@ -5629,7 +5660,17 @@ async function settings() {
   void paintWebPush()
   paintBackup()
 
-  if (me?.role !== 'admin') paintSelfInvite()
+  /*
+   * **管理员也要画。** 原来这里写的是 `if (me?.role !== 'admin')`，而 `#selfinv`
+   * 那个盒子是对所有人渲染的——于是管理员打开「邀请朋友」看到的是一个永远停在
+   * 「加载中…」的框。以前它底下还压着开放注册那一大堆，不算显眼；
+   * 把那些挪走之后，那一栏就只剩这一个转圈的框了。
+   *
+   * 而这个按钮本来就是给管理员也用的：core/notice.ts 的配额只数 `self_made = 1`，
+   * 那条注释写得很清楚——数 created_by 的全部会把他从后台正常发的码也算进去，
+   * 于是自助按钮报「每天一个，明天再来」而他根本没按过。
+   */
+  void paintSelfInvite()
 
   if (me?.role === 'admin') {
     void paintUsers()

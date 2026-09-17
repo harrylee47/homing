@@ -1403,19 +1403,28 @@ route('DELETE', '/api/announcements/:id', async ({ user, res, params, deps, ip }
  */
 async function selfInviteGate(
   deps: ApiDeps, user: UserRecord, t: number,
-): Promise<{ ok: true; since: number } | { ok: false; why: string }> {
+): Promise<{ ok: true; since: number } | { ok: false; why: string; code: GateCode }> {
   if ((await registrationMode(deps.store)) !== 'invite') {
-    return { ok: false, why: '这台网关现在不开放自助注册' }
+    return { ok: false, code: 'reg_closed', why: '这台网关现在不开放自助注册' }
   }
   const since = dayStart(t, offsetMs(t, await timezone(deps.store, user.id)))
   if ((await deps.store.countEventsReceivedSince(user.id, since)) === 0) {
-    return { ok: false, why: '今天还没有消息进来。这道门槛确认的是「这台网关真的在用」，收到一条短信、来电或应用通知之后再来' }
+    return { ok: false, code: 'no_events', why: '今天还没有消息进来。这道门槛确认的是「这台网关真的在用」，收到一条短信、来电或应用通知之后再来' }
   }
   if ((await deps.store.countSelfInvitesBy(user.id, since)) >= SELF_INVITE_PER_DAY) {
-    return { ok: false, why: `每天一个，明天再来（已生成 ${SELF_INVITE_PER_DAY} 个）` }
+    return { ok: false, code: 'quota', why: `每天一个，明天再来（已生成 ${SELF_INVITE_PER_DAY} 个）` }
   }
   return { ok: true, since }
 }
+
+/**
+ * 拦下来的原因，给界面用。
+ *
+ * **`why` 是给人看的，`code` 是给代码看的。** 界面要按原因给出不同的下一步
+ * （`reg_closed` 对管理员来说是「去把开关打开」，对普通用户只能是「找管理员」），
+ * 而按 `why` 那句中文去匹配，哪天改一个字就悄悄失效了。
+ */
+type GateCode = 'reg_closed' | 'no_events' | 'quota'
 
 route('GET', '/api/invites/self', async ({ user, res, deps }) => {
   const t = now()
@@ -1432,6 +1441,7 @@ route('GET', '/api/invites/self', async ({ user, res, deps }) => {
   json(res, 200, {
     can: gate.ok,
     why: gate.ok ? null : gate.why,
+    why_code: gate.ok ? null : gate.code,
     ttl_hours: SELF_INVITE_TTL_MS / 3_600_000,
     per_day: SELF_INVITE_PER_DAY,
     mine: mine.map((i, n) => ({

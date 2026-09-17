@@ -25,7 +25,6 @@
     "在这个浏览器上订阅": "Subscribe on this browser",
     "已订阅，去渠道页点一下测试": "Subscribed. Go to the Channels page and send a test.",
     "没有拿到通知权限": "Notification permission was not granted",
-
     "已经是主屏 App": "Already a home-screen app",
     "你正从主屏图标打开控制台。": "You're opening the console from the home-screen icon.",
     "已安装": "Installed",
@@ -58,7 +57,6 @@
     "「安装应用」": "\"Install app\"",
     "或": " or ",
     "装好了，之后从主屏图标打开": "Installed. Open it from the home-screen icon from now on.",
-
     "展开引导，还差 1 步": "Expand the guide — 1 step to go",
     "展开引导，还差 2 步": "Expand the guide — 2 steps to go",
     "装到主屏幕": "Add to your home screen",
@@ -80,7 +78,6 @@
     "不再提醒": "Never remind me",
     "不再提醒。设置页里随时可以装 / 开通": "Won't remind you again. You can install it or turn push on any time in Settings.",
     "已开通，去渠道页点一下测试": "Turned on. Go to the Channels page and send a test.",
-
     "已开启": "Enabled",
     "登录时要多输一次认证器上的 6 位动态码。": "Signing in takes one more step: the 6-digit code from your authenticator.",
     "开": "On",
@@ -97,7 +94,6 @@
     "关闭两步验证。\n\n关掉之后，口令就是这个账号唯一的钥匙。\n\n请输入当前口令：": "Turn off two-factor.\n\nAfter this, your password is the only key to this account.\n\nEnter your current password:",
     "再输入认证器上当前显示的 6 位动态码：": "Now enter the 6-digit code your authenticator is showing:",
     "两步验证已关闭": "Two-factor is off",
-
     "注册当前是": "Registration is currently ",
     "关闭": "off",
     "复制选中的": "Copy selected",
@@ -122,19 +118,61 @@
     "已撤销": "Revoked"
   },
   "rules": [
-    { "pattern": "^的，这一页里那 (\\d+) 个还没用的码现在都注册不了。把上面的开关改成「凭邀请码注册」才生效。$", "to": ". The unused codes on this page ($1 of them) can't be used to register right now. Switch the setting above to \"Register with an invite code\" to make them work." },
-    { "pattern": "^全选本页（(\\d+) 个可选）$", "to": "Select all on this page ($1 selectable)" },
-    { "pattern": "^已选 (\\d+) 个$", "to": "$1 selected" },
-    { "pattern": "^成功 (\\d+) 个，(\\d+) 个没动$", "to": "$1 done, $2 left untouched" },
-    { "pattern": "^已处理 (\\d+) 个$", "to": "$1 processed" },
-    { "pattern": "^已复制 (\\d+) 条注册链接$", "to": "Copied $1 sign-up links" },
-    { "pattern": "^已复制 (\\d+) 条邀请码$", "to": "Copied $1 invite codes" },
-    { "pattern": "^撤销选中的 (\\d+) 个邀请码？还没用的就作废了。$", "to": "Revoke the $1 selected invite codes? Any that haven't been used become void." },
-    { "pattern": "^把选中的 (\\d+) 个改成公开码？它们会贴到未登录可达的「通知」页上。$", "to": "Make the $1 selected codes public? They'll be posted on the Notices page, which anyone can open without signing in." },
-    { "pattern": "^已过期 · 开出的账号 (\\d+) 天有效$", "to": "Expired · the account it creates is valid for $1 days" },
-    { "pattern": "^已被 (.{1,64}?) 使用 · 开出的账号永久有效$", "to": "Used by $1 · the account it creates never expires" },
-    { "pattern": "^已被 (.{1,64}?) 使用 · 开出的账号 (\\d+) 天有效$", "to": "Used by $1 · the account it creates is valid for $2 days" },
-    { "pattern": "^未使用 · ([\\d/\\-.: ]{1,32}) 前有效 · 开出的账号永久有效$", "to": "Unused · valid until $1 · the account it creates never expires" },
-    { "pattern": "^未使用 · ([\\d/\\-.: ]{1,32}) 前有效 · 开出的账号 (\\d+) 天有效$", "to": "Unused · valid until $1 · the account it creates is valid for $2 days" }
+    {
+      "pattern": "^的，这一页里那 (\\d+) 个还没用的码现在都注册不了。到这一页最上面的$",
+      "to": ". The unused codes on this page ($1 of them) can't be used to register right now. Go to"
+    },
+    {
+      "pattern": "^全选本页（(\\d+) 个可选）$",
+      "to": "Select all on this page ($1 selectable)"
+    },
+    {
+      "pattern": "^已选 (\\d+) 个$",
+      "to": "$1 selected"
+    },
+    {
+      "pattern": "^成功 (\\d+) 个，(\\d+) 个没动$",
+      "to": "$1 done, $2 left untouched"
+    },
+    {
+      "pattern": "^已处理 (\\d+) 个$",
+      "to": "$1 processed"
+    },
+    {
+      "pattern": "^已复制 (\\d+) 条注册链接$",
+      "to": "Copied $1 sign-up links"
+    },
+    {
+      "pattern": "^已复制 (\\d+) 条邀请码$",
+      "to": "Copied $1 invite codes"
+    },
+    {
+      "pattern": "^撤销选中的 (\\d+) 个邀请码？还没用的就作废了。$",
+      "to": "Revoke the $1 selected invite codes? Any that haven't been used become void."
+    },
+    {
+      "pattern": "^把选中的 (\\d+) 个改成公开码？它们会贴到未登录可达的「通知」页上。$",
+      "to": "Make the $1 selected codes public? They'll be posted on the Notices page, which anyone can open without signing in."
+    },
+    {
+      "pattern": "^已过期 · 开出的账号 (\\d+) 天有效$",
+      "to": "Expired · the account it creates is valid for $1 days"
+    },
+    {
+      "pattern": "^已被 (.{1,64}?) 使用 · 开出的账号永久有效$",
+      "to": "Used by $1 · the account it creates never expires"
+    },
+    {
+      "pattern": "^已被 (.{1,64}?) 使用 · 开出的账号 (\\d+) 天有效$",
+      "to": "Used by $1 · the account it creates is valid for $2 days"
+    },
+    {
+      "pattern": "^未使用 · ([\\d/\\-.: ]{1,32}) 前有效 · 开出的账号永久有效$",
+      "to": "Unused · valid until $1 · the account it creates never expires"
+    },
+    {
+      "pattern": "^未使用 · ([\\d/\\-.: ]{1,32}) 前有效 · 开出的账号 (\\d+) 天有效$",
+      "to": "Unused · valid until $1 · the account it creates is valid for $2 days"
+    }
   ]
 }
