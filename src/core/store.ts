@@ -406,7 +406,11 @@ export interface Store {
   deleteRule(id: string, userId: string): Promise<void>
 
   // 邀请码
-  listInvites(): Promise<InviteRecord[]>
+  /** 全部邀请码，**新的在前**，分页。管理员那张列表会越积越长 */
+  listInvites(limit: number, offset: number): Promise<InviteRecord[]>
+  countInvites(): Promise<number>
+  /** 某人自助生成的码，新的在前。给「邀请朋友」那张卡用 */
+  listSelfInvitesBy(userId: string, limit: number): Promise<InviteRecord[]>
   createInvite(i: InviteRecord): Promise<void>
   /**
    * 只看不取：校验这个码此刻有没有效，**不消费它**。
@@ -419,6 +423,15 @@ export interface Store {
   peekInvite(codeHash: string, now: number): Promise<InviteRecord | null>
   /** 按哈希取出未使用且未过期的邀请码，**并原子地标记已用**。并发下只能成功一次 */
   takeInvite(codeHash: string, userId: string, now: number): Promise<InviteRecord | null>
+  getInvite(codeHash: string): Promise<InviteRecord | null>
+  /**
+   * 改一个还没被用掉的邀请码。码本身与创建者改不了——
+   * 前者的哈希就是主键，后者是「谁发的」这条事实。
+   */
+  updateInvite(
+    codeHash: string,
+    patch: Pick<InviteRecord, 'note' | 'valid_days' | 'expires_at' | 'public'>,
+  ): Promise<boolean>
   /** 撤销尚未使用的邀请码 */
   deleteInvite(codeHash: string): Promise<boolean>
   /**
@@ -437,7 +450,10 @@ export interface Store {
   countEventsReceivedSince(userId: string, since: number): Promise<number>
 
   // 公告
-  listAnnouncements(limit: number): Promise<AnnouncementRecord[]>
+  /** 置顶的在前，其余按更新时间倒序。**两处共用同一个排序**：
+   *  通知页和管理员列表看到的顺序必须一致，否则「置顶」在后台是看不出效果的 */
+  listAnnouncements(limit: number, offset: number): Promise<AnnouncementRecord[]>
+  countAnnouncements(): Promise<number>
   getAnnouncement(id: string): Promise<AnnouncementRecord | null>
   upsertAnnouncement(a: AnnouncementRecord): Promise<void>
   deleteAnnouncement(id: string): Promise<boolean>

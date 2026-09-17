@@ -180,7 +180,14 @@ export class MemoryStore implements Store {
 
   invites = new Map<string, InviteRecord>()
 
-  async listInvites() { return [...this.invites.values()] }
+  async listInvites(limit: number, offset: number) {
+    return [...this.invites.values()].sort((a, b) => b.created_at - a.created_at).slice(offset, offset + limit)
+  }
+  async countInvites() { return this.invites.size }
+  async listSelfInvitesBy(userId: string, limit: number) {
+    return [...this.invites.values()].filter((i) => i.created_by === userId && i.self_made)
+      .sort((a, b) => b.created_at - a.created_at).slice(0, limit)
+  }
   async createInvite(i: InviteRecord) { this.invites.set(i.code_hash, i) }
   async peekInvite(hash: string, now: number) {
     const i = this.invites.get(hash)
@@ -193,6 +200,13 @@ export class MemoryStore implements Store {
     const used = { ...i, used_at: now, used_by: userId }
     this.invites.set(hash, used)
     return used
+  }
+  async getInvite(hash: string) { return this.invites.get(hash) ?? null }
+  async updateInvite(hash: string, patch: Pick<InviteRecord, 'note' | 'valid_days' | 'expires_at' | 'public'>) {
+    const i = this.invites.get(hash)
+    if (!i || i.used_at !== null) return false
+    this.invites.set(hash, { ...i, ...patch })
+    return true
   }
   async deleteInvite(hash: string) {
     const i = this.invites.get(hash)
@@ -211,11 +225,12 @@ export class MemoryStore implements Store {
   }
 
   announcements = new Map<string, AnnouncementRecord>()
-  async listAnnouncements(limit: number) {
+  async listAnnouncements(limit: number, offset: number) {
     return [...this.announcements.values()]
       .sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updated_at - a.updated_at))
-      .slice(0, limit)
+      .slice(offset, offset + limit)
   }
+  async countAnnouncements() { return this.announcements.size }
   async getAnnouncement(id: string) { return this.announcements.get(id) ?? null }
   async upsertAnnouncement(a: AnnouncementRecord) { this.announcements.set(a.id, a) }
   async deleteAnnouncement(id: string) { return this.announcements.delete(id) }

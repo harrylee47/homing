@@ -642,9 +642,19 @@ export class SqliteStore implements Store {
 
   // ── 邀请码 ────────────────────────────────────────────
 
-  async listInvites(): Promise<InviteRecord[]> {
-    return (this.db.prepare('SELECT * FROM invites ORDER BY created_at DESC')
-      .all() as unknown as RawInvite[]).map(reviveInvite)
+  async listInvites(limit: number, offset: number): Promise<InviteRecord[]> {
+    return (this.db.prepare('SELECT * FROM invites ORDER BY created_at DESC LIMIT ? OFFSET ?')
+      .all(limit, offset) as unknown as RawInvite[]).map(reviveInvite)
+  }
+
+  async countInvites(): Promise<number> {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM invites').get() as { n: number }).n)
+  }
+
+  async listSelfInvitesBy(userId: string, limit: number): Promise<InviteRecord[]> {
+    return (this.db
+      .prepare('SELECT * FROM invites WHERE created_by = ? AND self_made = 1 ORDER BY created_at DESC LIMIT ?')
+      .all(userId, limit) as unknown as RawInvite[]).map(reviveInvite)
   }
 
   async createInvite(i: InviteRecord): Promise<void> {
@@ -699,6 +709,23 @@ export class SqliteStore implements Store {
       .get(codeHash) as unknown as RawInvite)
   }
 
+  async getInvite(codeHash: string): Promise<InviteRecord | null> {
+    const row = this.db.prepare('SELECT * FROM invites WHERE code_hash = ?').get(codeHash)
+    return row ? reviveInvite(row as unknown as RawInvite) : null
+  }
+
+  async updateInvite(
+    codeHash: string,
+    patch: Pick<InviteRecord, 'note' | 'valid_days' | 'expires_at' | 'public'>,
+  ): Promise<boolean> {
+    // used_at IS NULL 写在 WHERE 里而不是先查再改：并发下「正在被兑换」的那一刻
+    // 不该还能改它的有效期
+    return Number(this.db
+      .prepare(`UPDATE invites SET note = ?, valid_days = ?, expires_at = ?, public = ?
+                WHERE code_hash = ? AND used_at IS NULL`)
+      .run(patch.note, patch.valid_days, patch.expires_at, patch.public ? 1 : 0, codeHash).changes) > 0
+  }
+
   async deleteInvite(codeHash: string): Promise<boolean> {
     return Number(this.db.prepare('DELETE FROM invites WHERE code_hash = ? AND used_at IS NULL')
       .run(codeHash).changes) > 0
@@ -706,10 +733,14 @@ export class SqliteStore implements Store {
 
   // ── 公告 ──────────────────────────────────────────────
 
-  async listAnnouncements(limit: number): Promise<AnnouncementRecord[]> {
+  async listAnnouncements(limit: number, offset: number): Promise<AnnouncementRecord[]> {
     return (this.db
-      .prepare('SELECT * FROM announcements ORDER BY pinned DESC, updated_at DESC LIMIT ?')
-      .all(limit) as unknown as RawAnnouncement[]).map(reviveAnnouncement)
+      .prepare('SELECT * FROM announcements ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?')
+      .all(limit, offset) as unknown as RawAnnouncement[]).map(reviveAnnouncement)
+  }
+
+  async countAnnouncements(): Promise<number> {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM announcements').get() as { n: number }).n)
   }
 
   async getAnnouncement(id: string): Promise<AnnouncementRecord | null> {

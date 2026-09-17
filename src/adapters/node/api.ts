@@ -32,8 +32,8 @@ import {
 } from '../../core/retention.js'
 import { describeFetchError } from '../../core/neterror.js'
 import {
-  ANNOUNCE_LIMIT, PUBLIC_INVITE_LIMIT, SELF_INVITE_PER_DAY, SELF_INVITE_TTL_MS,
-  dayStart, inviteState, normalizeAnnouncement,
+  ADMIN_PAGE, ANNOUNCE_LIMIT, PUBLIC_INVITE_LIMIT, SELF_INVITE_PER_DAY, SELF_INVITE_TTL_MS,
+  SELF_INVITE_SHOWN, dayStart, inviteState, normalizeAnnouncement,
 } from '../../core/notice.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import { SmsCommandConfig, type DownstreamFrame } from '../../core/protocol.js'
@@ -1013,13 +1013,18 @@ const generateInviteCode = (): string =>
 const INVITE_TTL_HOURS = [1, 24, 72, 168, 720] as const
 const DEFAULT_INVITE_TTL_HOURS = 168
 
-route('GET', '/api/invites', async ({ user, res, deps }) => {
+route('GET', '/api/invites', async ({ user, res, url, deps }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
   const users = new Map((await deps.store.listUsers()).map((u) => [u.id, u.name]))
   const t = now()
-  const rows = await deps.store.listInvites()
+  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0)
+  const [rows, total] = await Promise.all([
+    deps.store.listInvites(ADMIN_PAGE, offset),
+    deps.store.countInvites(),
+  ])
   const codes = await Promise.all(rows.map((i) => inviteCode(deps, i)))
   json(res, 200, {
+    total, offset, limit: ADMIN_PAGE,
     invites: rows.map((i, n) => ({
       code_hash: i.code_hash,
       // 码能再拿回来：只存哈希会让「没当场注册、也没存下来」的码变成垃圾
@@ -1100,6 +1105,42 @@ function registerUrl(deps: ApiDeps, code: string | null): string | null {
   return `${deps.baseUrl.replace(/\/$/, '')}/register#${code}`
 }
 
+/**
+ * 改一个**还没被用掉**的邀请码。
+ *
+ * 能改的只有四项：备注、开出的账号能用多久、码本身还能活多久、公开与否。
+ * 码本身改不了——它的哈希就是主键，而且已经发出去的那串字符改了等于作废，
+ * 那是「撤销 + 重发」，不是「修改」。
+ *
+ * 已经用掉的一律拒绝：那条记录是历史，改它等于篡改「谁用什么码开的号」。
+ */
+route('PUT', '/api/invites/:hash', async ({ user, res, params, body, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
+  const cur = await deps.store.getInvite(params.hash!)
+  if (!cur) return json(res, 404, { error: '邀请码不存在' })
+  if (cur.used_at !== null) return json(res, 409, { error: '这个码已经被用掉了，历史记录不能改' })
+
+  const b = body as { note?: string; days?: number; ttl_hours?: number; public?: boolean }
+  const t = now()
+  const ttlHours = (INVITE_TTL_HOURS as readonly number[]).includes(Number(b?.ttl_hours))
+    ? Number(b.ttl_hours) : null
+  const patch = {
+    note: (b?.note ?? '').trim().slice(0, 64) || null,
+    valid_days: (VALIDITY_DAYS as readonly number[]).includes(Number(b?.days)) ? Number(b.days) : null,
+    // 「码本身多久失效」在编辑时的意思是**从现在起重新计时**——
+    // 管理员改它的场景就是「快过期了，再给它几天」。没给就不动。
+    expires_at: ttlHours === null ? cur.expires_at : t + ttlHours * 3_600_000,
+    public: b?.public === true,
+  }
+  await deps.store.updateInvite(params.hash!, patch)
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'invite.update',
+    detail: [patch.public ? '公开' : '私有', patch.note].filter(Boolean).join(' · ') || null,
+    ip, created_at: t,
+  })
+  json(res, 200, { ok: true })
+})
+
 route('DELETE', '/api/invites/:hash', async ({ user, res, params, deps, ip }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
   const ok = await deps.store.deleteInvite(params.hash!)
@@ -1119,18 +1160,21 @@ route('DELETE', '/api/invites/:hash', async ({ user, res, params, deps, ip }) =>
 route('GET', '/api/notice', async ({ res, deps }) => {
   const t = now()
   const [ann, invites] = await Promise.all([
-    deps.store.listAnnouncements(ANNOUNCE_LIMIT),
+    deps.store.listAnnouncements(ANNOUNCE_LIMIT, 0),
     deps.store.listPublicInvites(PUBLIC_INVITE_LIMIT),
   ])
+  // 走 inviteCode()，不是直接读 code_plain——新建的码存在 code_enc 里，
+  // 只读明文那一列会让整页的码全变成 null（改成加密落库时就这么栽过一次）
+  const codes = await Promise.all(invites.map((i) => inviteCode(deps, i)))
   json(res, 200, {
     announcements: ann.map((a) => ({
       id: a.id, title: a.title, body: a.body, pinned: a.pinned, updated_at: a.updated_at,
     })),
-    invites: invites.map((i) => ({
-      code: i.code_plain,
+    invites: invites.map((i, n) => ({
+      code: codes[n] ?? null,
       expires_at: i.expires_at,
       state: inviteState(i, t),
-    })),
+    })).filter((i) => i.code),
     /** 注册关着的时候，页面要说清楚「码在这儿但现在注册不开」 */
     open: (await registrationMode(deps.store)) === 'invite',
   })
@@ -1138,9 +1182,16 @@ route('GET', '/api/notice', async ({ res, deps }) => {
 
 // ── 公告（管理员增删改） ────────────────────────────────
 
-route('GET', '/api/announcements', async ({ user, res, deps }) => {
+route('GET', '/api/announcements', async ({ user, res, url, deps }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理公告' })
-  json(res, 200, { announcements: await deps.store.listAnnouncements(ANNOUNCE_LIMIT) })
+  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0)
+  const [announcements, total] = await Promise.all([
+    // 和通知页**同一个排序**（置顶在前）：后台看到的顺序要和读者看到的一致，
+    // 否则「置顶」这个开关在管理员这边是看不出效果的
+    deps.store.listAnnouncements(ADMIN_PAGE, offset),
+    deps.store.countAnnouncements(),
+  ])
+  json(res, 200, { announcements, total, offset, limit: ADMIN_PAGE })
 })
 
 route('POST', '/api/announcements', async ({ user, res, body, deps, ip }) => {
@@ -1217,14 +1268,14 @@ route('GET', '/api/invites/self', async ({ user, res, deps }) => {
    * 明天之前既拿不回来也再生成不了。列出来之后这个格子就一直找得到。
    * 只列自己的（created_by = 自己），管理员发的码不在这里。
    */
-  const mine = (await deps.store.listInvites()).filter((i) => i.created_by === user.id && i.self_made)
+  const mine = await deps.store.listSelfInvitesBy(user.id, SELF_INVITE_SHOWN)
   const codes = await Promise.all(mine.map((i) => inviteCode(deps, i)))
   json(res, 200, {
     can: gate.ok,
     why: gate.ok ? null : gate.why,
     ttl_hours: SELF_INVITE_TTL_MS / 3_600_000,
     per_day: SELF_INVITE_PER_DAY,
-    mine: mine.slice(0, 10).map((i, n) => ({
+    mine: mine.map((i, n) => ({
       code: codes[n] ?? null,
       url: registerUrl(deps, codes[n] ?? null),
       expires_at: i.expires_at,

@@ -4070,11 +4070,13 @@ const fmtDay = (ts) => new Date(ts).toLocaleDateString('zh-CN')
 /** 注册开关的当前状态。生成邀请码那一刻要用它决定提不提醒 */
 let regOpen = false
 
+let invOffset = 0
 async function paintInvites() {
   const box = $('#invites')
   if (!box) return
   try {
-    const [{ invites }, reg] = await Promise.all([api('/invites'), api('/registration')])
+    const [r, reg] = await Promise.all([api(`/invites?offset=${invOffset}`), api('/registration')])
+    const { invites, total, limit } = r
     $('#reg_mode').value = reg.mode
     regOpen = reg.mode === 'invite'
 
@@ -4084,9 +4086,10 @@ async function paintInvites() {
      * 不提醒的话失败发生在看不见的地方：你把链接发出去，对方点开只看到
      * 「这台服务器没有开放注册」，两个人都不知道少了哪一步。
      */
+    // 这句数的是**这一页**上的——翻到第三页还说「下面那 12 个」是假话
     const live = invites.filter((i) => !i.used_at && !i.expired).length
     const warn = !regOpen && live > 0
-      ? `<div class="notice" style="margin-bottom:10px">注册当前是<b>关闭</b>的，下面那 ${live} 个还没用的码现在都注册不了。把上面的开关改成「凭邀请码注册」才生效。</div>`
+      ? `<div class="notice" style="margin-bottom:10px">注册当前是<b>关闭</b>的，这一页里那 ${live} 个还没用的码现在都注册不了。把上面的开关改成「凭邀请码注册」才生效。</div>`
       : ''
 
     box.innerHTML = warn + (invites.length ? `<div class="list">${invites.map((i) => {
@@ -4107,12 +4110,34 @@ async function paintInvites() {
             </div>`
           : `<div class="muted" style="margin-top:6px">这个码是加密落库之前发的，显示不出来——当时只存了哈希。</div>`)}
         ${i.used_at || i.expired ? '' : `<div class="btnrow" style="margin-top:8px">
+          <button class="ghost sm" data-inv-edit="${esc(i.code_hash)}">编辑</button>
           <button class="danger sm" data-revoke="${esc(i.code_hash)}">撤销</button>
         </div>`}
       </div>`
-    }).join('')}</div>` : '<div class="muted">还没有发过邀请码。</div>')
+    }).join('')}</div>` + pagerBar('inv', total, invOffset, limit)
+      : '<div class="muted">还没有发过邀请码。</div>')
+
+    bindPager('inv', invOffset, limit, (o) => { invOffset = o; paintInvites() })
 
     bindCopy(box)
+
+    for (const b of box.querySelectorAll('[data-inv-edit]')) {
+      b.onclick = () => {
+        const i = invites.find((x) => x.code_hash === b.dataset.invEdit)
+        if (!i) return
+        $('#inv_edit').value = i.code_hash
+        $('#inv_note').value = i.note || ''
+        $('#inv_days').value = i.valid_days ? String(i.valid_days) : ''
+        $('#inv_public').checked = Boolean(i.public)
+        // 「码本身多久失效」在编辑时是「从现在起重新计时」，没有「保持原样」
+        // 这一档，所以给个显式的默认并在旁边说清楚
+        $('#inv_ttl').value = '168'
+        $('#inv_add').textContent = '保存修改'
+        $('#inv_reset').hidden = false
+        $('#inv_ttlnote').hidden = false
+        $('#inv_note').scrollIntoView({ block: 'center', behavior: 'smooth' })
+      }
+    }
 
     for (const b of box.querySelectorAll('[data-revoke]')) {
       b.onclick = async () => {
@@ -4120,6 +4145,9 @@ async function paintInvites() {
         try {
           await api(`/invites/${encodeURIComponent(b.dataset.revoke)}`, { method: 'DELETE' })
           toast('已撤销')
+          // 正在编辑的就是刚撤掉的那条：表单得退出编辑态，否则下一次「保存修改」
+          // 会打到一个已经不存在的 hash 上
+          if ($('#inv_edit')?.value === b.dataset.revoke) $('#inv_reset').click()
           paintInvites()
         } catch (e) { toast(e.message) }
       }
@@ -4127,6 +4155,24 @@ async function paintInvites() {
   } catch (e) {
     box.innerHTML = `<div class="err-text">${esc(e.message)}</div>`
   }
+}
+
+/**
+ * 管理员那两张列表的翻页条。做法照抄消息列表那条，不新发明一个。
+ * 只有超过一页才出现——一共三条的时候摆一排翻页按钮是纯噪音。
+ */
+function pagerBar(id, total, offset, limit) {
+  if (total <= limit) return ''
+  return `<div class="card tight row" style="margin-top:10px">
+    <button class="ghost sm" id="${id}_prev" ${offset === 0 ? 'disabled' : ''}>上一页</button>
+    <span class="muted">${Math.floor(offset / limit) + 1} / ${Math.ceil(total / limit)} · 共 ${total} 条</span>
+    <button class="ghost sm" id="${id}_next" ${offset + limit >= total ? 'disabled' : ''}>下一页</button>
+  </div>`
+}
+
+function bindPager(id, offset, limit, go) {
+  const prev = $(`#${id}_prev`); if (prev) prev.onclick = () => go(Math.max(0, offset - limit))
+  const next = $(`#${id}_next`); if (next) next.onclick = () => go(offset + limit)
 }
 
 /**
@@ -4220,11 +4266,12 @@ async function paintSelfInvite() {
  * 它会原样发给每一个未登录的访客，当 HTML 用就等于开了一条从后台直通
  * 所有访客浏览器的注入路径。通知页那边同样只用 textContent。
  */
+let annOffset = 0
 async function paintAnnouncements() {
   const box = $('#anns')
   if (!box) return
   try {
-    const { announcements } = await api('/announcements')
+    const { announcements, total, limit } = await api(`/announcements?offset=${annOffset}`)
     box.innerHTML = announcements.length
       ? `<div class="list">${announcements.map((a) => `<div class="item">
           <div class="row">
@@ -4237,8 +4284,10 @@ async function paintAnnouncements() {
             <button class="ghost sm" data-ann-edit="${esc(a.id)}">编辑</button>
             <button class="danger sm" data-ann-del="${esc(a.id)}">删除</button>
           </div>
-        </div>`).join('')}</div>`
+        </div>`).join('')}</div>` + pagerBar('ann', total, annOffset, limit)
       : '<div class="muted">还没有公告。</div>'
+
+    bindPager('ann', annOffset, limit, (o) => { annOffset = o; paintAnnouncements() })
 
     for (const b of box.querySelectorAll('[data-ann-edit]')) {
       b.onclick = () => {
@@ -4401,6 +4450,7 @@ async function settings() {
 
         <h2 style="margin-top:22px">邀请码</h2>
         <div id="invites"><div class="loading">加载中…</div></div>
+        <input type="hidden" id="inv_edit">
         <label>备注（发给谁）</label>
         <input id="inv_note" placeholder="如 给小鱼">
         <div style="display:flex;gap:8px">
@@ -4429,7 +4479,11 @@ async function settings() {
         <label class="check"><input type="checkbox" id="inv_public"> 公开码（贴到「通知」页上，谁都看得见）</label>
         <div class="muted">公开码会显示在<b>未登录可达</b>的 /notice 页上——这是它的用途，不是疏漏。
         不勾就是私有码，只有你在这个列表里看得到。两种都加密落库，之后随时能再取回来。</div>
-        <div class="btnrow"><button id="inv_add" class="sm">生成邀请码</button></div>
+        <div class="muted" id="inv_ttlnote" hidden>编辑时「码本身多久失效」是<b>从现在起重新计时</b>，不是在原有效期上加。</div>
+        <div class="btnrow">
+          <button id="inv_add" class="sm">生成邀请码</button>
+          <button id="inv_reset" class="ghost sm" hidden>取消编辑</button>
+        </div>
         <div id="inv_err" class="err-text"></div>
         <div id="inv_new"></div>
       </div>
@@ -4559,21 +4613,37 @@ async function settings() {
         toast('已保存')
       } catch (e) { toast(e.message) }
     }
+    const resetInviteForm = () => {
+      $('#inv_edit').value = ''
+      $('#inv_note').value = ''
+      $('#inv_public').checked = false
+      $('#inv_add').textContent = '生成邀请码'
+      $('#inv_reset').hidden = true
+      $('#inv_ttlnote').hidden = true
+      $('#inv_err').textContent = ''
+    }
+    $('#inv_reset').onclick = resetInviteForm
+
     $('#inv_add').onclick = async () => {
       $('#inv_add').disabled = true
       $('#inv_err').textContent = ''
+      const hash = $('#inv_edit').value
+      const body = {
+        note: $('#inv_note').value.trim(),
+        days: $('#inv_days').value ? Number($('#inv_days').value) : undefined,
+        ttl_hours: Number($('#inv_ttl').value),
+        public: $('#inv_public').checked,
+      }
       try {
-        const r = await api('/invites', {
-          method: 'POST',
-          body: {
-            note: $('#inv_note').value.trim(),
-            days: $('#inv_days').value ? Number($('#inv_days').value) : undefined,
-            ttl_hours: Number($('#inv_ttl').value),
-            public: $('#inv_public').checked,
-          },
-        })
-        $('#inv_note').value = ''
-        showInvite(r, $('#inv_public').checked)
+        if (hash) {
+          await api(`/invites/${encodeURIComponent(hash)}`, { method: 'PUT', body })
+          toast('已保存')
+          resetInviteForm()
+        } else {
+          const r = await api('/invites', { method: 'POST', body })
+          showInvite(r, body.public)
+          $('#inv_note').value = ''
+        }
         paintInvites()
       } catch (e) { $('#inv_err').textContent = e.message }
       $('#inv_add').disabled = false

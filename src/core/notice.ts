@@ -39,6 +39,11 @@ export const PUBLIC_INVITE_LIMIT = 40
 /** 公告最多列多少条 */
 export const ANNOUNCE_LIMIT = 30
 
+/** 管理员那两张列表每页几条。邀请码与公告都会越积越长，一页摊完就没法用了 */
+export const ADMIN_PAGE = 10
+/** 「邀请朋友」那张卡里列出自己最近几个码 */
+export const SELF_INVITE_SHOWN = 10
+
 /**
  * 「今天」的起点。
  *
