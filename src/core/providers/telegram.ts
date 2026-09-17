@@ -91,7 +91,11 @@ export function buildText(msg: NotifyMessage, useSpoiler: boolean): string {
     // 标题就是全部信息，再套一层「来自:」只会让人找不到重点。
     // 也不模糊——这里面没有短信正文，模糊了反而要多点一下才看得见。
     lines.push(`<b>${esc(msg.title)}</b> · ${esc(time)}`)
-    if (msg.body) lines.push('', esc(msg.body))
+    if (msg.body) {
+      // 带凭证的告警照样要模糊：找回码和银行验证码是同一类东西
+      const shown = msg.sensitive && useSpoiler ? `<tg-spoiler>${esc(msg.body)}</tg-spoiler>` : esc(msg.body)
+      lines.push('', shown)
+    }
     return lines.join('\n')
   }
 

@@ -465,12 +465,14 @@ export class SqliteStore implements Store {
   async upsertChannel(c: ChannelRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO channels (id, type, name, config_enc, enabled, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        // 归属列必须写：漏了它，新建的渠道 user_id 是空串，
+        // 列表里查不到（作用域按 user_id 过滤），推送也永远发不出去
+        `INSERT INTO channels (id, user_id, type, name, config_enc, enabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET type=excluded.type, name=excluded.name,
-           config_enc=excluded.config_enc, enabled=excluded.enabled`,
+           config_enc=excluded.config_enc, enabled=excluded.enabled, user_id=excluded.user_id`,
       )
-      .run(c.id, c.type, c.name, c.config_enc, c.enabled ? 1 : 0, c.created_at)
+      .run(c.id, c.user_id, c.type, c.name, c.config_enc, c.enabled ? 1 : 0, c.created_at)
   }
 
   async deleteChannel(id: string, userId: string): Promise<void> {
@@ -488,12 +490,13 @@ export class SqliteStore implements Store {
   async upsertRule(r: RuleRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO rules (id, name, priority, enabled, match_json, action_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO rules (id, user_id, name, priority, enabled, match_json, action_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, priority=excluded.priority,
-           enabled=excluded.enabled, match_json=excluded.match_json, action_json=excluded.action_json`,
+           enabled=excluded.enabled, match_json=excluded.match_json,
+           action_json=excluded.action_json, user_id=excluded.user_id`,
       )
-      .run(r.id, r.name, r.priority, r.enabled ? 1 : 0, r.match_json, r.action_json, r.created_at)
+      .run(r.id, r.user_id, r.name, r.priority, r.enabled ? 1 : 0, r.match_json, r.action_json, r.created_at)
   }
 
   async deleteRule(id: string, userId: string): Promise<void> {
@@ -636,14 +639,14 @@ export class SqliteStore implements Store {
   async upsertTask(t: TaskRecord): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO tasks (id, name, enabled, device_id, to_number, content_enc, sim_slot, schedule_json, last_run_at, last_status, fail_count, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO tasks (id, user_id, name, enabled, device_id, to_number, content_enc, sim_slot, schedule_json, last_run_at, last_status, fail_count, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, enabled=excluded.enabled,
            device_id=excluded.device_id, to_number=excluded.to_number,
            content_enc=excluded.content_enc, sim_slot=excluded.sim_slot,
-           schedule_json=excluded.schedule_json`,
+           schedule_json=excluded.schedule_json, user_id=excluded.user_id`,
       )
-      .run(t.id, t.name, t.enabled ? 1 : 0, t.device_id, t.to_number, t.content_enc, t.sim_slot,
+      .run(t.id, t.user_id, t.name, t.enabled ? 1 : 0, t.device_id, t.to_number, t.content_enc, t.sim_slot,
         t.schedule_json, t.last_run_at, t.last_status, t.fail_count, t.created_at)
   }
 

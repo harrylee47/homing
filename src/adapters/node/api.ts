@@ -55,6 +55,8 @@ export interface ApiDeps {
   onUnknownIpLogin?: ((ip: string) => void) | undefined
   /** 口令被自助找回时通知本人的渠道。没有第二因素时这是唯一的事后检测手段 */
   onPasswordRecovered?: ((userId: string, ip: string) => void) | undefined
+  /** 把找回码发到本人自己的渠道。没配渠道时什么都不做——调用方不该知道结果 */
+  sendRecoveryCode?: ((userId: string, code: string) => void) | undefined
   /** 管理员重置了某人的口令时通知本人——这是他真能收到的东西，审计日志他看不到 */
   onPasswordReset?: ((userId: string, byName: string) => void) | undefined
   /** 立即执行一个计划任务（忽略排期），用于控制台的「立即测试」。 */
@@ -750,6 +752,107 @@ route('POST', '/api/auth/totp/disable', async ({ user, res, body, deps, ip }) =>
  * 他拿到你的新口令、能进你的账号。两害相权，这条更可控，且它是用户
  * 自己按「我要能自己找回」做出的选择。
  */
+/**
+ * 找回口令有两条路，按你自己选的安全级别走，不会互相削弱。
+ *
+ *  1. **绑了两步验证** → 用动态码直接换新口令（下面那条路由）。
+ *  2. **没绑，但配过推送渠道** → 往你自己的渠道发一个一次性找回码。
+ *  3. 两样都没有 → 只能请管理员重置。
+ *
+ * 第 2 条为什么算数：你的推送渠道**本来就在接收你的银行验证码**。
+ * 能打开那个 Telegram 或那台装着 Bark 的手机的人，早就看得到你全部的短信了——
+ * 往那里发一个找回码，没有新增任何暴露面。而它同时又是一个真实的
+ * 「你持有某个东西」的证明，因为渠道是你自己配的、还按过测试按钮。
+ *
+ * 反过来，**绑了两步验证的账号不走这条路**：他选择了更强的认证，
+ * 如果渠道也能重置口令，就等于把他的安全级别悄悄拉回到「控制渠道即可接管」。
+ * 每个人的账号按他自己选的那一级来。
+ */
+const RECOVERY_TTL_MS = 10 * 60 * 1000
+const RECOVERY_MAX_TRIES = 5
+const S_RECOVERY = 'recovery_pending'
+
+/** 找回码：8 位无歧义字符，约 10^12 种。要靠人从通知里抄过来，所以不用更长 */
+const generateRecoveryCode = (): string =>
+  Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map((b) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32])
+    .join('')
+
+/**
+ * 第一步：往本人自己的渠道发一个找回码。
+ *
+ * **无论账号存不存在、有没有渠道，回的都是同一句话**——否则这个免鉴权接口
+ * 就成了「哪些用户名是真的」「谁配了渠道」的查询器。
+ */
+route('POST', '/api/auth/recover/start', async ({ res, body, deps, ip }) => {
+  if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
+
+  const uniform = {
+    ok: true,
+    message: '如果这个账号存在、没有开启两步验证、并且配好了推送渠道，'
+      + '找回码已经发到那个渠道了（10 分钟内有效）。'
+      + '开了两步验证的账号请直接用动态码找回；两样都没有的只能请管理员重置。',
+  }
+
+  const acct = await deps.store.getUserByName(String((body as { name?: string })?.name ?? '').trim())
+  // 绑了两步验证的不走这条路：那会把他的安全级别拉回到「控制渠道即可接管」
+  if (!acct || !userActive(acct, now()) || acct.totp_secret) return json(res, 200, uniform)
+
+  const code = generateRecoveryCode()
+  await deps.store.setUserSetting(acct.id, S_RECOVERY, JSON.stringify({
+    hash: await hashToken(code),
+    expires_at: now() + RECOVERY_TTL_MS,
+    tries: 0,
+  }))
+  // 发不出去（没配渠道、渠道坏了）也回同一句话：成没成由渠道那边告诉他
+  void deps.sendRecoveryCode?.(acct.id, code)
+  await deps.store.audit({ user_id: acct.id, actor: acct.name, action: 'auth.recover_start', detail: null, ip, created_at: now() })
+  json(res, 200, uniform)
+}, false)
+
+/** 第二步：用收到的找回码换新口令。 */
+route('POST', '/api/auth/recover/finish', async ({ res, body, deps, ip }) => {
+  if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
+
+  const b = body as { name?: string; code?: string; password?: string }
+  const pwCheck = validatePassword(b?.password ?? '')
+  if (!pwCheck.ok) return json(res, 400, { error: pwCheck.error })
+
+  const fail = { error: '找回码不正确或已失效。它只有 10 分钟有效期，请重新获取一个' }
+  const acct = await deps.store.getUserByName((b?.name ?? '').trim())
+  if (!acct || !userActive(acct, now()) || acct.totp_secret) return json(res, 401, fail)
+
+  const raw = await deps.store.getUserSetting(acct.id, S_RECOVERY)
+  if (!raw) return json(res, 401, fail)
+  let pending: { hash: string; expires_at: number; tries: number }
+  try {
+    pending = JSON.parse(raw) as typeof pending
+  } catch {
+    return json(res, 401, fail)
+  }
+  if (pending.expires_at < now() || pending.tries >= RECOVERY_MAX_TRIES) {
+    await deps.store.setUserSetting(acct.id, S_RECOVERY, '')
+    return json(res, 401, fail)
+  }
+
+  if (!timingSafeEqual(await hashToken((b?.code ?? '').trim().toUpperCase()), pending.hash)) {
+    // 记次数：不记的话 10 分钟内可以无限猜
+    await deps.store.setUserSetting(acct.id, S_RECOVERY, JSON.stringify({ ...pending, tries: pending.tries + 1 }))
+    return json(res, 401, fail)
+  }
+
+  await deps.store.setUserSetting(acct.id, S_RECOVERY, '')
+  await deps.store.upsertUser({
+    ...acct,
+    password_hash: await withPasswordSlot(() => hashPassword(b!.password!)),
+  })
+  await deps.store.revokeAllSessions(acct.id)
+  await deps.store.audit({ user_id: acct.id, actor: acct.name, action: 'auth.recover', detail: '渠道找回码', ip, created_at: now() })
+  log.warn('口令已通过渠道找回码重置', { name: acct.name, ip })
+  void deps.onPasswordRecovered?.(acct.id, ip)
+  json(res, 200, { ok: true })
+}, false)
+
 route('POST', '/api/auth/recover', async ({ res, body, deps, ip }) => {
   if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
 

@@ -27,6 +27,14 @@ export interface NotifyMessage {
    * 漏填只能导致「多模糊了一条告警」，不能导致明文泄漏。
    */
   alert?: boolean | undefined
+  /**
+   * 正文里有凭证（找回码这类），即使是告警也要模糊。
+   *
+   * 告警默认不模糊，因为里面没有短信正文、模糊了反而要多点一下。
+   * 但找回码是**一次性口令**——它和银行验证码是同一类东西，
+   * 明文躺在 Telegram 的聊天记录里既是泄漏面，也正是会招来封号的那种内容。
+   */
+  sensitive?: boolean | undefined
   direction?: 'in' | 'out' | undefined
   /**
    * 已按用户设置的时区格式化好的时间。

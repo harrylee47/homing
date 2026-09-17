@@ -350,6 +350,27 @@ const apiDeps = {
     }).catch(() => { /* 告警失败不影响找回本身 */ })
   })(),
 
+  /**
+   * 把找回码发到本人自己的渠道。
+   *
+   * 这条通道算得上一个认证因素，是因为**它本来就在接收他的银行验证码**——
+   * 能打开那个 Telegram、那台装着 Bark 的手机的人，早就看得到他全部的短信了。
+   * 往那里发一个找回码没有新增暴露面，同时又证明了「他持有那个东西」。
+   */
+  sendRecoveryCode: (userId: string, code: string) => void (async () => {
+    const channels = await liveChannels(userId)
+    if (channels.length === 0) return
+    const { dispatch } = await import('../../core/notifier.js')
+    await dispatch(channels, {
+      title: '🔑 找回口令',
+      body: `找回码：${code}\n\n10 分钟内有效，用一次就失效。`
+        + `如果不是你本人在找回口令，说明有人知道你的用户名——不用理会，也不要把这串码给任何人。`,
+      // 一次性口令和银行验证码是同一类东西：在 Telegram 里必须模糊
+      alert: true, sensitive: true,
+      priority: 'high', code: null, eventId: '', occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
+    }).catch(() => { /* 发不出去就发不出去，接口那边一律回同一句话 */ })
+  })(),
+
   /** 管理员重置了某人的口令：通知本人。审计日志他看不到，推送他能收到 */
   onPasswordReset: (userId: string, byName: string) => void (async () => {
     const channels = await liveChannels(userId)
