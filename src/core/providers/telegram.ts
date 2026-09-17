@@ -12,6 +12,7 @@
  */
 import { z } from 'zod'
 import { ProviderError, type NotifyMessage, type Provider, type SendResult } from './types.js'
+import { describeFetchError } from '../neterror.js'
 
 export const TelegramConfig = z.object({
   bot_token: z.string().min(20).max(200),
@@ -53,7 +54,7 @@ export const telegramProvider: Provider<TelegramConfig> = {
       }),
       signal: AbortSignal.timeout(15_000),
     }).catch((e: unknown) => {
-      throw new ProviderError('telegram', `网络错误: ${String(e)}`)
+      throw new ProviderError('telegram', `网络错误: ${describeFetchError(e)}`)
     })
 
     if (!res.ok) {

@@ -28,36 +28,58 @@ import { migratedTemplate, missingDirection, missingSeedRules, SEED_RULES_VERSIO
 import { userActive } from '../../core/users.js'
 
 /**
- * 强制优先使用 IPv4。
+ * 优先使用 IPv4。
  *
  * Docker 默认网络没有 IPv6 出口，而 api.telegram.org 之类的域名同时返回
- * A 与 AAAA 记录。Node 18+ 默认 verbatim（按 DNS 返回顺序尝试），
- * 挑中 IPv6 就会立即失败——表现为时快时慢的 "fetch failed"，
- * 推送偶尔重试才成功、读取更新大概率失败。
+ * A 与 AAAA 记录。Node 18+ 默认 verbatim（按 DNS 返回顺序尝试）。
+ *
+ * **注意它管的是延迟，不是成败**——这一点曾经写反过。一条**立刻**失败的
+ * IPv6 地址排在前面是无害的（实测多付 0–6ms，Node 当即落到下一条）；
+ * 真正要命的是排在前面的地址**卡住**（黑洞路由），那要白等一整个
+ * attemptTimeout。而下面那条把 attemptTimeout 从 250ms 抬到了 3s，
+ * 也就是说排错顺序的代价从半秒变成三秒多——这条因此比以前更值钱，不是更冗余。
  *
  * 这是部署形态决定的，属于适配层的事，不放进 core。
  */
 setDefaultResultOrder('ipv4first')
 
 /**
- * 放宽 Happy Eyeballs 的「换一个地址族再试」等待：250ms → 3s。
+ * 把「放弃当前地址、改试下一个」的等待从 250ms 抬到 3s。
  *
- * 上面那条只管**顺序**，管不住并行回退。Node 20 起 `autoSelectFamily` 默认开启：
- * 按 RFC 8305 先连第一个地址，若 `autoSelectFamilyAttemptTimeout`
- * （默认 **250 毫秒**）内还没连上，就再并发去连下一个——也就是那条 AAAA。
- * 容器没有全局 IPv6 地址，这一发**立刻**失败，Node 随即判定「地址都试完了」
- * 抛 ETIMEDOUT，**连同那条还在握手、再过几毫秒就要成功的 IPv4 连接一起掐掉**。
+ * 上面那条只管顺序，管不住超时回退。Node 20 起 `autoSelectFamily` 默认开启，
+ * 但它**不是** RFC 8305 的并行竞速——socket 全程只有一个 handle，
+ * 同一时刻只有一次尝试在飞。`autoSelectFamilyAttemptTimeout`（默认 **250 毫秒**）
+ * 一到，Node 就把**还在握手、再过几毫秒就要成功的那条 IPv4** 直接 close 掉、
+ * 在它头上记一条合成的 ETIMEDOUT，**然后**才去试下一个地址——也就是那条 AAAA。
+ * 容器没有全局 IPv6 出口，这一发立刻 ENETUNREACH，地址耗尽，
+ * 抛 AggregateError（code 取首个子错误，即 ETIMEDOUT）。
  *
- * 250ms 是 RFC 8305 给同城/CDN 场景的建议值。实测东京的网关到
- * api.telegram.org（荷兰）建连 232–264ms，中位数正好压在 250 上：
- * 40 次新建连接失败 16 次，每次都卡在 252ms；把 autoSelectFamily 关掉则 40/40 成功。
- * 症状是「Telegram 时好时坏」——推送偶尔失败一条、Bot 每分钟掉一两次轮询，
- * 而重试又常常能成，最像网络抖动，所以极难往客户端身上想。
- * 同一台机器上跑的旧 Python 版 Bot 完全不受影响，更会把人往「是不是我们代码的锅」
- * 之外的方向带——它确实是我们的锅，只是在 Node 的默认值里。
+ * 所以这个值**不是保险丝，是这条链路唯一的开关**。调回 250ms 就等于恢复
+ * P(建连耗时 > 250ms) 那么大的失败率，别因为「反正还有并发竞速兜底」把它
+ * 调小或删掉——没有那个兜底。（实现见 Node 的 lib/net.js
+ * `internalConnectMultipleTimeout`。）
  *
- * 不直接关掉 autoSelectFamily：IPv4 真的不通的机器还要靠它回退到 IPv6。
- * 3 秒足够覆盖任何一次跨洲建连，又不至于让那种机器等太久。
+ * 实测（2026-09-17，东京的网关 → api.telegram.org 荷兰机房）：
+ * 建连 232–264ms，中位数正好压在 250 上。`net.connect` 各打 40 次新连接，
+ * 默认值失败 16 次、每次都卡在 252ms；抬到 3s 后 0 失败，且成功时的建连
+ * 耗时不变（中位仍是 250ms），不付延迟代价。
+ * 三条反证说明它确实不是竞速：失败时 `cause.errors` 是
+ * `[ETIMEDOUT/<IPv4>, ENETUNREACH/<IPv6>]`——ETIMEDOUT 记在 **IPv4** 头上，
+ * 是「放弃它」时合成的；成功时 `autoSelectFamilyAttemptedAddresses` 里
+ * **只有 IPv4**，AAAA 根本没被试过；而把死的 AAAA 排到第一位反而 10/10 成功
+ * （它立刻失败，计时器压根不参与）——**把能用的地址排在前面，恰恰是它被掐死的原因**。
+ *
+ * 症状极具迷惑性，值得记一笔：失败率是 40% 而不是 100%，看着像网络抖动；
+ * keep-alive 让手工 curl 和 fetch 循环全是 200（只有**新建连接**才中招）；
+ * 同一台机器上跑的旧 Python 版 Bot 完全不受影响（httpx 不走这套），
+ * 更会把人往「机房到 Telegram 的线路问题」上带。
+ *
+ * 代价由谁付：**完全没有 IPv4 路由的机器一分不付**（connect 立刻拿到
+ * ENETUNREACH，计时器不参与）。付这 3 秒的是另一种——有 IPv4 地址、
+ * 出口却被静默丢弃（黑洞而非 REJECT）、同时 IPv6 可用，比如国内路由下
+ * api.telegram.org 的 IPv4 路径被丢包而 IPv6 通。那种机器每条**新建**连接
+ * 多花 3 秒。仍然不直接关掉 autoSelectFamily：关掉之后 Node **只试第一个
+ * 地址**，多 A 记录的故障转移会一起没掉。
  */
 setDefaultAutoSelectFamilyAttemptTimeout(3000)
 

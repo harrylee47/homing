@@ -15,6 +15,7 @@
  */
 import { z } from 'zod'
 import { ProviderError, type Provider } from './types.js'
+import { describeFetchError } from '../neterror.js'
 import { audienceOf, encryptPayload, signVapid } from '../webpush.js'
 import { copyText, deepLink } from './deeplink.js'
 
@@ -93,7 +94,7 @@ export const webpushProvider: Provider<WebPushConfig> = {
       body: encrypted.slice().buffer as ArrayBuffer,
       signal: AbortSignal.timeout(15_000),
     }).catch((e: unknown) => {
-      throw new ProviderError('webpush', `网络错误: ${String(e)}`)
+      throw new ProviderError('webpush', `网络错误: ${describeFetchError(e)}`)
     })
 
     if (res.ok) return

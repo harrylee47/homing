@@ -126,7 +126,17 @@ export async function crossChannelAlert(
   }
 
   const detail = failed.map((f) => `${f.channelType}(${f.channelId}): ${f.error}`).join('; ')
-  await dispatch(healthy, {
+  /**
+   * 这里必须接返回值，不能挂 `.catch`。
+   *
+   * 曾经写的是 `dispatch(...).catch(e => log.error('告警本身也发送失败'))`——
+   * 那行日志从来没出现过，因为 `dispatch` 是 `Promise.all(sendWithRetry)`，
+   * 而 `sendWithRetry` 把 provider.send 整个包在 try/catch 里、每条路径都
+   * return 一个 DeliveryResult，**从不 reject**。于是「告警自己也发不出去」
+   * 这件事既不留审计、也没有一句专门的日志，只剩 sendWithRetry 里那条
+   * 泛泛的「渠道发送失败」——和普通推送失败长得一模一样，分不出来。
+   */
+  const results = await dispatch(healthy, {
     title: '⚠️ 渠道发送失败',
     body: `${context}\n${detail}`.slice(0, 500),
     alert: true,
@@ -134,5 +144,12 @@ export async function crossChannelAlert(
     code: null,
     eventId: '',
     occurredAt: Date.now(),
-  }, opts).catch((e: unknown) => log.error('告警本身也发送失败', { error: String(e) }))
+  }, opts)
+  const alertFailed = results.filter((r) => !r.ok)
+  if (alertFailed.length === results.length) {
+    log.error('告警本身也发送失败，用户不会收到任何提示', {
+      context,
+      channels: alertFailed.map((r) => `${r.channelType}(${r.channelId}): ${r.error}`),
+    })
+  }
 }

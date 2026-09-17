@@ -25,6 +25,7 @@ import type { Cipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
 import { dispatch, PROVIDERS, type ChannelConfig } from '../../core/notifier.js'
 import { createPairing, redeemPairing } from '../../core/pairing.js'
+import { describeFetchError } from '../../core/neterror.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
 import { SmsCommandConfig, type DownstreamFrame } from '../../core/protocol.js'
 import { extractCode, matchRule, render, RuleAction, RuleMatch, type Rule } from '../../core/rules.js'
@@ -1623,7 +1624,7 @@ route('POST', '/api/channels/telegram/discover-chat', async ({ user, res, body }
     r = await fetch(`https://api.telegram.org/bot${token}/getUpdates?limit=20`, {
       signal: AbortSignal.timeout(20_000),
     }).catch((e: unknown) => {
-      lastErr = e instanceof Error ? ((e.cause as { code?: string } | undefined)?.code ?? e.message) : String(e)
+      lastErr = describeFetchError(e)
       return null
     })
     if (r) break

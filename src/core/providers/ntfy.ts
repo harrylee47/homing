@@ -16,6 +16,7 @@
  */
 import { z } from 'zod'
 import { ProviderError, type Provider } from './types.js'
+import { describeFetchError } from '../neterror.js'
 import { copyText, deepLink } from './deeplink.js'
 
 export const NtfyConfig = z.object({
@@ -105,7 +106,7 @@ export const ntfyProvider: Provider<NtfyConfig> = {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(15_000),
     }).catch((e: unknown) => {
-      throw new ProviderError('ntfy', `网络错误: ${String(e)}`)
+      throw new ProviderError('ntfy', `网络错误: ${describeFetchError(e)}`)
     })
 
     if (!res.ok) {

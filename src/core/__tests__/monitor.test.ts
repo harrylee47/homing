@@ -7,10 +7,15 @@ import type { NotifyMessage, Provider } from '../providers/types.js'
 import { MemoryStore } from './fakes.js'
 
 const sent: NotifyMessage[] = []
+/** 置为 true 时这个渠道一直发不出去，用来验「告警发失败后还会不会再告警」 */
+let stubBroken = false
 const stub: Provider<Record<string, never>> = {
   type: 'monitorstub',
   configSchema: z.object({}),
-  async send(_c, msg) { sent.push(msg) },
+  async send(_c, msg) {
+    sent.push(msg)
+    if (stubBroken) throw new Error('渠道挂了')
+  },
 }
 registerProvider(stub as unknown as Provider<never>)
 
@@ -31,7 +36,36 @@ describe('掉线告警', () => {
   beforeEach(() => {
     store = new MemoryStore()
     sent.length = 0
+    stubBroken = false
     resetAlertState()
+  })
+
+  /**
+   * 去重集合必须等告警**真的送出去**才记。
+   *
+   * 原来 `alerted.add(d.id)` 排在 notify() 之前，而 notify 内部的 dispatch
+   * 从不抛——于是渠道故障时这台设备在进程活着的这几周里再也不会告警。
+   * 而「告警发不出去」与「设备离线」往往同源（都在家里那条网线上），
+   * 这个洞恰好在最需要告警的时候张开。
+   */
+  it('告警一条都没发出去时，下一轮还会再试', async () => {
+    device()
+    const tick = async () => {
+      const before = sent.length
+      await checkDevices({ store, channels, online: () => [], now: () => NOW })
+      return sent.length - before
+    }
+
+    // 渠道挂着：发了（会重试几次），但不能因此记进去重集合
+    stubBroken = true
+    expect(await tick()).toBeGreaterThan(0)
+
+    // 渠道恢复：这一轮必须还会再发 —— 说明上一轮没被记成「已告警」
+    stubBroken = false
+    expect(await tick()).toBe(1)
+
+    // 这一条送到了，从此闭嘴
+    expect(await tick()).toBe(0)
   })
 
   it('离线超过阈值时告警', async () => {

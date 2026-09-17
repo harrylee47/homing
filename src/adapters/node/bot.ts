@@ -8,6 +8,7 @@
  */
 import { COMMANDS, handleCallback, handleCommand, handleReply, handleText, type BotApi, type BotMessage } from '../../core/bot.js'
 import { log } from '../../core/logging.js'
+import { describeFetchError } from '../../core/neterror.js'
 import { threadKey } from '../../core/thread.js'
 import type { Store } from '../../core/store.js'
 
@@ -129,12 +130,16 @@ export class TelegramBot {
           await sleep(60_000)
           continue
         }
-        // 网络抖动、Telegram 限流走这里；退避后继续，不要放弃轮询。
-        // 带上 cause：fetch 的顶层错误一律是 "fetch failed"，
-        // 真正的原因（ENETUNREACH / ETIMEDOUT / ECONNRESET）在 cause 里，
-        // 不打出来就只能靠猜。
-        const cause = e instanceof Error ? (e.cause as { code?: string } | undefined)?.code : undefined
-        log.warn('Bot 轮询失败', { error: String(e), cause: cause ?? null })
+        /**
+         * 网络抖动、Telegram 限流走这里；退避后继续，不要放弃轮询。
+         *
+         * 一定要用 describeFetchError：fetch 的顶层错误一律是 "fetch failed"，
+         * 而真正的原因在 `cause` 里。这里曾经只取 `cause.code`，于是
+         * 多地址失败时打出来的是一个光秃秃的 ETIMEDOUT——`cause.errors[]`
+         * 里那句 `ENETUNREACH/<IPv6 地址>`（一眼就能定位问题）被丢掉了。
+         * 2026-09-17 为此查了两个小时。
+         */
+        log.warn('Bot 轮询失败', { error: describeFetchError(e) })
         await sleep(5000)
       }
     }

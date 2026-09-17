@@ -10,6 +10,7 @@
  */
 import { z } from 'zod'
 import { ProviderError, type Provider } from './types.js'
+import { describeFetchError } from '../neterror.js'
 import { copyText, deepLink } from './deeplink.js'
 
 // 深链与「复制什么」和 ntfy 共用一份实现，见 deeplink.ts。
@@ -114,7 +115,7 @@ export const barkProvider: Provider<BarkConfig> = {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(15_000),
     }).catch((e: unknown) => {
-      throw new ProviderError('bark', `网络错误: ${String(e)}`)
+      throw new ProviderError('bark', `网络错误: ${describeFetchError(e)}`)
     })
 
     if (!res.ok) {

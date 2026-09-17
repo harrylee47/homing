@@ -121,17 +121,23 @@ export async function checkDevices(deps: MonitorDeps): Promise<void> {
     if (offlineSec < OFFLINE_ALERT_SEC) continue
     if (alerted.has(d.id)) continue
 
-    alerted.add(d.id)
     log.error('设备离线超过阈值', { device_id: d.id, offline_sec: offlineSec })
-    await deps.store.audit({
-      actor: 'monitor', action: 'device.offline',
-      detail: `${d.id} 离线 ${offlineSec}s`, ip: null, created_at: now,
-    })
-    await notify(deps, d.user_id, {
+    const delivered = await notify(deps, d.user_id, {
       title: '⚠️ 设备离线',
       body: `${d.name} 已离线 ${Math.floor(offlineSec / 60)} 分钟。` +
         `期间的短信会暂存在设备本地，恢复后自动补传；但若设备关机或断电，验证码将无法送达。`,
       priority: 'high',
+    })
+    // 送出去了才算「已告警」。发失败就不记，下一轮再试——
+    // 代价是渠道恢复后可能多发一条，而另一头的代价是永远不发。
+    if (!delivered) {
+      log.warn('离线告警一条都没发出去，下一轮重试', { device_id: d.id })
+      continue
+    }
+    alerted.add(d.id)
+    await deps.store.audit({
+      actor: 'monitor', action: 'device.offline',
+      detail: `${d.id} 离线 ${offlineSec}s`, ip: null, created_at: now,
     })
   }
 }
@@ -167,17 +173,19 @@ async function checkBattery(
   // 低电量。充电中不告警——正在充就说明人已经知道了
   if (cfg.low > 0 && d.battery <= cfg.low && d.charging !== true) {
     if (!batteryAlerted.has(lowKey)) {
-      batteryAlerted.add(lowKey)
-      await deps.store.audit({
-        actor: 'monitor', action: 'device.battery_low',
-        detail: `${d.id} ${d.battery}%`, ip: null, created_at: deps.now?.() ?? Date.now(),
-      })
-      await notify(deps, d.user_id, {
+      const delivered = await notify(deps, d.user_id, {
         title: '🪫 设备电量低',
         body: `${d.name} 仅剩 ${d.battery}% 且未在充电。电量耗尽关机后，验证码将完全收不到，` +
           `而且不会有任何告警——因为告警也要靠它上报。请尽快接上电源。`,
         priority: 'high',
       })
+      if (delivered) {
+        batteryAlerted.add(lowKey)
+        await deps.store.audit({
+          actor: 'monitor', action: 'device.battery_low',
+          detail: `${d.id} ${d.battery}%`, ip: null, created_at: deps.now?.() ?? Date.now(),
+        })
+      }
     }
   } else if (d.battery > cfg.low + 5 || d.charging === true) {
     // 留 5% 回差，避免在阈值附近反复告警
@@ -187,27 +195,36 @@ async function checkBattery(
   // 充满提醒：长期满电对锂电池不友好，而这台机器是常年插电的
   if (cfg.full > 0 && d.charging === true && d.battery >= cfg.full) {
     if (!batteryAlerted.has(fullKey)) {
-      batteryAlerted.add(fullKey)
-      await notify(deps, d.user_id, {
+      if (await notify(deps, d.user_id, {
         title: '🔌 可以拔掉电源了',
         body: `${d.name} 已充到 ${d.battery}%。长期保持满电会加速电池老化，建议拔掉电源。`,
         priority: 'normal',
-      })
+      })) {
+        batteryAlerted.add(fullKey)
+      }
     }
   } else if (d.charging !== true || d.battery < cfg.full - 5) {
     batteryAlerted.delete(fullKey)
   }
 }
 
+/**
+ * 发一条告警，**返回它是否真的送出去了**。
+ *
+ * 返回值不是可有可无的：去重集合必须等这个值为 true 才记，否则就会出现
+ * 「告警发失败 → 但已经记进去重集合 → 这台设备在进程活着的这几周里
+ * 再也不会告警」。而告警发不出去与设备离线往往同源（都在家里那条网线上），
+ * 也就是说这个洞恰好在最需要告警的时候张开。
+ */
 async function notify(
   deps: MonitorDeps,
   userId: string,
   msg: { title: string; body: string; priority: 'normal' | 'high' },
-): Promise<void> {
+): Promise<boolean> {
   const channels = await deps.channels(userId)
   if (channels.length === 0) {
     log.error('没有可用渠道，离线告警无法送出', { title: msg.title })
-    return
+    return false
   }
   const results = await dispatch(channels, {
     ...msg, alert: true, code: null, eventId: '', occurredAt: Date.now(),
@@ -217,4 +234,5 @@ async function notify(
   if (failed.length > 0 && failed.length < results.length) {
     await crossChannelAlert(channels, failed, '离线告警发送失败')
   }
+  return failed.length < results.length
 }
