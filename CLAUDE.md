@@ -261,6 +261,47 @@ OkHttp 在收到对端关闭帧时先调 `onClosing`，**客户端必须回应�
 **这个包没有任何原生库**（`unzip -l` 看 `lib/` 是空的），所以 armeabi-v7a /
 arm64-v8a / x86 / x86_64 全都装得上，不存在 ABI 不匹配那一类问题。
 
+## 设了锁屏密码的机器做不到「通电即恢复」，而且这不是我们能修的
+
+2026-09-18 在 Android 14 模拟器上实测了一整轮，结论是**三条路全堵**，
+所以「不做 direct boot」不再只是「加了会崩」，而是「加了也换不来任何东西」。
+
+前提：FBE（`ro.crypto.type=file`，Android 10 起出厂设备一律如此）。
+设了 PIN / 图案 / 密码之后，开机到有人解锁之前，系统处于 `RUNNING_LOCKED`，
+CE 存储（`/data/user/0/…`）整个不存在。
+
+实测到的三件事：
+
+1. **`LOCKED_BOOT_COMPLETED` 确实能把 directBootAware 的应用拉起来**，
+   而且那时候**网络是通的**。所以「解锁前连上网关」这一半是能做到的。
+2. **但锁定期间到达的短信，`SMS_RECEIVED` 一次都不会派发给我们**——
+   哪怕应用和接收器都标了 `directBootAware`。系统把它**押到解锁之后**才发：
+   实测 06:31:12 收到短信时接收器毫无动静，06:31:23 一解锁立刻就调用了，
+   `unlocked=true`。消息没丢，但要等人。
+3. **绕开广播直接盯短信库也不行。** `ContentObserver` 注册得上（不报错），
+   但一查就抛
+   `Cannot open database '/data/user/0/com.android.providers.telephony/databases/mmssms.db'
+   … Directory doesn't exist`——面向普通应用的那个 `content://sms` 走的是 CE 路径。
+   （telephony 包自己是 `DEFAULT_TO_DEVICE_PROTECTED_STORAGE`、数据在
+   `/data/user_de/0/…`，锁定期间它确实在写库，但那一份我们读不到。）
+
+**所以做 direct boot 的净效果是：控制台上显示「在线」，而一条验证码都不会来。**
+那正是这个项目最忌讳的那种静默失效——比老老实实显示「离线」更糟。
+
+**答案是运维层面的：那台常驻手机不要设锁屏凭证。** 实测清掉 PIN 之后重启、
+全程零干预：立刻 `RUNNING_UNLOCKED`、CE 可用、BootReceiver 生效、
+Agent 自己起来。这也正是家里那台白牌机一直以来的状态
+（「没设锁屏」那一条碰巧避开了这整类问题）。
+
+代价要说清楚：不设锁屏 = 拿到这台手机的人能直接翻短信。但它换来的是
+「停电重启之后不用人跑过去」，而这台机器的全部意义就是无人值守。
+真要设锁屏，就得接受「每次重启后得有人去解一次锁，在那之前收不到任何验证码」。
+
+连带一条已经写在别处、这里再钉一次的：**被 force-stop 过、之后没人手动打开过的
+应用收不到任何广播**（`stopped=true`，`FLAG_EXCLUDE_STOPPED_PACKAGES`）。
+`adb install -r` 之后如果不真正启动一次，`BOOT_COMPLETED` 也不会来——
+上面那轮实验第一次就栽在这上面，白跑了一个重启周期。
+
 ## 定位
 
 按需查询，绝不做持续定位——持续 GPS 显著耗电，而目标机本来就在跟电量较劲。
