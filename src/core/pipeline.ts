@@ -175,8 +175,12 @@ export async function processEvent(
       consoleUrl: deps.baseUrl ?? null,
       deviceName: showDevice ? deviceName : null,
       // 渠道私有选项按类型分组带下去。两个渠道各自只读自己那一段
-      ...(action.bark || action.ntfy
-        ? { options: { ...(action.bark ? { bark: action.bark } : {}), ...(action.ntfy ? { ntfy: action.ntfy } : {}) } }
+      ...(action.bark || action.ntfy || action.webpush
+        ? { options: {
+            ...(action.bark ? { bark: action.bark } : {}),
+            ...(action.ntfy ? { ntfy: action.ntfy } : {}),
+            ...(action.webpush ? { webpush: action.webpush } : {}),
+          } }
         : {}),
     }
 
@@ -236,11 +240,12 @@ function mergeActions(matched: Rule[]): RuleAction {
      */
     ...pickChannelOptions(matched, 'bark'),
     ...pickChannelOptions(matched, 'ntfy'),
+    ...pickChannelOptions(matched, 'webpush'),
   }
 }
 
 /** 取第一条配了该字段的规则的值；都没配就什么都不加（保持 undefined 而不是 null） */
-function pickChannelOptions<K extends 'bark' | 'ntfy'>(
+function pickChannelOptions<K extends 'bark' | 'ntfy' | 'webpush'>(
   matched: Rule[], key: K,
 ): Pick<RuleAction, K> | Record<string, never> {
   const hit = matched.find((r) => r.action[key] !== undefined)

@@ -1983,6 +1983,7 @@ function ruleEditor(rule, chs, devs = []) {
     priority: 'default', tags: [], copy_mode: 'code', deep_link: 'event',
     ...(r.action.ntfy || {}),
   }
+  const webpush = { show_code: true, deep_link: 'event', ...(r.action.webpush || {}) }
 
   render(`
     <h1>${rule ? '编辑规则' : '新建规则'}</h1>
@@ -2101,6 +2102,19 @@ function ruleEditor(rule, chs, devs = []) {
           <option value="event"${bark.deep_link === 'event' ? ' selected' : ''}>消息详情</option>
           <option value="compose"${bark.deep_link === 'compose' ? ' selected' : ''}>预填回复</option>
           <option value="none"${bark.deep_link === 'none' ? ' selected' : ''}>不跳转</option>
+        </select>
+      </div>` : ''}
+    ${chs.some((c) => c.type === 'webpush') ? `
+      <h2>浏览器通知行为</h2>
+      <div class="card">
+        <div class="muted">浏览器通知上<b>没有复制按钮</b>——Service Worker 拿不到剪贴板。
+        验证码只能放进正文。对非浏览器渠道无影响。</div>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="w_code" style="width:auto"${webpush.show_code ? ' checked' : ''}><span>正文开头带上提取出的验证码</span></label>
+        <label>点击通知跳转到</label>
+        <select id="w_link">
+          <option value="event"${webpush.deep_link === 'event' ? ' selected' : ''}>消息详情</option>
+          <option value="compose"${webpush.deep_link === 'compose' ? ' selected' : ''}>预填回复</option>
+          <option value="none"${webpush.deep_link === 'none' ? ' selected' : ''}>不跳转</option>
         </select>
       </div>` : ''}
     ${chs.some((c) => c.type === 'ntfy') ? `
@@ -2284,6 +2298,9 @@ function ruleEditor(rule, chs, devs = []) {
               deep_link: $('#n_link').value,
             }
           : (r.action.ntfy ?? undefined),
+        webpush: $('#w_link')
+          ? { show_code: $('#w_code').checked, deep_link: $('#w_link').value }
+          : (r.action.webpush ?? undefined),
       },
     }
   }
@@ -2450,7 +2467,7 @@ async function channels() {
           <div class="row">
             <div class="col grow">
               <b>${esc(c.name)}</b>
-              <span class="muted">${esc(c.type)}${c.enabled ? '' : ' · 已停用'}</span>
+              <span class="muted">${c.type === 'webpush' ? '浏览器通知' : esc(c.type)}${c.enabled ? '' : ' · 已停用'}</span>
             </div>
             <div style="display:flex;gap:6px">
               <button class="ghost sm" data-edit="${esc(c.id)}">编辑</button>
@@ -2467,6 +2484,7 @@ async function channels() {
           <option value="ntfy">ntfy（安卓，验证码首选）</option>
           <option value="telegram">Telegram</option>
           <option value="webhook">Webhook</option>
+          <!-- 没有 webpush：订阅信息来自浏览器，手填不出来，只能从「设置 → 浏览器通知」订阅 -->
         </select>
         <label>名称</label><input id="name" value="">
         <div id="fields"></div>
@@ -2729,6 +2747,8 @@ function channelEditor(c, bark) {
       { key: 'icon', label: '通知图标（PNG/JPEG 的公网地址）', secret: false, placeholder: iconUrl(), clearable: true },
     ],
     webhook: [{ key: 'url', label: '目标地址', secret: false }],
+    // 订阅信息由浏览器生成，手改只会改坏。要换就去「设置 → 浏览器通知」重订
+    webpush: [],
   }
   const fields = SECRET_FIELDS[c.type] ?? []
 
@@ -3199,6 +3219,156 @@ async function paintUsers() {
  *    但那要 Service Worker + VAPID，是另一摊；而且 Web Push 做不到
  *    Bark 的长按复制，替代不了它。
  */
+/**
+ * 浏览器通知（Web Push）。
+ *
+ * 定位要说清楚，否则人会拿它当 Bark 用然后失望。两条限制是硬的：
+ *
+ * ① **通知上没法一键复制验证码。** Service Worker 里没有 navigator.clipboard，
+ *    Clipboard API 又要求文档处于聚焦状态，通知点击两个条件都不满足。
+ *    所以验证码只能放进正文让人看着抄，或者点进去复制。
+ * ② **Chrome / Firefox 把浏览器完全退出就收不到。** SW 只在浏览器进程
+ *    还活着时才会被唤起。macOS Safari 走 APNs，关掉也能收。
+ *
+ * 订阅本身是一条渠道，所以规则、测试按钮、按用户隔离全都直接复用。
+ */
+async function paintWebPush() {
+  const box = $('#webpush')
+  if (!box) return
+
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window
+  if (!supported) {
+    box.innerHTML = `<p class="muted" style="margin:0">这个浏览器不支持 Web Push。
+      iPhone 上要先把控制台<b>添加到主屏幕</b>，从主屏图标打开才能订阅——Safari 标签页里不行。</p>`
+    return
+  }
+
+  const perm = Notification.permission
+  const reg = await navigator.serviceWorker.getRegistration().catch(() => null)
+  const sub = reg ? await reg.pushManager.getSubscription().catch(() => null) : null
+
+  const limits = `<p class="muted" style="font-size:12px;margin:10px 0 0">
+    两条限制：通知上<b>没有「复制」按钮</b>（浏览器不给 Service Worker 访问剪贴板），
+    验证码放在正文里，点通知会打开那条消息。
+    Chrome、Firefox 上<b>把浏览器完全退出就收不到</b>；macOS 的 Safari 关掉也能收。</p>`
+
+  if (perm === 'denied') {
+    box.innerHTML = `<p class="muted" style="margin:0">通知权限被拒绝了。
+      要用的话去浏览器的网站设置里把这个站点的通知改成「允许」，再回来订阅。</p>` + limits
+    return
+  }
+
+  if (sub) {
+    /**
+     * 浏览器有订阅 ≠ 真的收得到。
+     *
+     * 两者是两套状态：订阅在浏览器里，而「往哪推」在服务端的渠道表里。
+     * 服务端那条被删掉、或者当初订阅时那次 API 调用失败了，浏览器这边
+     * 照样显示「已订阅」——而实际上一条都不会到。这是个纯粹的静默失败。
+     *
+     * 所以每次进来都把订阅重新登记一次（服务端按 endpoint 去重，是幂等的），
+     * 用这一次调用的成败来决定显示什么，而不是只看浏览器。
+     */
+    const j = sub.toJSON()
+    let reg2 = null
+    try {
+      reg2 = await api('/push/subscribe', {
+        method: 'POST',
+        body: { endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, label: browserLabel() },
+      })
+    } catch (e) {
+      box.innerHTML = `<div class="notice">这个浏览器订阅过，但<b>服务端没登记上</b>，
+        所以推送不会到达。刷新页面重试，或者退订后重新订阅一次。</div>
+        <div class="err-text">${esc(e.message)}</div>
+        <div class="btnrow" style="margin-top:10px">
+          <button class="danger sm" id="wp_off">退订这个浏览器</button>
+        </div>` + limits
+      $('#wp_off').onclick = async () => {
+        try { await sub.unsubscribe() } catch { /* 已经没了也算成功 */ }
+        void paintWebPush()
+      }
+      return
+    }
+
+    box.innerHTML = `<div class="row">
+        <div class="col grow">
+          <span><b>这个浏览器已订阅</b></span>
+          <span class="muted">它在「渠道」页里是一条渠道，可以点测试、也能被规则选中。</span>
+        </div>
+        <span class="badge ${reg2.enabled ? 'ok' : 'plain'}">${reg2.enabled ? '已订阅' : '渠道已停用'}</span>
+      </div>
+      ${reg2.enabled ? '' : '<div class="notice" style="margin-top:8px">这条渠道在渠道页里被停用了，停用期间收不到通知。</div>'}
+      <div class="btnrow" style="margin-top:10px">
+        <a href="/channels"><button class="ghost sm">去渠道页</button></a>
+        <button class="danger sm" id="wp_off">退订这个浏览器</button>
+      </div>` + limits
+    $('#wp_off').onclick = async () => {
+      if (!confirm('退订之后这个浏览器就不再收到通知。渠道页里那条记录要自己删。')) return
+      try { await sub.unsubscribe() } catch { /* 已经没了也算成功 */ }
+      toast('已退订')
+      void paintWebPush()
+    }
+    return
+  }
+
+  box.innerHTML = `<p class="muted" style="margin:0">让验证码直接弹在这台电脑（或这个浏览器）的通知里，
+    人在电脑前时不用摸手机。</p>
+    <div class="btnrow" style="margin-top:10px"><button class="sm" id="wp_on">在这个浏览器上订阅</button></div>
+    <div class="err-text" id="wp_err"></div>` + limits
+
+  $('#wp_on').onclick = async () => {
+    const btn = $('#wp_on')
+    btn.disabled = true
+    $('#wp_err').textContent = ''
+    try {
+      // 权限弹窗必须由真实的用户手势触发，不能在页面加载时自动调
+      const p = await Notification.requestPermission()
+      if (p !== 'granted') throw new Error('没有拿到通知权限')
+
+      const registration = await navigator.serviceWorker.register('/sw.js')
+      await navigator.serviceWorker.ready
+      const { key } = await api('/push/key')
+      const s = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64uToBytes(key),
+      })
+      const j = s.toJSON()
+      await api('/push/subscribe', {
+        method: 'POST',
+        body: {
+          endpoint: j.endpoint,
+          p256dh: j.keys.p256dh,
+          auth: j.keys.auth,
+          label: browserLabel(),
+        },
+      })
+      toast('已订阅，去渠道页点一下测试')
+      void paintWebPush()
+    } catch (e) {
+      $('#wp_err').textContent = e.message
+      btn.disabled = false
+    }
+  }
+}
+
+/** applicationServerKey 只收 Uint8Array，不认 base64url 字符串 */
+function b64uToBytes(s) {
+  const pad = s.replace(/-/g, '+').replace(/_/g, '/')
+  const bin = atob(pad + '='.repeat((4 - (pad.length % 4)) % 4))
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0))
+}
+
+/** 给这条订阅起个人认得出的名字——一个人可能在好几个浏览器上订阅 */
+function browserLabel() {
+  const ua = navigator.userAgent
+  const os = /iPhone|iPad/.test(ua) ? 'iPhone' : /Android/.test(ua) ? '安卓'
+    : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : ''
+  const br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome'
+    : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : '浏览器'
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
+  return [os, br, standalone ? '主屏' : ''].filter(Boolean).join(' ')
+}
+
 function paintA2HS() {
   const box = $('#a2hs')
   if (!box) return
@@ -3564,6 +3734,9 @@ async function settings() {
     <div id="battery"></div>
     <div id="smscmd"></div>
 
+    <h2>浏览器通知</h2>
+    <div class="card" id="webpush"></div>
+
     <h2>装到主屏幕</h2>
     <div class="card" id="a2hs"></div>
 
@@ -3603,6 +3776,7 @@ async function settings() {
 
   void paintTotp()
   paintA2HS()
+  void paintWebPush()
 
   if (me?.role === 'admin') {
     void paintUsers()

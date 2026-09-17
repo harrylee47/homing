@@ -7,6 +7,7 @@
 import { z } from 'zod'
 import { BarkOptions } from './providers/bark.js'
 import { NtfyOptions } from './providers/ntfy.js'
+import { WebPushOptions } from './providers/webpush.js'
 import { EventKind } from './protocol.js'
 
 // ── 匹配条件 ────────────────────────────────────────────────
@@ -103,6 +104,8 @@ export const RuleAction = z.object({
    * 表现一致——一个人同时用 iPhone 和安卓时，不该看到两种行为。
    */
   ntfy: NtfyOptions.optional(),
+  /** 浏览器通知专属字段。这里没有剪贴板，所以只有「跳哪」和「正文里带不带码」 */
+  webpush: WebPushOptions.optional(),
 })
 export type RuleAction = z.infer<typeof RuleAction>
 

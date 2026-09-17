@@ -428,7 +428,10 @@ export class SqliteStore implements Store {
   }
 
   async deleteEvent(id: string, userId: string): Promise<boolean> {
-    const r = this.db.prepare('DELETE FROM events WHERE id = ?').run(id)
+    // user_id 必须进 SQL。签名带了参数、类型检查通过、实现却没用上——
+    // 这正是 CLAUDE.md 那条「作用域是类型强制的」防不住的形状，
+    // 所以同目录的每个 delete 都要照着 deleteOutbound 的写法核一遍
+    const r = this.db.prepare('DELETE FROM events WHERE id = ? AND user_id = ?').run(id, userId)
     return Number(r.changes) > 0
   }
 

@@ -13,7 +13,9 @@ import {
   LOGIN_LOCKOUT_MS, LOGIN_MAX_ATTEMPTS, SESSION_TTL_MS, TRUSTED_SESSION_TTL_MS,
   totpUri, validatePassword, verifyPassword, verifyTotp,
 } from '../../core/auth.js'
-import { hashToken, timingSafeEqual } from '../../core/crypto.js'
+import { fromHex, hashToken, timingSafeEqual, toHex } from '../../core/crypto.js'
+import { generateVapidKeys, type VapidKeys } from '../../core/webpush.js'
+import { WebPushConfig } from '../../core/providers/webpush.js'
 import type { Cipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
 import { dispatch, PROVIDERS, type ChannelConfig } from '../../core/notifier.js'
@@ -1592,6 +1594,90 @@ route('DELETE', '/api/channels/:id', async ({ user, res, params, deps, ip }) => 
     detail: c ? `${c.type}:${c.name}` : params.id!, ip, created_at: now(),
   })
   json(res, 200, { ok: true })
+})
+
+/**
+ * 浏览器通知（Web Push）。
+ *
+ * 订阅本身就是一条渠道：这样规则、测试按钮、按用户隔离全都直接复用，
+ * 不需要另开一套。一个浏览器一条，删掉这条渠道就等于退订。
+ */
+const S_VAPID = 'vapid_keys'
+
+/**
+ * 这台网关的 VAPID 密钥对，首次用到时生成。
+ *
+ * 私钥加密落库（和渠道配置同一把 DEK）。公钥要交给浏览器当
+ * applicationServerKey——订阅在创建那一刻就和它绑死了，所以**不能换**：
+ * 换了之后老订阅仍然只认老公钥，而我们把公钥连同订阅一起存在渠道配置里，
+ * 所以换了也不会把老订阅弄坏。
+ */
+async function vapidKeys(deps: ApiDeps): Promise<VapidKeys> {
+  const raw = await deps.store.getSetting(S_VAPID)
+  if (raw) {
+    try { return JSON.parse(await deps.cipher.decrypt(fromHex(raw))) as VapidKeys } catch { /* 坏了就重生成 */ }
+  }
+  const keys = await generateVapidKeys()
+  await deps.store.setSetting(S_VAPID, toHex(await deps.cipher.encrypt(JSON.stringify(keys))))
+  log.info('已生成 VAPID 密钥对')
+  return keys
+}
+
+/** 浏览器订阅前要先拿到公钥。只回公钥，不回私钥 */
+route('GET', '/api/push/key', async ({ res, deps }) => {
+  json(res, 200, { key: (await vapidKeys(deps)).publicKey })
+})
+
+/**
+ * 登记一个浏览器订阅。
+ *
+ * 同一个 endpoint 重复订阅是常事（刷新页面、重新授权），按 endpoint 去重，
+ * 否则渠道列表会被同一个浏览器塞满，而且每条消息推好几遍。
+ */
+route('POST', '/api/push/subscribe', async ({ user, res, body, deps, ip }) => {
+  const b = body as { endpoint?: string; p256dh?: string; auth?: string; label?: string }
+  const keys = await vapidKeys(deps)
+  const base = deps.baseUrl?.replace(/\/$/, '')
+  const cfg = {
+    endpoint: b.endpoint, p256dh: b.p256dh, auth: b.auth,
+    label: (b.label ?? '').slice(0, 64) || null,
+    vapid_public: keys.publicKey, vapid_private: keys.privateKey,
+    // VAPID 的 sub 必须是 mailto: 或 https:，推送服务会校验
+    subject: base?.startsWith('https://') ? base : 'mailto:admin@localhost',
+  }
+  const parsed = WebPushConfig.safeParse(cfg)
+  if (!parsed.success) {
+    return json(res, 400, { error: '订阅信息不完整', detail: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) })
+  }
+
+  // 同一个浏览器重复订阅：覆盖，不新建
+  for (const c of await deps.store.listChannels(user.id)) {
+    if (c.type !== 'webpush') continue
+    try {
+      const old = JSON.parse(await deps.cipher.decrypt(c.config_enc)) as { endpoint?: string }
+      if (old.endpoint !== cfg.endpoint) continue
+      // 只更新配置，**不动 enabled**：界面每次进设置页都会重登记一次来自愈，
+      // 顺手把用户手动停用的渠道又打开就太意外了
+      await deps.store.upsertChannel({
+        ...c, name: cfg.label ?? c.name,
+        config_enc: await deps.cipher.encrypt(JSON.stringify(parsed.data)),
+      })
+      return json(res, 200, { id: c.id, replaced: true, enabled: c.enabled })
+    } catch { /* 解不开的老配置跳过 */ }
+  }
+
+  const id = newId('ch')
+  await deps.store.upsertChannel({
+    id, user_id: user.id, type: 'webpush',
+    name: cfg.label ?? '浏览器通知',
+    config_enc: await deps.cipher.encrypt(JSON.stringify(parsed.data)),
+    enabled: true, created_at: now(),
+  })
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'push.subscribe',
+    detail: cfg.label, ip, created_at: now(),
+  })
+  json(res, 200, { id, replaced: false, enabled: true })
 })
 
 /**

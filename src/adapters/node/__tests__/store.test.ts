@@ -140,3 +140,98 @@ describe('每一种记录写进去之后归属还在', () => {
     expect((await store.getSession('h'))!.revoked).toBe(true)
   })
 })
+
+/**
+ * 「别人的 id」删不掉、取不到。
+ *
+ * 这一组盯的是一个类型系统帮不上忙的形状：方法签名带着 userId、
+ * 类型检查通过、实现里却没把它写进 SQL。`deleteEvent` 就这样漏过——
+ * 任何登录用户拿到别人的事件 id 就能删掉那条记录，返回 200。
+ * 每加一个带作用域的读写，都要在这里补一行。
+ */
+describe('拿着别人的 id 什么都做不到', () => {
+  const NOW = 1_800_000_000_000
+  const A = 'usr_a'
+  const B = 'usr_b'
+
+  /** 给 A 建一整套记录，返回它们的 id */
+  const seedA = async (store: Awaited<ReturnType<typeof migrate>>) => {
+    await store.createDevice({
+      id: 'd_a', user_id: A, name: 'A 的设备', token_hash: 'h', status: 'offline',
+      last_seen_at: null, battery: null, charging: null, net_json: null,
+      location_enc: null, location_at: null, app_version: null, created_at: NOW,
+    })
+    await store.insertEvent({
+      id: 'evt_a', user_id: A, device_id: 'd_a', kind: 'sms', direction: 'in', sim_slot: null,
+      sender_enc: new Uint8Array([1]), content_enc: new Uint8Array([2]),
+      enc_ver: 1, occurred_at: NOW, received_at: NOW, matched_rules: null, created_at: NOW,
+    })
+    await store.createOutbound({
+      id: 'cmd_a', user_id: A, device_id: 'd_a', to_number: '138',
+      content_enc: new Uint8Array([3]), sim_slot: null,
+      status: 'pending', error: null, created_at: NOW, updated_at: NOW,
+    })
+    await store.upsertChannel({
+      id: 'ch_a', user_id: A, type: 'webhook', name: 'x',
+      config_enc: new Uint8Array([4]), enabled: true, created_at: NOW,
+    })
+    await store.upsertRule({
+      id: 'r_a', user_id: A, name: 'x', priority: 10, enabled: true,
+      match_json: '{}', action_json: '{}', created_at: NOW,
+    })
+    await store.upsertTask({
+      id: 't_a', user_id: A, name: 'x', enabled: true, device_id: 'd_a',
+      to_number: '138', content_enc: new Uint8Array([5]), sim_slot: null,
+      schedule_json: '{"type":"daily","time":"09:00"}',
+      last_run_at: null, last_status: null, fail_count: 0, created_at: NOW,
+    })
+  }
+
+  it('B 删不掉 A 的消息 —— deleteEvent 曾经漏掉 user_id', async () => {
+    const store = await migrate()
+    await seedA(store)
+    expect(await store.deleteEvent('evt_a', B)).toBe(false)
+    expect(await store.getEvent('evt_a', A)).not.toBeNull()
+    // A 自己删得掉，别把作用域加成了「谁都删不掉」
+    expect(await store.deleteEvent('evt_a', A)).toBe(true)
+    expect(await store.getEvent('evt_a', A)).toBeNull()
+  })
+
+  it('B 读不到 A 的消息与发送记录', async () => {
+    const store = await migrate()
+    await seedA(store)
+    expect(await store.getEvent('evt_a', B)).toBeNull()
+    expect(await store.getOutbound('cmd_a', B)).toBeNull()
+    expect(await store.getOutbound('cmd_a', A)).not.toBeNull()
+  })
+
+  it('B 删不掉 A 的发送记录、渠道、规则、任务、设备', async () => {
+    const store = await migrate()
+    await seedA(store)
+    expect(await store.deleteOutbound('cmd_a', B)).toBe(false)
+    await store.deleteChannel('ch_a', B)
+    await store.deleteRule('r_a', B)
+    await store.deleteTask('t_a', B)
+    expect(await store.deleteDevice('d_a', B)).toBe(false)
+
+    expect((await store.listChannels(A)).map((c) => c.id)).toEqual(['ch_a'])
+    expect((await store.listRules(A)).map((r) => r.id)).toEqual(['r_a'])
+    expect((await store.listTasks(A)).map((t) => t.id)).toEqual(['t_a'])
+    expect((await store.listDevices(A)).map((d) => d.id)).toEqual(['d_a'])
+    expect(await store.getOutbound('cmd_a', A)).not.toBeNull()
+  })
+
+  it('B 读不到 A 的渠道与任务', async () => {
+    const store = await migrate()
+    await seedA(store)
+    expect(await store.getChannel('ch_a', B)).toBeNull()
+    expect(await store.getTask('t_a', B)).toBeNull()
+  })
+
+  it('B 读不到 A 的 user_settings', async () => {
+    const store = await migrate()
+    await store.setUserSetting(A, 'timezone', 'Asia/Tokyo')
+    expect(await store.getUserSetting(B, 'timezone')).toBeNull()
+    expect(await store.getUserSetting(A, 'timezone')).toBe('Asia/Tokyo')
+  })
+})

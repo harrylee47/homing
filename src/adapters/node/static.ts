@@ -99,9 +99,18 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
       // 就会被挡掉，表现是控制台一条 "Refused to load manifest"，页面一切正常、
       // 只是永远装不上主屏
       "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-      "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; " +
+      // worker-src 按规范会回落到 script-src（已经是 'self'），但 Safari 不实现
+      // worker-src、各浏览器的回落链历史上有过分歧，显式写出来省事
+      "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; " +
       "form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
   }
+  /**
+   * Service Worker 的作用域默认只到它自己所在的目录。放在根目录就够了，
+   * 但显式给出这个头，将来挪位置时不至于变成一个「注册成功却什么都收不到」
+   * 的哑 SW。
+   */
+  if (pathname === '/sw.js') headers['service-worker-allowed'] = '/'
+
   res.writeHead(200, headers)
   createReadStream(file).pipe(res)
   return true
