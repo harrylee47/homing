@@ -11,7 +11,7 @@
  * —— 旧系统每 10 秒往日志里打印一次完整 token，是明确的反面教材。
  */
 import { z } from 'zod'
-import { ProviderError, type NotifyMessage, type Provider, type SendResult } from './types.js'
+import { ProviderError, retryAfterMsOf, type NotifyMessage, type Provider, type SendResult } from './types.js'
 import { describeFetchError } from '../neterror.js'
 
 export const TelegramConfig = z.object({
@@ -61,7 +61,11 @@ export const telegramProvider: Provider<TelegramConfig> = {
       const detail = await res.text().catch(() => '')
       // 4xx 多为配置错误（token 失效、chat_id 不对），重试无意义；429 限流可重试。
       const retryable = res.status === 429 || res.status >= 500
-      throw new ProviderError('telegram', `HTTP ${res.status}: ${detail.slice(0, 200)}`, retryable)
+      throw new ProviderError(
+        'telegram', `HTTP ${res.status}: ${detail.slice(0, 200)}`, retryable,
+        // Telegram 把等待秒数放在响应体的 parameters.retry_after 里，头里没有
+        retryAfterMsOf(res, detail),
+      )
     }
 
     // 返回 message_id：用户直接引用回复这条推送时，据此反查原事件的发件人

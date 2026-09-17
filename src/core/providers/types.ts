@@ -97,8 +97,45 @@ export class ProviderError extends Error {
     readonly providerType: string,
     message: string,
     readonly retryable = true,
+    /**
+     * 对方明确要求等多久再来（毫秒）。
+     *
+     * 只在对方**自己说了**的时候才填：Telegram 429 响应体里的
+     * `parameters.retry_after`、HTTP 的 `Retry-After` 头。填了之后
+     * notifier 就按它等，而不是按自己那套 1s/2s 指数退避——
+     * 限流方说要等 30 秒，你 1 秒后再敲一次只是再吃一个 429，
+     * 白白烧掉一次重试机会。
+     */
+    readonly retryAfterMs: number | null = null,
   ) {
     super(message)
     this.name = 'ProviderError'
   }
+}
+
+/**
+ * 从响应里读出「等多久再来」。
+ *
+ * 两个来源都要认：
+ * - `Retry-After` 头：HTTP 标准，秒数或 HTTP 日期两种写法
+ * - Telegram 的 `parameters.retry_after`：秒数，**只在响应体里**，头里没有
+ *
+ * 读不出来就返回 null，交给调用方走默认退避——猜一个数比不猜更糟。
+ */
+export function retryAfterMsOf(res: Response, body?: string): number | null {
+  const header = res.headers.get('retry-after')
+  if (header) {
+    const secs = Number(header)
+    if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000)
+    const at = Date.parse(header)
+    if (Number.isFinite(at)) return Math.max(0, at - Date.now())
+  }
+  if (body) {
+    try {
+      const j = JSON.parse(body) as { parameters?: { retry_after?: unknown } }
+      const secs = j?.parameters?.retry_after
+      if (typeof secs === 'number' && Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000)
+    } catch { /* 不是 JSON 就算了，这条路本来就是尽力而为 */ }
+  }
+  return null
 }

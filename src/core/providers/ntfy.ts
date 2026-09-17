@@ -15,7 +15,7 @@
  * 能自建就自建，或者用受保护的主题加 token。
  */
 import { z } from 'zod'
-import { ProviderError, type Provider } from './types.js'
+import { ProviderError, retryAfterMsOf, type Provider } from './types.js'
 import { describeFetchError } from '../neterror.js'
 import { copyText, deepLink } from './deeplink.js'
 
@@ -115,6 +115,7 @@ export const ntfyProvider: Provider<NtfyConfig> = {
         'ntfy', `HTTP ${res.status}: ${detail.slice(0, 200)}`,
         // 4xx 是配置错（主题名非法、token 不对），重试多少次都一样
         res.status === 429 || res.status >= 500,
+        retryAfterMsOf(res, detail),
       )
     }
   },

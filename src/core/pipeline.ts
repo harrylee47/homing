@@ -209,7 +209,12 @@ export async function processEvent(
 
     if (failed.length > 0) {
       // 三次全败 → 跨渠道告警（计划 §9 可靠性要求）
-      await crossChannelAlert(channels, failed, `事件 ${eventId} 推送失败`, { retryBaseMs: deps.retryBaseMs })
+      await crossChannelAlert(
+        channels, failed, `事件 ${eventId} 推送失败`,
+        { retryBaseMs: deps.retryBaseMs },
+        // 补传时一批 50 条全失败 = 50 条一模一样的告警，把真正的验证码冲掉
+        { store: deps.store, userId: e.user_id },
+      )
     }
   } catch (err) {
     log.error('事件处理管线异常', { event_id: eventId, error: String(err) })

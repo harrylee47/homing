@@ -7,6 +7,7 @@
  *  - 单个 Provider 故障不得阻塞其他渠道（并发发送，独立超时）
  */
 import { log } from './logging.js'
+import { shouldAlert, type AlertWindowStore } from './alertwindow.js'
 import { barkProvider } from './providers/bark.js'
 import { ntfyProvider } from './providers/ntfy.js'
 import { webpushProvider } from './providers/webpush.js'
@@ -50,10 +51,30 @@ export interface DeliveryResult {
 
 const MAX_ATTEMPTS = 3
 const DEFAULT_RETRY_BASE_MS = 1000
+
+/**
+ * 对方要求的等待时间的上限。
+ *
+ * 超过这个数就不等了——直接判失败，把这一条交给跨渠道告警去说。
+ * 理由是这里的等待会**占住这台设备的推送队列**（见 session.ts 的串行链），
+ * 后面那条真正要紧的验证码得排在它后面。宁可这一条失败得响亮，
+ * 也不要静悄悄地把整条队列压住几分钟。
+ *
+ * Telegram 实际给的 retry_after 多在几秒到几十秒，60 秒足够覆盖绝大多数；
+ * 真要到分钟级，那说明量级已经不对了，该看的是为什么会有那么多推送。
+ */
+const MAX_RETRY_AFTER_MS = 60_000
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /** 重试退避的基数。可注入，测试里调小以免真实等待数秒。 */
-export interface DispatchOptions { retryBaseMs?: number | undefined }
+export interface DispatchOptions {
+  retryBaseMs?: number | undefined
+  /**
+   * 「对方让等多久」的上限，可注入好让测试不用真的睡 60 秒。
+   * 不传就用 MAX_RETRY_AFTER_MS。
+   */
+  maxRetryAfterMs?: number | undefined
+}
 
 /**
  * 向多个渠道并发发送。
@@ -96,8 +117,26 @@ async function sendWithRetry(ch: ChannelConfig, msg: NotifyMessage, opts: Dispat
         log.warn('渠道失败且不可重试', { channel: ch.id, type: ch.type, error: lastError })
         break
       }
+
+      /**
+       * 对方说了等多久，就等多久——不要按自己那套指数退避。
+       *
+       * 429 限流下，1s、2s 两次重试必然再吃两个 429：三次尝试全落在 3 秒
+       * 窗口里，而限流方要的是几十秒。结果是「重试了三次」听着很努力，
+       * 实际上一次都没等够，这一路推送就此放弃。
+       */
+      const askedMs = e instanceof ProviderError ? e.retryAfterMs : null
+      const maxWait = opts.maxRetryAfterMs ?? MAX_RETRY_AFTER_MS
+      if (askedMs !== null && askedMs > maxWait) {
+        log.warn('对方要求的等待超出上限，不再重试', {
+          channel: ch.id, type: ch.type, asked_ms: askedMs, max_ms: maxWait,
+        })
+        break
+      }
       if (attempt < MAX_ATTEMPTS) {
-        await sleep((opts.retryBaseMs ?? DEFAULT_RETRY_BASE_MS) * 2 ** (attempt - 1))
+        const backoff = (opts.retryBaseMs ?? DEFAULT_RETRY_BASE_MS) * 2 ** (attempt - 1)
+        // 取大的那个：对方说等 30 秒，我们自己算出来 2 秒，那就等 30 秒
+        await sleep(Math.max(backoff, askedMs ?? 0))
       }
     }
   }
@@ -117,12 +156,38 @@ export async function crossChannelAlert(
   failed: DeliveryResult[],
   context: string,
   opts: DispatchOptions = {},
+  /**
+   * 压制窗口。不传就每次都发（保持老行为，测试与不接存储的调用方用得上）。
+   *
+   * 传了的话，同一组失败渠道在窗口内只发一条，被压掉的条数由下一条带出来。
+   * 见 alertwindow.ts 里为什么这件事必须做、又为什么不能简单压掉。
+   */
+  window?: { store: AlertWindowStore; userId: string; now?: number | undefined } | undefined,
 ): Promise<void> {
   const failedIds = new Set(failed.map((f) => f.channelId))
   const healthy = allChannels.filter((c) => c.enabled && !failedIds.has(c.id))
   if (healthy.length === 0) {
     log.error('所有渠道均不可用，无法发出告警', { context })
     return
+  }
+
+  let suppressedNote = ''
+  if (window) {
+    // 键用「哪些渠道失败了」，不用事件 id：同一个渠道连续失败 50 次是一件事
+    const key = [...failedIds].sort().join(',')
+    const d = await shouldAlert(window.store, window.userId, key, window.now ?? Date.now())
+      .catch((e: unknown) => {
+        // 压制状态读写失败不能挡住告警本身
+        log.warn('告警压制状态读写失败，按不压制处理', { error: String(e) })
+        return { send: true, suppressed: 0 }
+      })
+    if (!d.send) {
+      log.info('同一渠道的失败告警已在窗口内发过，这条压制', { context, key })
+      return
+    }
+    if (d.suppressed > 0) {
+      suppressedNote = `\n（上一条告警之后还有 ${d.suppressed} 条同样失败，未逐条通知）`
+    }
   }
 
   const detail = failed.map((f) => `${f.channelType}(${f.channelId}): ${f.error}`).join('; ')
@@ -138,7 +203,7 @@ export async function crossChannelAlert(
    */
   const results = await dispatch(healthy, {
     title: '⚠️ 渠道发送失败',
-    body: `${context}\n${detail}`.slice(0, 500),
+    body: `${context}\n${detail}${suppressedNote}`.slice(0, 500),
     alert: true,
     priority: 'high',
     code: null,

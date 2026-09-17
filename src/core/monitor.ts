@@ -232,7 +232,10 @@ async function notify(
   })
   const failed = results.filter((r) => !r.ok)
   if (failed.length > 0 && failed.length < results.length) {
-    await crossChannelAlert(channels, failed, '离线告警发送失败')
+    await crossChannelAlert(
+      channels, failed, '离线告警发送失败', {},
+      { store: deps.store, userId, now: deps.now?.() },
+    )
   }
   return failed.length < results.length
 }

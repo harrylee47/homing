@@ -14,7 +14,7 @@
  * 当时的公钥绑死了，跟着订阅一起存，将来换密钥时老订阅仍然能用。
  */
 import { z } from 'zod'
-import { ProviderError, type Provider } from './types.js'
+import { ProviderError, retryAfterMsOf, type Provider } from './types.js'
 import { describeFetchError } from '../neterror.js'
 import { audienceOf, encryptPayload, signVapid } from '../webpush.js'
 import { copyText, deepLink } from './deeplink.js'
@@ -116,6 +116,7 @@ export const webpushProvider: Provider<WebPushConfig> = {
     throw new ProviderError(
       'webpush', `HTTP ${res.status}: ${detail.slice(0, 200)}`,
       res.status === 429 || res.status >= 500,
+      retryAfterMsOf(res, detail),
     )
   },
 }

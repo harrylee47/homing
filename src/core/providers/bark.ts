@@ -9,7 +9,7 @@
  * 不需要自备证书。
  */
 import { z } from 'zod'
-import { ProviderError, type Provider } from './types.js'
+import { ProviderError, retryAfterMsOf, type Provider } from './types.js'
 import { describeFetchError } from '../neterror.js'
 import { copyText, deepLink } from './deeplink.js'
 
@@ -123,6 +123,7 @@ export const barkProvider: Provider<BarkConfig> = {
       throw new ProviderError(
         'bark', `HTTP ${res.status}: ${detail.slice(0, 200)}`,
         res.status === 429 || res.status >= 500,
+        retryAfterMsOf(res, detail),
       )
     }
   },

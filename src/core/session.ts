@@ -325,14 +325,40 @@ export class DeviceSession {
     return this.ackEvent(e.id, result)
   }
 
+  /**
+   * 这台设备的推送队列。
+   *
+   * 落库之后的推送是**脱钩**的（上面 handler 不 await，见那里的注释：
+   * 让 Agent 等推送结果只会拖慢队列）。但脱钩不等于放任并发——补传时
+   * 一批 50 条会变成 50 个同时在飞的 `processEvent`，后果有两个：
+   *
+   * 1. **推送顺序与事件顺序无关**。谁的网络先回来谁先到，用户在 Telegram
+   *    里看到的验证码不按时间排——而补传的全部意义就是把那段时间补回来。
+   * 2. **同一个 Telegram 私聊被 50 条同时打**，稳吃 429，而限流方要的是
+   *    几十秒的间隔。
+   *
+   * 串成一条链就都解决了：一条发完再发下一条，天然按序、天然限速。
+   *
+   * 粒度是**每台设备一条链**，不是每个用户一条。按用户串会让 A 设备的
+   * 补传把 B 设备刚收到的验证码堵在后面——而那条恰恰是人正在等的。
+   * 按设备串则并发数等于设备数，对同一个聊天窗口来说仍然很小。
+   *
+   * 这是进程内状态，但符合硬约束④的例外条件：它挂在连接上、随连接消亡，
+   * 且不需要重建——进程重启后没有待发推送，与重启前的语义一致
+   * （事件本身已经落库，不会丢）。
+   */
+  private pushQueue: Promise<void> = Promise.resolve()
+
   private readonly defaultOnStored = (
     eventId: string,
     e: { device_id: string; kind: EventKindT; from: string; content: string; occurred_at: number; direction?: 'in' | 'out'; imported?: boolean },
   ): void => {
-    void processEvent(
-      { store: this.deps.store, cipher: this.deps.cipher, baseUrl: this.deps.baseUrl ?? null },
-      eventId, { ...e, user_id: this.userId },
-    )
+    const deps = { store: this.deps.store, cipher: this.deps.cipher, baseUrl: this.deps.baseUrl ?? null }
+    this.pushQueue = this.pushQueue
+      .then(() => processEvent(deps, eventId, { ...e, user_id: this.userId }))
+      // processEvent 内部已经把异常全兜住了，这里只是防止一条把整条链炸断——
+      // 链一断，这台设备**之后所有**的推送都不会再发，而且悄无声息
+      .catch((err: unknown) => log.error('推送队列异常', { event_id: eventId, error: String(err) }))
   }
 
   /**

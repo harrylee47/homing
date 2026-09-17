@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 import { checkWebhookTarget } from '../ssrf.js'
-import { ProviderError, type Provider } from './types.js'
+import { ProviderError, retryAfterMsOf, type Provider } from './types.js'
 import { describeFetchError } from '../neterror.js'
 
 export const WebhookConfig = z.object({
@@ -153,6 +153,7 @@ export const webhookProvider: Provider<WebhookConfig> = {
       throw new ProviderError(
         'webhook', `HTTP ${res.status}: ${await safeDetail(res, msg)}`,
         res.status === 429 || res.status >= 500,
+        retryAfterMsOf(res),
       )
     }
   },
