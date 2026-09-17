@@ -1,26 +1,35 @@
 /**
- * 落地页的下滑进场动效。
+ * 落地页的滚动动效。
  *
- * 三条约束决定了它长这样：
+ * 三条约束：CSP 只允许同源外链脚本、JS 挂了内容必须照样看得见、
+ * 脚本要在 <head> 同步加载（晚一步就会先绘制出内容、再看着它消失、然后淡入）。
  *
- * 1. **CSP 是 `script-src 'self'`，内联 <script> 一律被挡**，所以只能是这个独立文件。
- * 2. **JS 挂了内容必须照样看得见。** 所以「初始隐藏」这个状态**不写死在 CSS 里**，
- *    而是由这段脚本给 <html> 打上 data-motion="on" 之后才生效——脚本没跑、
- *    被拦截、或者出错，页面就是一张普通的静态页，一个字都不少。
- *    反过来写（CSS 先藏起来、等 JS 来显示）是常见做法，但它把「能不能读到内容」
- *    押在了脚本上，而这是一个介绍「怎么收验证码」的页面，读不到就等于没有。
- * 3. **不能有闪烁。** 所以这个文件在 <head> 里同步加载（不带 defer）：
- *    它必须在 body 开始绘制之前就把 data-motion 打上，否则用户会先看到内容、
- *    再看着它们消失、然后重新淡入。文件只有 1KB 出头，这点阻塞换的是不闪。
+ * **「JS 挂了长什么样」这一条，这一版的答案和上一版是反的。**
+ * 上一版（信鸽飞越地图，已在 2026-09-18 下线，要看去翻 git）第一屏是一段
+ * 叙事动画，没有动画就没有意义，所以不跑 JS 时它把二、三幕藏起来。
+ * 这一版的第一屏是一张**说明链路的图**——家里那台 → 加密 → 云 → 你那台——
+ * 它静止时本来就读得懂。所以默认状态是**整条链路已经走完**：
+ * CSS 里每一处都写 `var(--p, 1)`，不给值就是「已送达」。
+ *
+ * 代价是反过来的：脚本必须赶在 body 绘制之前把 --p 摁到 0，否则读者会先看到
+ * 走完的样子、再看着它倒回去重走。所以下面那行 setProperty 必须在这里，
+ * 不能挪进 DOMContentLoaded。--p 挂在 :root 上也是为这个——
+ * 这一刻 .stage 还没被解析出来。
  */
 ;(function () {
   var root = document.documentElement
 
-  // 系统设置里要求减少动画的人，直接不开——不是「动得慢一点」，是根本不动
+  // 系统设置里要求减少动画的人，直接不开——不是「动得慢一点」，是根本不动。
+  // 这时候 --p 保持未设置，于是那张图就是一张画完的静态链路图。
   var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  if (reduce || !('IntersectionObserver' in window)) return
+  var motion = !reduce && ('IntersectionObserver' in window)
 
-  root.setAttribute('data-motion', 'on')
+  if (motion) {
+    root.setAttribute('data-motion', 'on')
+    root.style.setProperty('--p', '0')
+  }
+
+  function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v }
 
   function start() {
     var items = document.querySelectorAll('[data-reveal]')
@@ -33,38 +42,17 @@
         e.target.setAttribute('data-shown', '')
         io.unobserve(e.target)   // 只进场一次，来回滚不要反复闪
       }
-    }, {
-      // 元素露出一点就开始，而不是等它完全进视口——
-      // 后者在长section上会让人滚过头了才看见动画
-      threshold: 0.12,
-      // 底部留 -8%：太靠近屏幕边缘触发会显得「卡了一下才动」
-      rootMargin: '0px 0px -8% 0px',
-    })
+    }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' })
 
-    for (var j = 0; j < items.length; j++) {
-      /**
-       * 首屏内的元素直接显示，不做进场。
-       *
-       * 页面刚打开时首屏元素已经在视口里，IntersectionObserver 会立刻回调，
-       * 于是它们「淡入」得和滚动到的那些一样——但用户根本没滚动，
-       * 看起来就是页面自己抖了一下。
-       */
-      if (items[j].getBoundingClientRect().top < window.innerHeight * 0.9) {
-        items[j].setAttribute('data-shown', '')
-      } else {
-        io.observe(items[j])
-      }
+    for (var i = 0; i < items.length; i++) {
+      // 首屏之内的直接置为已显示：它们本来就在视口里，做进场等于页面自己抖一下
+      if (items[i].getBoundingClientRect().top < window.innerHeight * 0.9) {
+        items[i].setAttribute('data-shown', '')
+      } else io.observe(items[i])
     }
   }
 
-  /**
-   * 横滑条第一次进入视口时，自己轻轻滑一下再滑回来。
-   *
-   * 截图条是整页唯一需要教一个手势的地方。一行「← 左右滑动 →」的提示字，
-   * 读的人多、照做的人少；让它自己动 14 像素，「这东西能滑」就不用说了。
-   *
-   * 只做一次，而且用户已经自己滑过就不做——抢在人手底下动是很讨厌的。
-   */
+  /** 截图条第一次进入视口时自己滑一下，把「这东西能滑」演出来。见 welcome.js */
   function nudge() {
     var strip = document.querySelector('[data-nudge]')
     if (!strip || strip.scrollWidth <= strip.clientWidth) return
@@ -73,7 +61,7 @@
       if (done || !es[0].isIntersecting) return
       done = true
       io.disconnect()
-      if (strip.scrollLeft > 0) return   // 人已经自己滑过了
+      if (strip.scrollLeft > 0) return
       strip.scrollTo({ left: 14, behavior: 'smooth' })
       setTimeout(function () {
         if (strip.scrollLeft <= 16) strip.scrollTo({ left: 0, behavior: 'smooth' })
@@ -83,55 +71,70 @@
   }
 
   /**
-   * 第一屏那三幕的滚动进度。
+   * 链路的滚动进度。
    *
-   * 只做一件事：把 0→1 的进度写成 `--p`（以及重映射过的 `--fly`）。
-   * 透明度、航线的揭开、鸽子的位置全部由 CSS 从这一个变量算出来——
-   * 逐帧改样式的话，三幕十几个元素每帧都要碰一遍，滚动会发涩。
+   * 写三个自定义属性，其余全部由 CSS 从它们算出来：
    *
-   * 读 `getBoundingClientRect` 放在 rAF 里、写样式紧跟其后，一帧内
-   * 只有一次读一次写，不会来回触发同步布局。
+   * - `--p`    0→1 总进度。导线的生长、数据包的位置、明文与打码的交叉淡、
+   *            两站的高亮环、状态梯的三个点，都是它的 calc()。
+   * - `--mid`  数据包在中间那一段里的进度（0→1）。它是 --p 的重映射：
+   *            镜头从 p=0.20 才开始走那条线、到 0.82 走完，两头留给首尾两个场景。
+   *            导线的生长、包的位置、两站的高亮环都读它。
+   * - `--land` 最后一段：线尾从两幕的接缝往下长到手机里，那颗点跟着它走，
+   *            中段那颗同时淡出——从头到尾只有一颗点在动。
+   * - `--wake` 鸽子抬头。单独一个是因为它要在 CSS 里乘上 deg，
+   *            而 `clamp(0, calc(...), 1)` 这种无单位夹取写在 calc 里可读性太差。
+   *
+   * 两个的默认值都是 1（走完 / 醒着），和 --p 的默认值 1 是一套的：
+   * 不跑 JS 时这三段是完成态，而不是「等一个永远不来的信号」。
    */
-  function stage() {
+  function stage2() {
     var el = document.getElementById('stage')
-    if (!el) return
+    if (!el || !motion) return
     var inner = el.querySelector('.stage-in')
     var cue = document.getElementById('stage_cue_t')
-    var ticking = false
-    var lastCue = ''
+    var where = document.getElementById('v2_where')
+
+    /*
+     * 方案里的 Scene 06：家里那台不动，**你在动**。所以随着下滑换地点，
+     * 而不是换画面——「短信跟着你走」这句话只有在你的位置一直变、
+     * 而链路一直通的时候才立得住。
+     */
+    var WHERE = [[0.35, '在路上'], [0.58, '地铁上'], [0.80, '咖啡馆'], [1.01, '机场']]
+    var lastWhere = '', lastCue = '', swapTimer = 0, ticking = false
 
     function frame() {
       ticking = false
       var span = el.offsetHeight - inner.offsetHeight
       if (span <= 0) return
-      var p = -el.getBoundingClientRect().top / span
-      if (p < 0) p = 0
-      if (p > 1) p = 1
-      el.style.setProperty('--p', p.toFixed(4))
-      /*
-       * 鸽子的飞行区间拉宽到 0.18–0.86。
-       *
-       * 原来是 0.25–0.75，两头各留四分之一什么都不动，滑起来像「推半天没反应」。
-       * 现在它在第一幕快结束时就已经起飞、到第三幕淡入时才落地，
-       * 加上手机的上浮与气泡的横移，整段滚动全程都有东西在响应。
-       */
-      var fly = (p - 0.18) / 0.68
-      if (fly < 0) fly = 0
-      if (fly > 1) fly = 1
-      el.style.setProperty('--fly', fly.toFixed(4))
+      var p = clamp01(-el.getBoundingClientRect().top / span)
 
-      /*
-       * `--land` 只管第三幕那几秒：航线的最后一截被画出来、鸽子沉下去
-       * 落到肩上、然后才开口。默认值写成 1（已落地），所以不跑 JS 或
-       * 关了动效时它本来就站在肩上，而不是悬在半空等一个永远不来的信号。
-       */
-      var land = (p - 0.77) / 0.11
-      if (land < 0) land = 0
-      if (land > 1) land = 1
-      el.style.setProperty('--land', land.toFixed(4))
+      root.style.setProperty('--p', p.toFixed(4))
+      root.style.setProperty('--wake', clamp01((p - 0.005) / 0.022).toFixed(3))
+      root.style.setProperty('--mid', clamp01((p - 0.10) / 0.70).toFixed(4))
+      root.style.setProperty('--land', clamp01((p - 0.80) / 0.11).toFixed(4))
+
+      if (where) {
+        var w = ''
+        for (var i = 0; i < WHERE.length; i++) {
+          if (p < WHERE[i][0]) { w = WHERE[i][1]; break }
+        }
+        if (w && w !== lastWhere) {
+          lastWhere = w
+          // 直接换字会「啪」地跳一下。淡出 → 换 → 淡入，130ms 对齐 CSS 里的 transition
+          where.setAttribute('data-swap', '')
+          clearTimeout(swapTimer)
+          swapTimer = setTimeout(function () {
+            where.textContent = lastWhere
+            where.removeAttribute('data-swap')
+          }, 130)
+        }
+      }
 
       if (cue) {
-        var t = p < 0.22 ? '往下滑' : p < 0.78 ? '继续往下滑' : '再往下，是正文'
+        /* 提示要跟着分镜走：先「看一眼」，再「传过去」，最后「这就到了」 */
+        var t = p < 0.04 ? '下滑查看' : p < 0.13 ? '下滑，把它传过去'
+              : p < 0.88 ? '继续下滑' : '往下看它怎么用'
         if (t !== lastCue) { cue.textContent = t; lastCue = t }
       }
     }
@@ -147,31 +150,89 @@
   }
 
   /**
-   * 第一幕那台手机上的时间，取**读者自己**浏览器的。
+   * 通知横幅上那颗「复制」。
    *
-   * 写死一个 20:23 的代价不是不准，是不真：这一屏讲的是「此刻家里那台
-   * 收到了一条」，而屏幕上挂着一个与读者无关的时间，整件事就退回成一张插图。
+   * 这是整页唯一一处真交互，留着是因为它演示的正是这个产品日常体感最好的
+   * 一下：验证码到了手边，长按即复制，不用打开任何 App。
    *
-   * HTML 里留了一个静态默认值，JS 没跑就用它——这一段是装饰，
-   * 不值得为它多一个空白位。
+   * `navigator.clipboard` 要安全上下文。自托管的人可能跑在 http 的内网地址上，
+   * 那里它是 undefined。不给回落的话按钮在那种部署上是**点了没反应**——
+   * 偏偏这一下就是这一屏想说的事，所以回落成「把那串码选中」，
+   * 让人自己按一下系统的复制。
+   */
+  function copy() {
+    var btn = document.getElementById('v2_copy')
+    var code = document.getElementById('v2_code')
+    if (!btn || !code) return
+    var back = 0
+    // 原文案从 DOM 里取，不要写死。按钮上写的是「复制验证码」，
+    // 写死成「复制」的话，复制过一次之后那三个字就永远回不来了。
+    var label = btn.textContent
+
+    function ok() {
+      clearTimeout(back)
+      btn.textContent = '已复制'
+      btn.setAttribute('data-done', '')
+      back = setTimeout(function () {
+        btn.textContent = label
+        btn.removeAttribute('data-done')
+      }, 1800)
+    }
+    /*
+     * 回落也要给反馈。只是把码选中、按钮一动不动的话，从用户那边看
+     * 「点了没反应」和「点了失败」长得一模一样——而这颗按钮整屏就这一个作用。
+     */
+    function select() {
+      if (!window.getSelection || !document.createRange) return
+      var r = document.createRange()
+      r.selectNodeContents(code)
+      var s = window.getSelection()
+      s.removeAllRanges()
+      s.addRange(r)
+      clearTimeout(back)
+      btn.textContent = '已选中'
+      btn.setAttribute('data-done', '')
+      back = setTimeout(function () {
+        btn.textContent = label
+        btn.removeAttribute('data-done')
+      }, 1800)
+    }
+
+    btn.addEventListener('click', function () {
+      var text = (code.textContent || '').trim()
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(ok, select)
+      } else select()
+    })
+  }
+
+  /**
+   * 家里那台上的时间，取**读者自己**浏览器的。
+   * 写死一个时间的代价不是不准，是不真：这一屏讲的是「此刻家里那台收到了一条」。
    */
   function clock() {
     var d = new Date()
-    var hh = String(d.getHours()).padStart(2, '0')
-    var mm = String(d.getMinutes()).padStart(2, '0')
-    var t = hh + ':' + mm
-    var a = document.getElementById('ph_clock')
-    var b = document.getElementById('ph_time')
-    if (a) a.textContent = t
-    if (b) b.textContent = t
+    var t = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+    // 两幕各有一条状态栏（家里那台、他手上那台），走同一个时间
+    var bars = ['v2_clock', 'v2_clock2']
+    for (var i = 0; i < bars.length; i++) {
+      var a = document.getElementById(bars[i])
+      if (a) a.textContent = t
+    }
+    // 两块锁屏：家里那台（安卓，时间在上）、他手上那台（iOS，日期在上）
+    var W = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+    var day = (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日 ' + W[d.getDay()]
+    var locks = [['v2_big', 'v2_date'], ['v2_big2', 'v2_date2']]
+    for (var j = 0; j < locks.length; j++) {
+      var big = document.getElementById(locks[j][0])
+      if (big) big.textContent = t
+      // 锁屏上的日期也取读者自己的。写死一个日期和写死一个时间是同一种不真
+      var dy = document.getElementById(locks[j][1])
+      if (dy) dy.textContent = day
+    }
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { start(); nudge(); stage(); clock() })
-  } else {
-    start()
-    nudge()
-    stage()
-    clock()
-  }
+  function boot() { start(); nudge(); stage2(); copy(); clock() }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot)
+  else boot()
 })()

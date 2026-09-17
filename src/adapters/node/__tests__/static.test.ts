@@ -2,6 +2,7 @@
  * 静态服务的几条行为，每一条都有人踩过：
  *  - SPA 深链必须回落到 index.html（Bark 通知点进来落在 /events/:id）
  *  - 落地页要能用 /welcome 访问，不带 .html 后缀
+ *  - /welcome2（落地页第二版时期的临时地址）永久跳到 /welcome
  *  - 路径穿越必须挡住
  */
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -68,6 +69,14 @@ describe('静态服务', () => {
     expect(r.status).toBe(200)
     expect(r.headers['content-type']).toContain('text/html')
     expect(r.body).toContain('LANDING')
+  })
+
+  it('/welcome2 永久跳到 /welcome —— 第二版时期发出去的链接不能落到 404', async () => {
+    for (const p of ['/welcome2', '/welcome2.html']) {
+      const r = await get(p)
+      expect(r.status).toBe(301)
+      expect(r.headers.location).toBe('/welcome')
+    }
   })
 
   it('APK 用安卓包的 MIME，不是 octet-stream', async () => {

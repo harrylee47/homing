@@ -23,6 +23,19 @@
 -->
 <script src="/welcome.js"></script>
 <style>
+  /*
+   * 肤色。style.css 的调色板里没有这一项，因为控制台里不画人。
+   * 但落地页里画——而**白色的脸和白色的手**正是真人反馈里反复指着问
+   * 「这一块是什么」的根源：它跟卡片、跟纸、跟手机机身全都是同一个 --card。
+   * 一个暖米色在两套主题下都成立：浅色底上和纸区分得开，深色底上自己发亮。
+   * 它是「物体的颜色」不是「界面的颜色」，所以不跟主题走。
+   */
+  :root {
+    --skin: #f3d2ad;
+    /* 五官与指缝要**永远是深色**。它们压在肤色上，而肤色不跟主题走，
+       用 --line 的话深色模式下会变成薄荷绿——一张米色的脸配两只绿眼睛。 */
+    --ink: #17150f;
+  }
   .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
   .top {
     position: sticky; top: 0; z-index: 10; background: var(--bg);
@@ -50,257 +63,583 @@
   html[data-motion="on"] [data-reveal][data-shown] { opacity: 1; transform: none; }
 
 
-  /* ══ 第一屏：信鸽把验证码送过来 ══════════════════════════════
-     整段由**一个**自定义属性 --p（0→1，滚动进度）驱动。
-     交叉淡入用纯 calc：opacity 超出 0–1 会被自动夹住，所以
-     `calc((0.28 - var(--p)) / 0.06)` 就是一条斜坡，不用逐帧 JS 算透明度。
+  /* ══ 第一屏：镜头顺着一条短信下摇 ══════════════════════════
+     分镜：桌上那台（屏幕先亮「收到新消息」，下滑才显出正文）→ 正文缩成一个
+     数据包 ● 沿线往下走，路过加密与托管服务器 → 一个边走路边看手机的人，
+     同样的内容出现在他手上，标着「来自 Homing」。
 
-     版式三条（照着参考站定的，原来那版是「中间一小团 + 满屏空白」）：
-     ① 满幅，线条与场景铺到视口两边；② 每一幕先有一个大字号的排版锚点，
-     图是它的注脚；③ 细线条、少填充，主角只有鸽子与那条航线。 */
-  .stage { position: relative; }
-  html[data-motion="on"] .stage { height: 260svh }
+     上一版把整条链路一次性摆在一屏里：好处是一眼看懂，坏处是**第一屏就没有
+     悬念**——手机屏幕在 p=0 时还是空的、底下「你 · 地铁上」只剩一行孤零零的字，
+     两处都在等一个用户还没做的动作。这一版改成镜头下摇：任何时刻屏幕上都是
+     一个完整的场景，而不是一张等着被点亮的图。
+
+     做法是一条 316svh 的「胶片」在 100svh 的取景框里按 --p 上移 216svh。
+     所有段落高度都用 svh 写死，于是镜头位置是算得出来的，不用去量任何元素——
+     上一版（信鸽飞越地图）在「自己算位置」上栽过两次，这里一次都不用算。 */
+  .stage { position: relative }
+  html[data-motion="on"] .stage { height: 300svh }
   .stage-in {
-    position: sticky; top: 0; height: 100svh; min-height: 560px;
-    display: grid; place-items: center; overflow: hidden;
-    /* 顶栏也是 sticky top:0 的，不留出它的高度，第一行大字会被压在它底下 */
-    padding-top: 58px; box-sizing: border-box;
+    position: sticky; top: 0; height: 100svh; min-height: 540px; overflow: hidden;
   }
-  .act { grid-area: 1 / 1; width: 100%; height: 100%; position: relative; }
-  html[data-motion="on"] .act { will-change: opacity }
-  html[data-motion="on"] .act1 { opacity: calc((0.28 - var(--p, 0)) / 0.06) }
-  html[data-motion="on"] .act2 { opacity: calc((var(--p, 0) - 0.22) / 0.06) }
-  html[data-motion="on"] .act2 > .inner { opacity: calc((0.82 - var(--p, 0)) / 0.06) }
-  html[data-motion="on"] .act3 { opacity: calc((var(--p, 0) - 0.76) / 0.06) }
-  html[data-motion="on"] .act { pointer-events: none }
+  .v2film {
+    position: absolute; left: 0; right: 0; top: 0;
+    display: flex; flex-direction: column; align-items: center;
+    transform: translateY(calc(var(--p, 1) * -182svh));
+  }
+  .sc { width: 100%; box-sizing: border-box; display: flex; flex-direction: column;
+        align-items: center; padding: 0 16px }
+  .sc-a   { height: 90svh; justify-content: center; padding-top: 58px; gap: clamp(10px, 2.4vh, 26px) }
+  .sc-mid { height: 92svh; position: relative }
+  /* clip-path 只在上下裁、左右放开（-100vw）：第三幕的导线要往上兜 100vh
+     才能接住上一幕，而 .sc-c 在 DOM 里排在 .sc-mid 后面，两者都是
+     position: relative 且没有 z-index——同一层里按文档顺序画，于是那条线
+     必然盖在第二幕的「加密 / 托管服务器」两个站牌上，正好压住中间那个字。
+     裁到 .sc-c 自己的上沿就正好接上：.sc-c 的上沿就是 .sc-mid 的下沿。
+     不能写 overflow: hidden——.vsub 是 margin: 0 -16px 的出血排版，
+     那样会把左右两边一起裁掉。 */
+  .sc-c   { height: 100svh; position: relative; justify-content: center; padding: 0 16px 116px; gap: 12px;
+            clip-path: inset(0 -100vw) }
 
-  .say {
-    position: absolute; left: 6vw; top: 13vh; max-width: 12em; z-index: 3;
-    font-size: clamp(26px, 5.2vw, 56px); font-weight: 800;
-    line-height: 1.18; letter-spacing: -.02em; margin: 0;
+  .v2head {
+    margin: 0; text-align: center; font-weight: 800; letter-spacing: -.02em;
+    font-size: clamp(26px, 5.4vw, 48px); line-height: 1.16;
   }
-  .say small {
-    display: block; font-size: 12px; font-weight: 700; letter-spacing: .18em;
-    text-transform: uppercase; color: var(--muted); margin-bottom: 12px;
+  .v2head small {
+    display: block; font-size: 12px; font-weight: 700; letter-spacing: .14em;
+    color: var(--muted); margin-bottom: 10px;
   }
-  .say em { font-style: normal; color: var(--muted) }
+  .v2head em { font-style: normal; color: var(--muted) }
+  .vtag { margin: 0; font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .04em }
+  #v2_where { transition: opacity .13s linear }
+  #v2_where[data-swap] { opacity: 0 }
 
-  /* ── 幕一：一台真的在显示短信的手机 ────────────────────────
-     原来只是个圆角方块加一条气泡，太像占位图。现在照着短信 App 的
-     样子排：状态栏 → 联系人 → 左侧来信气泡 → 时间戳。
-     时间由 welcome.js 取浏览器本地时间填进去，不写死。 */
-    /* 手机从底边「升」上来，鸽子蹲在机身**顶边**——蹲在底边的话它会掉到屏幕外 */
-  .scene1 { position: absolute; right: 6vw; bottom: 0; z-index: 1 }
-  .ph-wrap { position: relative }
-  .phone {
-    width: 292px; flex: none; padding: 10px 10px 0;
-    background: var(--card); border: var(--bw) solid var(--line);
-    border-radius: 30px 30px 0 0; border-bottom: none;
-    box-shadow: var(--shadow); text-align: left; position: relative; overflow: hidden;
-    transform: translateY(calc(var(--p, 0) * -60px));
+  /* ── 场景一：桌上那台 ──────────────────────────────────── */
+  .deskset { display: flex; flex-direction: column; align-items: center; width: 100% }
+  .vdev {
+    width: min(352px, 88vw); border: var(--bw) solid var(--line); border-radius: 16px;
+    background: var(--card); box-shadow: var(--shadow); overflow: hidden; position: relative; z-index: 1;
   }
-  .ph-status {
-    display: flex; align-items: center; justify-content: space-between;
-    font-size: 12px; font-weight: 800; padding: 4px 10px 8px;
+  .vdev-wrap { position: relative }
+  /* 状态栏照着真手机那条排：左边信号格 + 运营商 + WiFi，右边时间 + 电池。
+     原来写的是「在线 · 充电中」五个字——那两件事本来就有图标，
+     画出来比写出来省一行，也更像一台真的手机。 */
+  .vdev-bar {
+    display: flex; align-items: center; gap: 5px; padding: 6px 9px;
+    border-bottom: var(--bw) solid var(--line);
+    font-size: 10px; font-weight: 800; color: var(--fg); white-space: nowrap;
   }
-  .ph-status .bars { display: flex; align-items: flex-end; gap: 2px }
-  .ph-status .bars i { width: 3px; background: var(--fg); border-radius: 1px; display: block }
-  .ph-status .bars i:nth-child(1) { height: 4px } .ph-status .bars i:nth-child(2) { height: 6px }
-  .ph-status .bars i:nth-child(3) { height: 8px } .ph-status .bars i:nth-child(4) { height: 10px }
-  .ph-status .batt {
+  .vdev-bar b { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums }
+  .sig { display: flex; align-items: flex-end; gap: 2px; flex: none }
+  .sig i { width: 3px; background: var(--fg); border-radius: 1px; display: block }
+  .sig i:nth-child(1) { height: 4px } .sig i:nth-child(2) { height: 6px }
+  .sig i:nth-child(3) { height: 8px } .sig i:nth-child(4) { height: 10px }
+  .carrier { letter-spacing: .02em; white-space: nowrap }
+  .wifi { width: 13px; height: 13px; flex: none; display: block; color: var(--fg) }
+  /* 电池里那道闪电就是「插着电」。--mint 填满电量，深浅两套都看得出满格 */
+  .batt {
     width: 22px; height: 11px; border: 2px solid var(--fg); border-radius: 3px;
-    position: relative; display: inline-block;
+    position: relative; flex: none; display: block;
   }
-  .ph-status .batt::after { content: ""; position: absolute; inset: 1.5px; right: 6px; background: var(--mint) }
-  .ph-nav {
-    text-align: center; padding: 8px 0 10px; border-bottom: var(--bw) solid var(--line);
-    margin: 0 -10px 0;
+  .batt::before { content: ''; position: absolute; inset: 1.5px; background: var(--mint); border-radius: 1px }
+  .batt::after {
+    content: ''; position: absolute; right: -4px; top: 3px; width: 2px; height: 5px;
+    background: var(--fg); border-radius: 0 1px 1px 0;
   }
-  .ph-nav b { display: block; font-size: 15px }
-  .ph-nav span { display: block; font-size: 11px; color: var(--muted); margin-top: 2px }
-  .ph-body { padding: 16px 2px 22px; min-height: 250px }
-  .ph-day { text-align: center; font-size: 11px; color: var(--muted); margin-bottom: 14px; letter-spacing: .06em }
-  /* 来信气泡：左侧、带小尾巴，和短信 App 一致 */
-  .bub-in {
-    position: relative; max-width: 86%; padding: 11px 13px;
-    background: var(--cyan); color: var(--on-bright);
-    border: var(--bw) solid var(--line); border-radius: 16px 16px 16px 5px;
-    font-size: 15px; line-height: 1.55;
-  }
-  .bub-in .num { font-weight: 800; letter-spacing: .06em }
-  .bub-in.dim { background: transparent; color: var(--muted); margin-bottom: 12px }
-  .ph-time { font-size: 11px; color: var(--muted); margin: 7px 0 0 6px }
-  @keyframes glow { 0%, 100% { box-shadow: var(--shadow) } 50% { box-shadow: 0 0 0 7px var(--cyan), var(--shadow) } }
-  html[data-motion="on"] .phone { animation: glow 2.6s var(--ease) infinite }
-  @media (prefers-reduced-motion: reduce) { .phone { animation: none !important } }
-    /*
-   * 整只站在机身顶边**之上**，只有脚压住边框。
-   * 压进屏幕里会盖住时钟或信号电量，看起来像渲染错了；
-   * 而站在上面正好把标题与手机之间那块空隙填掉。
-   */
-  .bird-perch {
-    position: absolute; left: 12%; top: -106px; z-index: 2;
-    width: 132px; height: 132px; transform: scaleX(-1);   /* 朝右，看着屏幕 */
+  .batt i {
+    position: absolute; left: 50%; top: 50%; width: 5px; height: 9px; margin: -4.5px 0 0 -2.5px;
+    background: var(--line); clip-path: polygon(58% 0, 0 55%, 42% 55%, 42% 100%, 100% 45%, 58% 45%);
   }
 
-  /* ── 幕二：满幅航线 + 云层视差 ──────────────────────────── */
-  .map { position: absolute; inset: 0; width: 100%; height: 100%; display: block }
-  .land { fill: none; stroke: var(--line); stroke-width: 2; stroke-linejoin: round; opacity: .18 }
-  .route { fill: none; stroke: var(--line); stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 3 14; opacity: .4 }
-  .route-done {
-    fill: none; stroke: var(--cyan); stroke-width: 5; stroke-linecap: round;
-    stroke-dasharray: 2000; stroke-dashoffset: calc(2000 - var(--fly, 0) * 2000);
+  /* 两条屏幕内容叠在同一处：先「收到新消息」，下滑才显出正文。
+     叠着放而不是前后排，是为了机身高度不随内容跳动——一跳，
+     蹲在顶边上的鸽子和底下的桌子就都跟着动了。 */
+  .vdev-scr { position: relative; min-height: 118px }
+  .scr-idle, .vmsg { position: absolute; left: 12px; right: 12px; top: 14px }
+  /* 熄屏那一刻的样子：手机桌面上一个短信 App，右上角一颗红色的 1。
+     原来是一行「收到新消息 · 1 条未读」——那是把手机会做的事写成了字。 */
+  .scr-idle {
+    font-size: 12px; font-weight: 700; color: var(--muted); margin: 0;
+    opacity: calc((.037 - var(--p, 0)) / .022);
   }
-  .pin circle { fill: none; stroke: var(--line); stroke-width: 3 }
-  .pin .dot { fill: var(--yellow); stroke: var(--line); stroke-width: 2.5 }
-  .pin text { font-size: 15px; font-weight: 800; fill: var(--fg); text-anchor: middle; letter-spacing: .2em }
+  .appicon {
+    position: relative; width: 22px; height: 22px; border-radius: 6px; flex: none;
+    background: var(--mint); color: var(--on-bright);
+    border: var(--bw) solid var(--line);
+    box-shadow: var(--shadow); display: grid; place-items: center;
+  }
+  .appicon svg { width: 13px; height: 13px; display: block }
+  /* 角标：红色（--pink 是这套配色里「失败 / 要注意」那一档），压在右上角外沿 */
+  .badge1 {
+    position: absolute; top: -7px; right: -7px; min-width: 16px; height: 16px;
+    border-radius: 999px; background: var(--pink); color: var(--on-bright);
+    border: var(--bw) solid var(--line); font-style: normal;
+    font-size: 10px; font-weight: 800; line-height: 1; display: grid; place-items: center;
+  }
   /*
-   * 云层。三层不同速度往右退——鸽子往左飞，云往右走，
-   * 「飞过」的感觉靠相对运动，不靠给鸽子加特效。
-   * 越靠前的云退得越快，这就是视差。
+   * 闪的是**角标**，不是 .scr-idle 本身。
+   * 它自己的 opacity 是一条 --p 驱动的 calc（和正文交叉淡），
+   * 在上面挂动画会把那条 calc 整个盖掉——「下滑显出正文」当场失效。
    */
-    /* 云只描边不填充：填 var(--card) 在深色模式下是深色，压在鸽子上像个黑洞；
-     而纯线条正好是这一屏的调子。纵深靠**大小 + 速度 + 深浅**，不靠遮挡。 */
-  .cloud { fill: none; stroke: var(--line); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round }
-  .cl-far  { opacity: .22; transform: translateX(calc(var(--fly, 0) * 430px)) }
-  .cl-mid  { opacity: .42; transform: translateX(calc(var(--fly, 0) * 820px)) }
-  .cl-near { opacity: .7;  transform: translateX(calc(var(--fly, 0) * 1320px)) }
-  .tall-only { display: none }
-  .bird-fly {
-    offset-path: path("M 1120 512 C 930 254 470 222 160 420");
-    /*
-     * **不要用 offset-rotate: auto。** 航线是从右往左的，切线约 180°，
-     * 而鸽子画法朝右——auto 会把它整个转 180°，也就是肚皮朝天飞。
-     * 改成不跟随旋转、画法镜像成朝左，再按 --fly 给温和的俯仰。
-     */
-    offset-rotate: 0deg;
-    offset-distance: calc(var(--fly, 0) * 100%);
+  @keyframes unread { 0%, 100% { transform: scale(1) } 52% { transform: scale(1.18) } }
+  html[data-motion="on"] .badge1 { animation: unread 1.1s var(--ease) infinite }
+  @media (prefers-reduced-motion: reduce) { .badge1 { animation: none } }
+  .vmsg {
+    border: var(--bw) solid var(--line); border-radius: 13px 13px 13px 4px;
+    background: var(--cyan); color: var(--on-bright); padding: 10px 12px;
+    font-size: 12.5px; line-height: 1.5; padding: 0; border: 0; border-radius: 0;
+    background: transparent; color: var(--fg);
+    opacity: calc((var(--p, 1) - .015) / .022);
   }
-  /* 缩放与俯仰写在**中间这层**——它没有 offset-path，动它是安全的。
-     直接给外层加 scale 会把鸽子按回路径起点（踩过一次）。 */
-  .bird-fly > g { transform: rotate(calc((var(--fly, 0) - 0.5) * 22deg)) scale(var(--bs, 1)) }
-  /* 翅膀轻微扇动：幅度很小，只为让它不像贴纸 */
-  @keyframes flap { 0%, 100% { transform: scaleY(1) } 50% { transform: scaleY(.82) } }
-  html[data-motion="on"] .bird-fly .wing { animation: flap 420ms var(--ease) infinite; transform-origin: 30px 34px }
-  @media (prefers-reduced-motion: reduce) { .bird-fly .wing { animation: none } }
+  .vmsg b { display: block; font-size: 10px; letter-spacing: .04em; margin-bottom: 2px; opacity: .7 }
+  /* 明文与打码固定宽度、都居中：这是一句话中间的一个词，
+     不能因为换了状态就把整句话的长度改掉 */
+  .vswap { position: relative; display: inline-block; width: 3.1em; text-align: center }
+  .vswap i { font-style: normal; font-weight: 800; letter-spacing: .06em }
+  .vswap .mask { position: absolute; left: 0; right: 0; top: 0 }
+  .vswap .plain { opacity: calc((.115 - var(--p, 1)) / .028) }
+  .vswap .mask  { opacity: calc((var(--p, 1) - .115) / .028) }
 
-  /* ── 幕三：落在肩上 ────────────────────────────────────────
-     整幕是**一张 SVG**：航线的最后一截、云、人、鸽子、声波都在同一个
-     viewBox 里，相对位置是算出来的。上一版把「来路」单独做成一张满幅
-     `preserveAspectRatio=slice` 的 SVG，竖屏上被裁得正好从标题里穿过去——
-     两个独立的坐标系没法对齐，这种错只会在某个宽高比下出现。 */
-  .scene3 { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; justify-content: flex-end; padding-right: 4vw }
-  .p-wrap { position: relative }
-  .person { height: min(88vh, 720px); width: auto; max-width: 96vw; display: block }
+  /* ── 场景一：站在桌角低头看那台 ──────────────────────────
+     照着「一张桌角的照片」来：桌面铺满整个画面、只在左上角露出一条桌沿与
+     窗外的光，手机斜着躺在中间，四周散着绿植 / 书 / 杯子 / 本子。
+     上一版是把整张桌子画进画面里——那是在看一张桌子的**照片**，
+     而这一版是你**站在桌前**。
 
-  /* 航线的最后一截：跟着 --land 画出来，落点就在鸽子背后。
-     dasharray 取 460 460（比实际长度大）——offset=460 时整条路径都落在
-     「空档」里，于是天然是全隐藏，不用去量路径真实长度 */
-  .trail { fill: none; stroke: var(--cyan); stroke-width: 2.6; stroke-linecap: round; opacity: .5;
-    stroke-dasharray: 460 460; stroke-dashoffset: calc((1 - var(--land, 1)) * 460) }
-  /* 落地：从右上方沉下来、机身摆正。--land 默认 1 = 已落地，
-     所以关掉动效或不跑 JS 时它本来就在肩上，不会悬在半空 */
-  .perch3 {
-    transform-box: view-box; transform-origin: 190px 268px;
-    transform: translate(calc((1 - var(--land, 1)) * 26px), calc((1 - var(--land, 1)) * -34px))
-               rotate(calc((1 - var(--land, 1)) * -10deg));
+     手机屏幕里是活的 HTML 文字（要能选中、要过对比度检查、时间由 JS 填），
+     所以不能改画成 SVG。整张卡片上 3D 变换：
+     `perspective(880px) rotateX(31deg) rotateZ(-13deg)`。
+     31° 是上限——再大文字纵向压缩得太狠（cos31≈0.86 还读得动，
+     cos48≈0.67 就开始费劲），而这一屏的全部意义就是让人看清那条短信。 */
+  /*
+   * 窄屏出血到两边（负边距抵掉 .sc 的 16px，不用 100vw——那会算进滚动条宽度，
+   * 可能把 body 撑出横向滚动）；宽屏收成定宽。
+   * SVG 是等比缩放的：铺到 1280 宽时绿植和杯子会一起放大成巨物，
+   * 而手机是按 vw 定宽的，两者比例当场崩掉。
+   */
+  .ddesk { position: relative; align-self: stretch; margin: 0 -16px }
+  @media (min-width: 620px) {
+    .ddesk { align-self: center; width: 560px; margin: 0 auto }
   }
-  /* 声波：落稳之后才开口，三道弧从喙往耳朵推 */
-  .wave { opacity: calc((var(--land, 1) - 0.5) / 0.25) }
-  @keyframes say3 {
-    0%   { opacity: .3; transform: translateX(4px) }
-    35%  { opacity: 1 }
-    100% { opacity: .3; transform: translateX(-5px) }
-  }
-  html[data-motion="on"] .wave path { animation: say3 1.9s var(--ease) infinite }
-  html[data-motion="on"] .wave path:nth-child(2) { animation-delay: .32s }
-  html[data-motion="on"] .wave path:nth-child(3) { animation-delay: .64s }
-  @media (prefers-reduced-motion: reduce) { .wave path { animation: none } }
+  .ddesk-top { display: block; width: 100%; height: auto; aspect-ratio: 470 / 340 }
+  /*
+   * 灯光那一摊要分主题调。浅色下黄压在白桌面上是暖色的一片，好看；
+   * 深色下同样的黄压在深灰桌面上混成橄榄色，读起来像桌上洒了东西。
+   */
+  .ddesk-pool { opacity: .22 }
+  @media (prefers-color-scheme: dark) { .ddesk-pool { opacity: .06 } }
 
-  /* 气泡按**鸽子的头**定位（77.7% / 37.8% 是它在 viewBox 里的位置），
-     所以不管 SVG 被缩到多大，尾巴始终指着它 */
-  .whisper {
-    position: absolute; left: 75.7%; bottom: 55%; width: max-content; max-width: min(300px, 64%);
-    text-align: left; background: var(--mint); color: var(--on-bright);
-    border: var(--bw) solid var(--line); border-radius: 14px 14px 14px 14px;
-    box-shadow: var(--shadow); padding: 11px 15px; font-size: 16px;
-    transform: translateX(calc(-74% + (1 - var(--p, 0)) * 26px));
+  .ddesk-phone {
+    position: absolute; left: 50%; top: 24%; width: min(184px, 46vw, 36%); z-index: 2;
+    transform: translate(-50%, 0) perspective(880px) rotateX(31deg) rotateZ(-13deg);
+    transform-origin: 50% 75%;
   }
-  .whisper::after {
-    content: ''; position: absolute; left: 74%; bottom: -9px; margin-left: -8px;
-    width: 14px; height: 14px; background: var(--mint); transform: rotate(45deg);
-    border-right: var(--bw) solid var(--line); border-bottom: var(--bw) solid var(--line);
+  /* viewBox 是 `0 -60 240 140`——负的 y 是**桌面深处**那一侧，线要往那边走。
+     往下走（正 y）在屏幕上是朝观者，一出手机就掉到桌沿外面去了。
+     插头中心在 (225, 20)，也就是宽的 93.75%、高的 (20+120)/200 = 70%。
+     把这两个数当成 transform 的平移量，插头就钉在 left:50%/top:100% 上——
+     手机多高多宽都对得上，因为两个都是**这张图自己的**百分比。 */
+  .chg {
+    position: absolute; left: 50%; top: 100%; width: 210%; height: auto; z-index: 0;
+    transform: translate(-93.75%, -70%); pointer-events: none;
   }
-  .whisper .num { font-weight: 800; letter-spacing: .06em }
-  .whisper small { display: block; font-size: 11px; color: var(--on-bright); opacity: .66; margin-top: 3px; font-weight: 700 }
+  /* 桌面上桌子是一个居中的定宽盒子（560），线再按手机的 210% 画就会甩出
+     桌沿、还正好压在鸽子身上。手机上桌子是出血的，甩出去反而无所谓。 */
+  @media (min-width: 620px) { .chg { width: 148% } }
+  .ddesk-phone .vdev { width: 100%; border-radius: 20px }
+  .ddesk-phone .vdev-scr { min-height: 0; padding: 0 }
+  /* 这台手机只有画幅的三分之一宽，状态栏那一排（信号 + 运营商 + WiFi +
+     时间 + 电池）按默认字号排不下，右边的电池会被 overflow: hidden 直接裁掉。
+     把这一台的状态栏整体缩一档，而不是去掉「中国移动」——那几个字是
+     「这是一台插在家里的国内号卡」这句话的全部。 */
+  .ddesk-phone .vdev-bar { font-size: 9px; gap: 4px; padding: 5px 6px }
+  .ddesk-phone .sig i { width: 2.6px }
+  .ddesk-phone .wifi { width: 11px; height: 11px }
+  .ddesk-phone .batt { width: 18px; height: 9px; border-width: 1.6px }
+  .ddesk-phone .batt::after { right: -3px; top: 2.4px; height: 4px }
+  /* 小屏（360 这一档）上再降一档。量的是 .vdev-bar 的 scrollWidth 有没有
+     超过 clientWidth——overflow: hidden 把超出的部分直接吃掉，肉眼只看得见
+     「电池不见了」，看不出是溢出。 */
+  @media (max-width: 400px) {
+    .ddesk-phone .vdev-bar { font-size: 8px; gap: 3px; padding: 5px 5px }
+    .ddesk-phone .batt { width: 16px; height: 8px }
+  }
 
+  /* ── 锁屏 ────────────────────────────────────────────────
+     大时间 + 日期，下面一张通知卡。这是手机放在桌上、你走过去瞥一眼时
+     真正看到的样子——上一版画的是解锁之后的桌面，那要先按一下。 */
+  .lock { background: var(--bg); padding: 12px 9px 10px; text-align: center }
+  .lock-time { font-size: 26px; font-weight: 800; line-height: 1; letter-spacing: -.02em;
+               font-variant-numeric: tabular-nums }
+  .lock-date { font-size: 11px; font-weight: 700; color: var(--muted); margin-top: 4px }
+  .notif {
+    margin: 10px 2px 4px; padding: 7px 8px; text-align: left;
+    background: var(--card); border: var(--bw) solid var(--line);
+    border-radius: 12px; box-shadow: var(--shadow);
+  }
+  /* white-space: nowrap 是必须的：这台手机只有 31% 宽（402 的屏上约 134px），
+     不加的话「信息」和「现在」会各自被压成一列单字竖着排下来。
+     状态栏同理——挤不下宁可裁掉右边，也不能让它换行把机身撑高。 */
+  .nf-head { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 800;
+             white-space: nowrap }
+  .nf-head span.when { margin-left: auto; font-weight: 700; color: var(--muted); flex: none }
+  .nf-head .appicon { flex: none }
+  /* 通知卡里那两截叠在一起：收起时一行「1 条新消息」，下滑才展开成正文。
+     叠着放而不是前后排，是为了机身高度不随内容跳动——一跳，
+     斜着压在桌上的那张卡片和它底下的桌子就都跟着动了。 */
+  .nf-body { position: relative; min-height: 58px; margin-top: 6px }
+  .scr-idle, .vmsg { position: absolute; left: 0; right: 0; top: 0 }
+
+  /* 鸽子站在桌面上，**不跟着卡片转**——它是站着的，不是躺着的。
+     所以它挂在 .ddesk 上而不是 .vdev-wrap 上：在里面的话，
+     一加 3D 变换整只鸟就跟着躺平了。 */
+  /* 鸽子挪到桌子左上角那一片空地上（原来在 60% 那一档，正好被充电线穿过，
+     宽屏上看起来像一根棍子插在鸟身上）。 */
+  .vhomi {
+    position: absolute; left: 5%; top: 43%; width: min(52px, 12vw); height: auto; z-index: 3;
+    transform: rotate(calc(var(--wake, 1) * -8deg)); transform-origin: 46% 88%;
+    /* 它在 --mid 起步（p=0.10）之前离开：从那一刻起，飞的那只就是它 */
+    opacity: calc((.106 - var(--p, 1)) / .028);
+  }
+  .vding {
+    position: absolute; left: calc(5% + min(52px, 12vw) + 4px); top: 44%; z-index: 3;
+    font-size: 13px; font-weight: 800; color: var(--cyan);
+    opacity: calc(min((var(--p, 1) - .006) / .012, (.11 - var(--p, 1)) / .04));
+  }
+
+  /* ── 场景二：路上 ────────────────────────────────────────
+     --mid 是数据包在这一段里的进度（0→1），由 JS 从 --p 重映射。
+     百分比长度不像 opacity 会自动夹在 0–1，所以必须显式 clamp()。 */
+  /* 一条竖线穿过一屏黑，本身说不出「在飞」。几朵横着飘过去的云就够了——
+     动的是它们，所以那条线看起来才像在走。全部压在导线后面（z-index 0）。 */
+  .mcloud {
+    position: absolute; left: 0; width: var(--w, 90px); color: var(--line);
+    opacity: var(--o, .26); animation: drift var(--t, 26s) linear infinite var(--dl, 0s);
+  }
+  .mcloud svg { display: block; width: 100%; height: auto }
+  /* 只描边不填充。不写这条的话 path 走浏览器默认值（黑色实心），
+     深色模式下就是几团黑疙瘩横着飘过去 */
+  .cloud { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round }
+  @keyframes drift {
+    from { transform: translateX(-140px) }
+    to   { transform: translateX(calc(100vw + 60px)) }
+  }
+  @media (prefers-reduced-motion: reduce) { .mcloud { animation: none; transform: translateX(22vw) } }
+
+  .rail { position: relative; width: 100%; height: 100%; z-index: 1 }
+  .rail::before {
+    content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px;
+    background: repeating-linear-gradient(var(--line) 0 5px, transparent 5px 15px); opacity: .32;
+  }
+  .rail-done {
+    position: absolute; top: 0; left: 50%; width: 4px; margin-left: -2px; border-radius: 2px;
+    background: var(--cyan); height: clamp(0%, calc(var(--mid, 1) * 100%), 100%);
+  }
+  /* 沿线走的是我们自己那只鸟，不是一颗抽象的蓝点。
+     鸟身朝右，整体压 34° 让它顺着这条竖线往下滑翔；翅膀单独扇。 */
+  .packet {
+    position: absolute; left: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px;
+    top: clamp(0%, calc(var(--mid, 1) * 100%), 100%);
+    opacity: calc(min(var(--mid, 1) / .012, (.14 - var(--land, 0)) / .1));
+  }
+  .packet .load {
+    position: absolute; left: 52px; top: 50%; transform: translateY(-50%);
+    font-size: 11px; font-weight: 800; letter-spacing: .14em; white-space: nowrap;
+    padding: 3px 8px; border-radius: 999px; border: 1.5px solid var(--line);
+    background: var(--cyan); color: var(--on-bright);
+  }
+  @keyframes flap2 { 0%, 100% { transform: scaleY(1) } 50% { transform: scaleY(.76) } }
+  html[data-motion="on"] .packet .wing,
+  html[data-motion="on"] .rail-tail .wing { animation: flap2 400ms var(--ease) infinite; transform-origin: 28px 33px }
+  @media (prefers-reduced-motion: reduce) { .packet .wing, .rail-tail .wing { animation: none } }
+  .vhop {
+    position: absolute; left: 50%; transform: translate(-50%, -50%);
+    display: flex; align-items: center; gap: 7px; white-space: nowrap;
+    padding: 8px 14px; font-size: 13px; font-weight: 800;
+    border: var(--bw) solid var(--line); border-radius: 999px;
+    background: var(--card); box-shadow: var(--shadow);
+  }
+  .vhop svg { width: 15px; height: 15px; flex: none; display: block; color: var(--fg) }
+
+  /*
+   * 两个节点各有两件事：**经过那一下**的动效，和**办完之后**留下的变化。
+   * 只有前者的话，滑过去之后这一站看起来像什么都没发生；只有后者的话，
+   * 又看不出是「刚刚」发生的。
+   *
+   * 两个值都从 --mid 算，不写 JS：
+   *   --pulse 是一个三角窗（经过前后各 .025），用来做那一下的放大与闪色；
+   *   --done  是 0→1 的斜坡，用来做留下的变化（锁扣上、云上出现对勾）。
+   * 默认值都取「已经办完」，所以不跑 JS 时这两站是完成态，而不是等一个
+   * 永远不来的信号。
+   */
+  .vhop {
+    --pulse: clamp(0, min((var(--mid, 1) - var(--at)) / .025, (var(--at) + .05 - var(--mid, 1)) / .025), 1);
+    --done: clamp(0, calc((var(--mid, 1) - var(--at)) / .03), 1);
+    transform: translate(-50%, -50%) scale(calc(1 + var(--pulse) * .16));
+  }
+  /* 涟漪：经过之后往外扩一圈并淡掉。扩与淡是同一个 --done 驱动的，
+     所以它只会发生一次，不会跟着来回滚动反复闪 */
+  .vhop::before {
+    content: ''; position: absolute; border-radius: 999px; border: 2px solid var(--cyan);
+    inset: calc(-4px - var(--done) * 16px);
+    opacity: calc(1.05 - var(--done) * 1.05);
+  }
+  /* 经过那一下整颗胶囊被点亮。颜色没法 calc，所以叠一层青色按 --pulse 淡入淡出 */
+  .vhop::after {
+    content: ''; position: absolute; inset: 0; border-radius: 999px;
+    background: var(--cyan); opacity: var(--pulse);
+  }
+  .vhop > * { position: relative; z-index: 1 }
+  /* 底层与亮起那层交叉淡。两层同时可见的话，两套字叠在一起会发糊 */
+  .vhop .base { display: flex; align-items: center; gap: 7px; opacity: calc(1 - var(--pulse)) }
+  /* 亮起来的那一瞬字要跟着变深色——青是亮色块，压在上面的字一律 --on-bright */
+  .vhop .lit { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+               gap: 7px; color: var(--on-bright); opacity: var(--pulse); z-index: 2; border-radius: 999px }
+
+  /* 锁：经过之前是开的，之后扣上。这是这一站**留下的**那个变化 */
+  .lk-open { opacity: calc(1 - var(--done)) }
+  .lk-shut { position: absolute; left: 0; top: 0; opacity: var(--done) }
+  .vhop .lock-ic { position: relative; width: 15px; height: 15px; flex: none; display: block }
+  .vhop .lock-ic svg { position: absolute; left: 0; top: 0; width: 15px; height: 15px }
+  /* 办完之后挂一枚对勾。**两个站都要有**：原来只有云那一站挂，
+     加密那一站只是锁悄悄扣上——同一条线上两个站，一个有交代一个没有，
+     读的人会以为加密那一步没成。 */
+  .hop-ok {
+    position: absolute; right: -7px; top: -7px; width: 17px; height: 17px; border-radius: 50%;
+    background: var(--mint); border: var(--bw) solid var(--line); color: var(--on-bright);
+    display: grid; place-items: center; z-index: 3;
+    opacity: var(--done); transform: scale(calc(.4 + var(--done) * .6));
+  }
+  .hop-ok svg { width: 9px; height: 9px }
+  .hop-lock  { top: 28%; --at: .28 }
+  .hop-cloud { top: 72%; --at: .72 }
+
+  /* ── 场景三：边走边看的人 ──────────────────────────────── */
+  /* 导线再往下探一截，末端就是包落下来的地方——不接这一截的话，
+     镜头一进这一幕，上面那条线就凭空断在屏幕外 */
+  /* 落点是气泡的上边。气泡顶在 y=20，也就是插画高度的 5.56%；
+     导线在 x=210，而气泡的圆角到 x≈203 就走完了，所以鸟蹲在平的那一段上。
+     这一截必须量**插画自己**而不是 .sc-c：.vsub 在 .sc-c 里居中，
+     它离顶多远随视口高度变（720 高时 124px、820 高时 111px、900 高时 203px），
+     按 .sc-c 的百分比算，换个视口高度鸟就掉到画面外去了。
+     往上那 100vh 是把线接回上一幕：那一段和第二幕的导线同一个 x，叠上去看不出来。
+     z-index 要压过气泡（2），否则鸟有一半落在气泡里，被气泡的底色盖掉。 */
+  .rail-tail {
+    position: absolute; left: 50%; margin-left: -2px; z-index: 4; width: 4px;
+    top: -100vh; height: calc(100vh + 5.56% * var(--land, 1));
+    border-radius: 2px; background: var(--cyan);
+  }
+  /* 最后一段的那只鸟：和上面是同一只，交接处一个淡出一个淡入。
+     .packet 在 --land 到 .14 时淡完，这一只从 .14 才开始出现——
+     两个窗口不重叠，是因为它俩在屏幕上不在同一个位置，
+     同时可见的话就是两只鸟。（上一版重叠了 0…14，改过一次。）
+     这一只落下之后**不再淡出**：它停在气泡的上边，那就是「送到了」这句话本身。
+     `margin-bottom` 这个数是量出来的，不是算出来的：按整只的一半（-26px）
+     算，鸟有半个身子沉进气泡里、正好压住状态栏的信号格；而鸟的 svg 在 64
+     的画布里只画到 y≈47，**盒子底下还空着 14px**，所以按盒子对齐它又会
+     悬在气泡上方一指高。-20px 是这两头之间，脚刚好踩在边上。 */
+  .rail-tail .bird {
+    position: absolute; left: 50%; bottom: 0; width: 52px; height: 52px; margin: 0 0 -20px -26px;
+    opacity: calc((var(--land, 1) - .14) / .05);
+  }
+  /* ── 收到的那一眼：人 + 放大镜 ────────────────────────────
+     这一幕前后画了三版，前两版败在同一件事上：想让读者**站到人物的位置上**
+     看那块屏幕。第一版是从侧面看一个人走路、手机贴在他手边；第二版是
+     从他肩后看过去。越肩那一版在构图上其实是对的，但落到 402 宽的手机上，
+     后脑勺占掉右边三分之一，读者认不出那是个人，只看见一团色块。
+
+     这一版换成参考图那个办法：人**正面朝着你**、手里举着手机，
+     屏幕内容另开一个**圆形放大镜**放在旁边。两个好处——人可以画得小而
+     完整（认得出是个人就够了，不必逼真），而验证码拿到了一整块干净的
+     圆形区域，字号给得足，这一幕要传达的东西本来就只有那六个字符。
+
+     四层，坐标系统一是 420×360：
+       ① .vsub-bg  街景，压到很淡，只为了说明「他在外面」
+       ② .vsub-mid 人（头、帽衫、背包带、举着手机的那只手）
+       ③ .vbub + .vtail  联想气泡与引出的两颗小圆，气泡里是活的 HTML */
+  .vsub {
+    position: relative; align-self: stretch; margin: 0 -16px; aspect-ratio: 420 / 360;
+  }
+  @media (min-width: 620px) {
+    .vsub { align-self: center; width: 560px; margin: 0 auto }
+  }
+  .vsub-bg, .vsub-mid {
+    position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none;
+  }
+  .vsub-bg { z-index: 0 }
+  .vsub-mid { z-index: 1 }
+
+  /* 联想气泡：里面是**放大的那块手机屏幕**，不是几行排版好的字。
+     上一版画成了一个正圆、里面直接摆文字——两处都不对：正圆是「放大镜」
+     的语汇（在看一张静止的图），而这里要说的是「同一条短信出现在他手上
+     这台的屏幕上」，所以它该是一个从手机引出来的气泡，里面是一块屏幕：
+     状态栏、桌面底色、一张通知卡，一眼认得出是手机。
+
+     坐标系 420×360：气泡 x 180..398、y 20..304（竖长比例，像一块屏幕），
+     左边留出 32 个单位的空当给两颗引出的小圆（.vtail）。
+     右边故意不顶满：.vsub 是 margin: 0 -16px 的出血排版，画到 97% 就已经
+     在屏幕外了，状态栏的电池会被整个切掉——插画的边缘可以出血，内容不行。
+     圆角用 clamp 跟着视口走——写 50% 就又变回椭圆了。
+
+     字号挂在 .vbub 自己身上、内部一律用 em：气泡多大随视口变，
+     写死 px 的话手机上塞不下、桌面上又小得可笑。 */
+  .vbub {
+    position: absolute; left: 42.86%; top: 5.56%; width: 51.9%; height: 78.89%; z-index: 2;
+    border-radius: clamp(16px, 4.6vw, 28px); overflow: hidden;
+    border: var(--bw) solid var(--line); background: var(--bg); box-shadow: var(--shadow);
+    display: flex; flex-direction: column;
+    font-size: clamp(10.5px, 2.9vw, 14px);
+    opacity: calc((var(--land, 1) - .48) / .3);
+    transform: scale(calc(.9 + min(var(--land, 1), 1) * .1));
+  }
+  /* 屏幕是亮着的。气泡内部和页面底色都是 --bg，只靠一圈描边区分的话，
+     它读起来像页面上挖了个洞，而不是一块屏幕。压一层很淡的青当屏幕光。
+     用 ::before 而不是半透明色值：调色板是 CSS 变量，套不进 rgba()。 */
+  .vbub::before {
+    content: ''; position: absolute; inset: 0; background: var(--cyan);
+    opacity: .1; pointer-events: none;
+  }
+  @media (prefers-color-scheme: dark) { .vbub::before { opacity: .07 } }
+  .vbub-bar, .vbub-scr { position: relative; z-index: 1 }
+  /* 引出来的两颗小圆。它们是「这块屏幕属于他手里那台」这句话的全部——
+     没有它们，右边那块就只是旁边另开的一张图 */
+  .vtail {
+    position: absolute; z-index: 2; border-radius: 50%;
+    background: var(--bg); border: var(--bw) solid var(--line);
+    opacity: calc((var(--land, 1) - .44) / .3);
+  }
+  .vtail-a { left: 38.69%; top: 48.47%; width: 3.57%; aspect-ratio: 1 }
+  .vtail-b { left: 36.07%; top: 52.64%; width: 2.14%; aspect-ratio: 1 }
+
+  /* 状态栏。和第一幕那台共用 .sig / .wifi / .batt，但这里不挂运营商——
+     气泡只有 230 来像素宽，多一个「中国移动」就把时间挤没了 */
+  .vbub-bar {
+    display: flex; align-items: center; gap: .5em; padding: .75em .8em .3em;
+    font-size: .76em; font-weight: 800; color: var(--fg); white-space: nowrap; flex: none;
+  }
+  .vbub-bar b { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums }
+  /* 屏幕里是**锁屏**，不是一张居中的卡。照着真机来：
+     日期在上、时间在下（iOS 的顺序——家里那台是安卓，时间在上、日期在下，
+     两台正好区分得开），通知贴在屏幕下半部分，上面留白。
+     通知本身是「图标在左、标题一行带时间、正文在右边整块折行」，
+     不是把每一行都居中——居中排版的那版看起来是海报，不是通知。 */
+  .vbub-scr {
+    flex: 1; min-height: 0; display: flex; flex-direction: column;
+    padding: .5em .7em .9em; text-align: center;
+  }
+  .bub-date { font-size: .82em; font-weight: 700; color: var(--muted) }
+  .bub-time {
+    font-size: 3.3em; font-weight: 800; line-height: 1.02; letter-spacing: -.03em;
+    font-variant-numeric: tabular-nums; margin-top: .04em;
+  }
+  /* margin-top: auto —— 通知在锁屏上是**贴着下面**的，上面那块空白是时间的地方 */
+  .bub-nf {
+    margin-top: auto; text-align: left;
+    display: grid; grid-template-columns: auto 1fr; gap: .34em .5em; align-items: start;
+    border: var(--bw) solid var(--line); border-radius: .9em;
+    background: var(--card); box-shadow: var(--shadow); padding: .62em .66em;
+  }
+  /* 应用图标：圆角方块，和手机桌面上那颗一致 */
+  .bub-ic {
+    grid-row: 1 / span 2; align-self: center;
+    width: 2.3em; height: 2.3em; border-radius: .62em; flex: none;
+    border: 1.5px solid var(--line); background: var(--cyan);
+    display: grid; place-items: center;
+  }
+  .bub-ic img { display: block; width: 1.75em; height: 1.75em }
+  .bub-t {
+    margin: 0; display: flex; align-items: baseline; gap: .4em;
+    font-size: .78em; font-weight: 800; min-width: 0;
+  }
+  .bub-t b { font-weight: 800; white-space: nowrap }
+  .bub-t em {
+    font-style: normal; font-weight: 700; color: var(--muted);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .bub-t span { margin-left: auto; font-weight: 700; color: var(--muted); flex: none }
+  .bub-b { margin: 0; font-size: .8em; font-weight: 600; line-height: 1.5 }
+  .bub-code { font-weight: 800; font-size: 1.22em; letter-spacing: .1em }
+  /* 通知下面那条动作行。安卓的通知本来就长这样，iOS 上是长按才出来——
+     画成一条整行的按钮，是因为「长按即复制」这件事没法画出来 */
+  .bn-copy {
+    grid-column: 1 / -1; width: 100%; margin: .3em 0 0;
+    font-size: .76em; padding: .5em; border-radius: .7em;
+    background: var(--cyan); color: var(--on-bright); box-shadow: 2px 2px 0 var(--line);
+  }
+  .bn-copy[data-done] { background: var(--mint) }
+
+  /* 可选：速度线流动。不加这段也成立——静止时就是三条实线。
+
+     方向和人走的方向一致：dashoffset 走负值 = 虚线图案往 +x 跑。
+     周期 14（dasharray 9+5），所以走到 -14 正好接回原样，循环无缝；
+     写成别的值就会在每一轮开头顿一下。
+
+     只在 html[data-motion="on"] 下生效，和落地页其余动效同一个开关：
+     脚本没跑 / 被 CSP 拦掉 / 出错时，这里是三条普通实线，不是空白。 */
+  @keyframes wsideprofile-streak { to { stroke-dashoffset: -14 } }
+
+  html[data-motion="on"] .wsideprofile-speed path {
+    stroke-dasharray: 9 5;
+    animation: wsideprofile-streak .6s linear infinite;
+  }
+
+  /* 减少动效时是根本不动，不是动得慢一点——顺手把虚线也去掉，
+     否则留下的是三条断线，看着像画错了 */
+  @media (prefers-reduced-motion: reduce) {
+    html[data-motion="on"] .wsideprofile-speed path {
+      stroke-dasharray: none;
+      animation: none;
+    }
+  }
+
+  /* ── 常驻：下滑提示 ── */
+  /* 底部压暗带。它不只是为了好看——胶片是**从下往上**滑过取景框的，
+     每一格的图注（.vtag）都必然要穿过下滑提示所在的那一条。74% 的时候
+     图注在提示后面还有四成可见度，两行字叠在一起谁都读不清。
+     渐变在 46% 就到实色，也就是提示条那一带是**不透明**的，
+     穿过去的东西彻底看不见；静止时图注远在这条带子上面，不受影响。 */
+  .stage-in::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 168px; z-index: 3;
+    background: linear-gradient(to bottom, transparent, var(--bg) 46%); pointer-events: none;
+  }
+  html:not([data-motion="on"]) .stage-in::after { display: none }
   .stage-cue {
-    position: absolute; left: 0; right: 0; bottom: 18px; z-index: 4;
+    position: absolute; left: 0; right: 0; z-index: 4;
+    bottom: calc(70px + env(safe-area-inset-bottom, 0px));
     font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 8px;
   }
-  /* 第三幕的胸像铺到底边，灰字压在紫色上几乎读不出来——给提示一个底片 */
   .stage-cue span, .stage-cue i {
-    background: var(--bg); color: var(--muted); border-radius: 999px;
-    padding: 4px 10px; line-height: 1;
+    background: var(--bg); color: var(--muted); border-radius: 999px; padding: 4px 10px; line-height: 1;
   }
-  .stage-cue i { padding: 5px 8px }
-  .stage-cue i { font-style: normal; animation: bob 1.8s var(--ease) infinite }
+  .stage-cue i { padding: 5px 8px; font-style: normal; animation: bob 1.8s var(--ease) infinite }
   @media (prefers-reduced-motion: reduce) { .stage-cue i { animation: none } }
 
+  /* 不跑 JS：--p / --mid 没人给，全篇的 var(--…, 1) 取默认值，
+     于是三段都是完成态。把胶片摊开、取景框放平就行。 */
   html:not([data-motion="on"]) .stage { height: auto !important }
-  html:not([data-motion="on"]) .stage-in { position: static; height: auto; min-height: 0; padding: 36px 0 0 }
-  html:not([data-motion="on"]) .act { height: auto }
-  html:not([data-motion="on"]) .say { position: static; margin: 0 16px 24px }
-  html:not([data-motion="on"]) .scene1 { position: static; display: flex; justify-content: center; padding: 0 16px }
-  html:not([data-motion="on"]) .bird-perch { position: static; margin: 0 0 8px -30px; align-self: flex-end }
-  html:not([data-motion="on"]) .phone { transform: none }
-  html:not([data-motion="on"]) .act2,
-  html:not([data-motion="on"]) .act3 { display: none }
+  html:not([data-motion="on"]) .stage-in {
+    position: static; height: auto; min-height: 0; overflow: visible;
+  }
+  html:not([data-motion="on"]) .v2film { position: static; transform: none }
+  html:not([data-motion="on"]) .sc-a { height: auto; padding: 28px 16px 0 }
+  html:not([data-motion="on"]) .sc-mid { height: 190px; padding: 18px 16px }
+  html:not([data-motion="on"]) .sc-c { height: auto; padding: 24px 16px 8px }
+  html:not([data-motion="on"]) .rail-tail { top: 0; height: 42px }
+  html:not([data-motion="on"]) .scr-idle { display: none }
+  /* 静态连环画：三格各是一个瞬间，所以三只鸟都在 */
+  html:not([data-motion="on"]) .vhomi,
+  html:not([data-motion="on"]) .packet { opacity: 1 }
+  html:not([data-motion="on"]) .stage-cue { display: none }
 
   @media (max-width: 860px) {
-    .stage-in { min-height: 540px }
-    /* 手机上把大字压到顶、场景顶到底，中间不留空 */
-    .say { left: 20px; right: 20px; top: 9vh; max-width: none; font-size: clamp(25px, 8vw, 40px) }
-    /* 窄屏：大字压到顶，手机顶到底并做高，中间不留空 */
-    .say { top: 4vh }
-    .act1 .say { top: 2vh }
-    /*
-     * 手机的高度由**视口**定，不由内容定。原来是 `.ph-body { min-height: 54vh }`
-     * 加内容自然撑高——补了一条旧消息之后机身长了几十像素，顶边连同蹲在上面的
-     * 鸽子一起顶进了大字里。而且 Safari 的 vh 用的是大视口（地址栏收起时的高度），
-     * 比 svh 大一截，真机上比模拟更靠上。
-     * 现在改成「从 36% 那条线往下才是手机」，顶边位置与内容无关。
-     */
-    .scene1 { right: 0; left: 0; top: min(36%, 270px); bottom: 0; display: flex; justify-content: center }
-    .ph-wrap { height: 100% }
-    .phone { width: min(340px, 86vw); padding-top: 8px; height: 100%;
-             box-sizing: border-box; display: flex; flex-direction: column }
-    .ph-body { min-height: 0; flex: 1; overflow: hidden; padding-top: 18px }
-    .bub-in { font-size: 15px }
-    .bird-perch { width: 112px; height: 112px; left: 8%; top: -92px }
-    /*
-     * 竖屏上这张地图是横的，`meet` 之后只剩中间 235px 高的一条，
-     * 上下各空掉三百多像素。放大 2 倍填满高度，左右自然被裁掉——
-     * 裁掉的是陆地轮廓，无所谓；两个图钉与航线改走窄版那条，
-     * 保证都落在可见的 320–960 这一段里。
-     */
-    .map { transform: scale(2) translateY(5%) }
-    .land { opacity: .26 }
-    .wide-only { display: none }
-    .tall-only { display: block }
-    /* 描边与字号是按未放大时调的，放大后要按比例收回去 */
-    .bird-fly { --bs: 1.3 }
-    .pin text { font-size: 40px }
-    .route-done { stroke-width: 6 }
-    .route { stroke-width: 3.5; stroke-dasharray: 4 18 }
-    .bird-fly { offset-path: path("M 900 520 C 810 244 500 204 390 420") }
-    /* 窄屏：整幕铺满宽度、顶到底边，靠 SVG 上半张的航线与云把中间填住，
-       大字压到最顶——原来是「标题 + 一大块空 + 底下一个小人」 */
-    .act3 .say { top: 1vh }
-    .scene3 { justify-content: center; padding: 0 }
-    .person { width: min(100vw, 440px); height: auto; max-width: none }
-    .whisper { font-size: 14px; padding: 9px 12px; max-width: 58% }
+    .stage-in { min-height: 520px }
+    .vhop { padding: 7px 12px; font-size: 12px }
+    .vmsg { font-size: 13px }
   }
+
+  .bridge { padding: 76px 0 4px; text-align: center }
+  .bridge p { margin: 0; font-size: clamp(19px, 3.6vw, 27px); font-weight: 800; line-height: 1.5; letter-spacing: -.01em }
+  .bridge .sub { margin-top: 10px; font-size: 15px; font-weight: 700; color: var(--muted); letter-spacing: 0 }
+  @media (max-width: 860px) { .bridge { padding: 54px 16px 0 } }
 
   /* ── 第一屏 ────────────────────────────────────────────── */
   .hero { padding: 54px 0 40px; }
@@ -619,159 +958,421 @@
   <a class="btnlink" href="/login"><button class="ghost sm">登录</button></a>
 </div></div>
 
-<!-- ══ 第一屏：信鸽把验证码送过来 ══
-  三幕由滚动进度 --p 驱动，见上面那段 CSS 与 welcome.js。
-  整段是**装饰**：关掉 JS 只剩第一幕的静态画面，正文一个字不少。
+<!-- ══ 第一屏 v2：镜头顺着一条短信下摇 ══
+  一条 316svh 的胶片在 100svh 的取景框里按 --p 上移：
+  桌上那台 → 数据包沿线走过加密与服务器 → 边走边看手机的人。
+  见上面那段 CSS 与 welcome.js。关掉 JS 时三段摊开成静态插图，正文一字不少。
 -->
 <div class="stage" id="stage">
   <div class="stage-in">
+    <div class="v2film">
 
-    <!-- 幕一：家里那台收到了 -->
-    <section class="act act1">
-      <p class="say"><small>家里 · 安卓备用机</small>你有<em>一条</em>新消息。</p>
-      <div class="scene1"><div class="ph-wrap">
-        <div class="phone">
-          <div class="ph-status">
-            <span id="ph_clock">20:23</span>
-            <span style="display:flex;align-items:center;gap:6px">
-              <span class="bars"><i></i><i></i><i></i><i></i></span>
-              <span class="batt"></span>
-            </span>
-          </div>
-          <div class="ph-nav"><b>95588</b><span>短信 / 彩信</span></div>
-          <div class="ph-body">
-            <!-- 上面压一条旧消息：空荡荡的一屏只有一条气泡，看起来像占位图而不是
-                 一台真在用的手机。旧的那条压暗，新的那条才是青色的重点 -->
-            <p class="ph-day">昨天</p>
-            <div class="bub-in dim">【中国移动】本月流量已用 82%。</div>
-            <p class="ph-day" id="ph_day">今天</p>
-            <div class="bub-in">【招商银行】您的验证码是 <span class="num">1357</span>，5 分钟内有效，请勿转发给他人。</div>
-            <p class="ph-time" id="ph_time">20:23</p>
-          </div>
-        </div>
-        <svg class="bird-perch" viewBox="0 0 64 64" aria-hidden="true">
-            <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
-              <path d="M30 52 L30 58 M38 52 L38 58"/>
-              <path fill="var(--cyan)" d="M20 52 C12 46 14 32 26 27 C36 23 46 26 49 34 C52 42 46 51 36 53 Z"/>
-              <path fill="var(--yellow)" d="M26 36 C31 31 39 32 43 38 C38 45 30 45 26 36 Z"/>
-              <circle cx="27" cy="21" r="9" fill="var(--cyan)"/>
-              <path fill="var(--orange)" d="M18 19 L9 22 L18 25 Z"/>
-            </g>
-            <circle cx="24" cy="18" r="2.5" fill="var(--line)"/>
-          </svg>
-      </div></div>
-    </section>
+      <!-- ① 桌上那台：不动的那一端 -->
+      <section class="sc sc-a">
+        <p class="v2head"><small>一条短信的路线</small>卡留在家，<br>号跟着<em>你</em>走。</p>
+        <div class="deskset">
+          <div class="ddesk">
 
-    <!-- 幕二：飞过来 -->
-    <section class="act act2"><div class="inner">
-      <svg class="map" viewBox="0 0 1280 700" preserveAspectRatio="xMidYMid meet" role="img" aria-label="信鸽从家飞到你身边">
-        <g class="land">
-          <path d="M60 424 L170 384 L214 456 L142 520 L48 490 Z"/>
-          <path d="M236 406 L392 366 L450 424 L392 482 L262 472 Z"/>
-          <path d="M398 494 L512 486 L534 582 L438 594 Z"/>
-          <path d="M512 392 L884 348 L1168 392 L1226 480 L968 528 L580 504 L492 448 Z"/>
-          <path d="M1168 544 L1256 532 L1274 600 L1182 608 Z"/>
-        </g>
-        <!-- 远云在航线之前画：它们在鸽子后面 -->
-        <g class="cloud-wrap cl-far"><path class="cloud" transform="translate(80,70) scale(1.7)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g><g class="cloud-wrap cl-far"><path class="cloud" transform="translate(520,40) scale(1.3)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g><g class="cloud-wrap cl-far"><path class="cloud" transform="translate(900,100) scale(1.5)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g><g class="cloud-wrap cl-far"><path class="cloud" transform="translate(1120,44) scale(1.1)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g>
-        <g class="wide-only">
-          <path class="route" d="M 1120 512 C 930 254 470 222 160 420"/>
-          <path class="route-done" d="M 1120 512 C 930 254 470 222 160 420"/>
-          <g class="pin">
-            <circle cx="1120" cy="512" r="17"/><circle class="dot" cx="1120" cy="512" r="6"/>
-            <text x="1120" y="556">家</text>
-          </g>
-          <g class="pin">
-            <circle cx="160" cy="420" r="17"/><circle class="dot" cx="160" cy="420" r="6"/>
-            <text x="160" y="464">你</text>
-          </g>
-        </g>
-        <g class="tall-only">
-          <path class="route" d="M 900 520 C 810 244 500 204 390 420"/>
-          <path class="route-done" d="M 900 520 C 810 244 500 204 390 420"/>
-          <g class="pin">
-            <circle cx="900" cy="520" r="17"/><circle class="dot" cx="900" cy="520" r="6"/>
-            <text x="900" y="564">家</text>
-          </g>
-          <g class="pin">
-            <circle cx="390" cy="420" r="17"/><circle class="dot" cx="390" cy="420" r="6"/>
-            <text x="390" y="464">你</text>
-          </g>
-        </g>
-        <g class="cloud-wrap cl-mid"><path class="cloud" transform="translate(250,150) scale(2.2)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g><g class="cloud-wrap cl-mid"><path class="cloud" transform="translate(760,120) scale(1.9)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g><g class="cloud-wrap cl-mid"><path class="cloud" transform="translate(1040,210) scale(1.6)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g><g class="bird-fly" aria-hidden="true">
-          <g>
-            <g transform="scale(-1,1) translate(-32,-30) scale(1.45)">
-              <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
-                <path fill="var(--cyan)" d="M47 27 C53 32 52 42 43 47 C34 52 22 49 17 43 L4 47 L12 34 C15 26 25 21 33 21 C40 21 45 23 47 27 Z"/>
-                <path class="wing" fill="var(--yellow)" d="M17 39 C19 28 29 24 38 30 C33 39 25 43 17 39 Z"/>
-                <circle cx="45" cy="21" r="10.5" fill="var(--cyan)"/>
-                <path fill="var(--orange)" d="M54 18 L63 22 L54 26 Z"/>
+            <!-- 桌角。坐标系 470×340：桌沿从左边 y=118 斜到右上 y=22，
+                 桌面往下、往两边一路出血到画幅外——桌子不该有边框，
+                 有了就又变回「一张桌子的照片」而不是「你站在桌前」。
+                 每个 path 都显式写 fill：不写就是浏览器默认的黑色实心，
+                 深色主题下是一团黑疙瘩。 -->
+            <svg class="ddesk-top" viewBox="0 0 470 340" aria-hidden="true">
+              <defs>
+                <clipPath id="ddesk-clip"><path d="M0 118 L470 22 L470 340 L0 340 Z"/></clipPath>
+              </defs>
+
+              <!-- 窗：桌沿之外那一条。三道竖线就够说明「左边是窗户」，
+                   这一屏的主角不是它 -->
+              <g stroke="var(--line)" stroke-width="3" stroke-linecap="round" opacity=".28">
+                <path d="M26 6 L26 100" fill="none"/>
+                <path d="M74 4 L74 90" fill="none"/>
+                <path d="M6 54 L104 44" fill="none"/>
               </g>
-              <circle cx="48" cy="18" r="2.5" fill="var(--line)"/>
-            </g>
-          </g>
-        </g>
-        <!-- 近云画在鸽子之后：它们会从它前面掠过，这就是纵深 -->
-        <g class="cloud-wrap cl-near"><path class="cloud" transform="translate(-120,268) scale(3.1)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g><g class="cloud-wrap cl-near"><path class="cloud" transform="translate(560,330) scale(2.6)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g><g class="cloud-wrap cl-near"><path class="cloud" transform="translate(980,300) scale(2.3)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g>
-      </svg>
-      <p class="say"><small>几秒钟</small>它自己飞过来，<br>不用<em>谁转发</em>，也不用等。</p>
-    </div></section>
 
-    <!-- 幕三：落在肩上 -->
-    <section class="act act3">
-      <p class="say"><small>到了</small>卡留在家，<br>号跟着<em>你</em>走。</p>
-      <div class="scene3"><div class="p-wrap">
-        <svg class="person" viewBox="0 0 240 360" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
-          <!-- 上半张是天空：航线的最后一截与三朵云。全部压在 y≥44 以下——
-               竖屏上视口越矮这张图顶得越高，y<44 那一条是留给大字的 -->
-          <path class="trail" d="M 4 58 C 112 50 136 152 196 236"/>
-          <g opacity=".18"><path class="cloud" transform="translate(148,44) scale(.8)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g>
-          <g opacity=".3"><path class="cloud" transform="translate(-10,92) scale(1.2)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g>
-          <g opacity=".22"><path class="cloud" transform="translate(6,158) scale(.75)" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></g>
+              <path fill="var(--card)" stroke="var(--line)" stroke-width="3.6" stroke-linejoin="round"
+                    d="M0 118 L470 22 L470 340 L0 340 Z"/>
 
-          <g stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round">
-            <!-- 肩宽 178 ≈ 2.6 个头宽。上一版是 3.2，加上齐平的顶边与两个大圆角，
-                 整个人看起来像一颗紫色药片。肩线在 y=270 上是平的，鸽子的两只脚
-                 落在右边 116→190 那一段——圆弧肩膀上没有一处放得下两只脚，
-                 试过，脚不是悬空就是陷进去 -->
-            <path fill="var(--violet)" d="M28 360 L28 322 C28 296 46 274 72 270 L92 270 L92 238 L116 238 L116 270 L198 270 C206 272 214 294 214 322 L214 360 Z"/>
-            <circle cx="104" cy="204" r="34" fill="var(--card)"/>
-            <path fill="var(--yellow)" d="M70 206 A34 34 0 0 1 138 206 Z"/>
-          </g>
-          <!-- 耳朵：声波得有个去处，没有它三道弧就只是飘在脸边 -->
-          <path d="M129 216 C139 220 139 232 129 235" stroke="var(--line)" stroke-width="3.4" fill="none" stroke-linecap="round"/>
-          <circle cx="92" cy="215" r="3.6" fill="var(--line)"/>
-          <path d="M99 228 C105 232 114 232 120 226" stroke="var(--line)" stroke-width="3.4" fill="none" stroke-linecap="round"/>
+              <g clip-path="url(#ddesk-clip)">
+                <!-- 窗光落在桌面上的一摊。它偏左上，因为窗在那边 -->
+                <ellipse class="ddesk-pool" cx="176" cy="212" rx="228" ry="136"
+                         fill="var(--yellow)" transform="rotate(-11 176 212)"/>
+              </g>
 
-          <g class="perch3">
-            <g class="wave" stroke="var(--cyan)" stroke-width="3.2" fill="none" stroke-linecap="round">
-              <path d="M156 222 C151 225 151 231 156 234"/>
-              <path d="M150 219 C143 224 143 232 150 237"/>
-              <path d="M144 216 C135 223 135 233 144 240"/>
-            </g>
-            <!-- 脚落在 y=270（肩线上），喙在 x≈152 y≈227（耳朵右边一点）。
-                 描边取 2.8 是因为外面套了 scale(1.2)，落到屏幕上正好和人身上的 3.4 一样粗 -->
-            <g transform="translate(149.2,200.4) scale(1.2)">
-              <g stroke="var(--line)" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round">
-                <path d="M30 52 L30 57 M38 52 L38 57"/>
+              <g stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round">
+                <!-- 绿植：桌角最远那一件，一半出画。参考图里它就在左上角 -->
+                <path fill="var(--mint)" d="M58 92 C32 80 20 54 26 30 C54 38 70 66 64 92 Z"/>
+                <path fill="var(--mint)" d="M70 92 C88 76 96 52 90 32 C70 42 56 70 64 92 Z"/>
+                <path fill="var(--orange)" d="M34 92 L98 88 L90 138 L44 142 Z"/>
+                <path fill="none" stroke-width="3" d="M30 90 L102 85"/>
+
+                <!-- 书：右上角摞着两本，斜着放 -->
+                <path fill="var(--violet)" d="M348 46 L448 30 L460 74 L360 90 Z"/>
+                <path fill="var(--card)" d="M342 76 L444 60 L456 106 L354 122 Z"/>
+                <path fill="none" stroke-width="3" d="M356 79 L366 119"/>
+
+                <!-- 马克杯：俯视是一个圆加一只把手 -->
+                <ellipse cx="406" cy="176" rx="34" ry="25" fill="var(--card)"/>
+                <ellipse cx="406" cy="176" rx="20" ry="14" fill="var(--orange)"/>
+                <path fill="none" d="M441 168 C460 166 462 186 444 189"/>
+
+                <!-- 本子 + 笔：右下角，一半出画 -->
+                <path fill="var(--card)" d="M336 248 L458 230 L470 320 L350 340 Z"/>
+                <path fill="none" stroke-width="3" d="M350 252 L366 338"/>
+                <path fill="var(--violet)" stroke-width="2.6" d="M382 284 L436 276 L437 285 L383 293 Z"/>
+                <path fill="var(--line)" stroke-width="2.2" d="M436 276 L448 276 L449 285 L437 285 Z"/>
+
+            </svg>
+
+            <!-- 手机：斜着躺在桌上。整张卡片一起做 3D 变换，屏幕里仍然是活的 HTML -->
+            <div class="ddesk-phone">
+              <!-- 充电线。它挂在**手机自己**身上而不是桌子那张 svg 里：
+                   手机的高度是内容撑出来的 px，桌子的高度随视口缩放，
+                   两者在 viewBox 空间里的比例每一档都不同（实测手机底边中点
+                   的 y 从 256 跳到 351），写死坐标必然有一档插到侧面去。
+                   挂在手机上之后它跟着手机一起做 3D 变换——线本来就躺在桌面上，
+                   和手机同一个平面，这样透视也是对的。
+                   插头的中心正好落在 left:50% / top:100%，也就是底边中点。 -->
+              <svg class="chg" viewBox="0 -120 240 200" aria-hidden="true">
+                <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+                  <path stroke="var(--line)" stroke-width="9"
+                        d="M212 20 C182 4 156 -14 128 -28 C104 -40 82 -44 70 -34 C58 -24 68 -12 82 -18 C94 -23 90 -42 72 -50 C50 -60 26 -78 4 -92"/>
+                  <path stroke="var(--card)" stroke-width="4.4"
+                        d="M212 20 C182 4 156 -14 128 -28 C104 -40 82 -44 70 -34 C58 -24 68 -12 82 -18 C94 -23 90 -42 72 -50 C50 -60 26 -78 4 -92"/>
+                </g>
+                <!-- 插头：方头压在底边上，上面那截舌头插进机身，被机身盖住 -->
+                <rect x="212" y="8" width="26" height="26" rx="6"
+                      fill="var(--card)" stroke="var(--line)" stroke-width="3.4"/>
+                <rect x="218" y="-6" width="14" height="16" rx="3"
+                      fill="var(--card)" stroke="var(--line)" stroke-width="3"/>
+              </svg>
+              <div class="vdev-wrap">
+                <div class="vdev">
+                  <div class="vdev-bar">
+                    <span class="sig"><i></i><i></i><i></i><i></i></span>
+                    <span class="carrier">中国移动</span>
+                    <svg class="wifi" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+                      <path d="M1.6 5.6C5.2 2.5 10.8 2.5 14.4 5.6"/>
+                      <path d="M4.2 8.6C6.4 6.8 9.6 6.8 11.8 8.6"/>
+                      <path d="M6.7 11.5C7.5 10.9 8.5 10.9 9.3 11.5"/>
+                    </svg>
+                    <b id="v2_clock">22:16</b>
+                    <span class="batt"><i></i></span>
+                  </div>
+                  <div class="vdev-scr">
+                    <div class="lock">
+                      <div class="lock-time" id="v2_big">22:16</div>
+                      <div class="lock-date" id="v2_date">9 月 17 日 周三</div>
+                      <div class="notif">
+                        <div class="nf-head">
+                          <span class="appicon">
+                            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                              <path d="M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9.6L5 20.6V17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/>
+                            </svg>
+                            <i class="badge1">1</i>
+                          </span>
+                          信息<span class="when">现在</span>
+                        </div>
+                        <div class="nf-body">
+                          <p class="scr-idle">95588 · 1 条新消息</p>
+                          <div class="vmsg">
+                            <b>95588</b>【招商银行】您的验证码是 <span class="vswap"><i class="plain">1357</i><i class="mask">••••</i></span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <span class="vding">叮</span>
+            <svg class="vhomi" viewBox="0 0 64 64" aria-hidden="true">
+              <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+                <path d="M30 52 L30 58 M38 52 L38 58"/>
                 <path fill="var(--cyan)" d="M20 52 C12 46 14 32 26 27 C36 23 46 26 49 34 C52 42 46 51 36 53 Z"/>
                 <path fill="var(--yellow)" d="M26 36 C31 31 39 32 43 38 C38 45 30 45 26 36 Z"/>
                 <circle cx="27" cy="21" r="9" fill="var(--cyan)"/>
                 <path fill="var(--orange)" d="M18 19 L9 22 L18 25 Z"/>
               </g>
               <circle cx="24" cy="18" r="2.5" fill="var(--line)"/>
-            </g>
-          </g>
-        </svg>
-        <div class="whisper">Your code is <span class="num">【1357】</span><small>刚刚 · 来自家里那张卡</small></div>
-      </div></div>
-    </section>
+            </svg>
+          </div>
+        </div>
+        <p class="vtag">家里 · 安卓备用机</p>
+      </section>
 
-    <p class="stage-cue"><i>↓</i> <span id="stage_cue_t">往下滑</span></p>
+      <!-- ② 路上：正文缩成一个包，沿线走过两站 -->
+      <section class="sc sc-mid">
+        <div class="clouds" aria-hidden="true" style="position:absolute;inset:0;overflow:hidden">
+          <div class="mcloud" style="top:8%;--w:120px;--o:.3;--t:31s;--dl:-4s"><svg viewBox="0 0 68 40"><path class="cloud" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></svg></div>
+          <div class="mcloud" style="top:24%;--w:74px;--o:.2;--t:44s;--dl:-19s"><svg viewBox="0 0 68 40"><path class="cloud" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></svg></div>
+          <div class="mcloud" style="top:44%;--w:150px;--o:.34;--t:24s;--dl:-11s"><svg viewBox="0 0 68 40"><path class="cloud" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></svg></div>
+          <div class="mcloud" style="top:62%;--w:86px;--o:.22;--t:38s;--dl:-2s"><svg viewBox="0 0 68 40"><path class="cloud" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></svg></div>
+          <div class="mcloud" style="top:82%;--w:120px;--o:.28;--t:29s;--dl:-23s"><svg viewBox="0 0 68 40"><path class="cloud" d="M10 34 C2 34 0 26 6 22 C4 12 16 6 24 12 C28 2 44 2 48 12 C58 10 64 20 58 26 C62 32 58 38 50 36 Z"/></svg></div>
+        </div>
+        <div class="rail">
+          <i class="rail-done"></i>
+          <div class="vhop hop-lock">
+            <span class="base">
+            <span class="lock-ic">
+              <!-- 开着的锁：锁梁歪在一边。鸟经过之前一直是这个样子 -->
+              <svg class="lk-open" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+                   stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <path d="M4.5 7.2V5.3a3.5 3.5 0 0 1 6.6-1.6"/><rect x="2.7" y="7.2" width="10.6" height="6.8" rx="2"/>
+              </svg>
+              <!-- 扣上的锁：经过之后就一直是这个样子。这是这一站**留下的**那个变化 -->
+              <svg class="lk-shut" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+                   stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <path d="M4.5 7.2V5.3a3.5 3.5 0 0 1 7 0v1.9"/><rect x="2.7" y="7.2" width="10.6" height="6.8" rx="2"/>
+              </svg>
+            </span>加密</span>
+            <span class="lit" aria-hidden="true">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="width:15px;height:15px">
+                <path d="M4.5 7.2V5.3a3.5 3.5 0 0 1 7 0v1.9"/><rect x="2.7" y="7.2" width="10.6" height="6.8" rx="2"/>
+              </svg>加密
+            </span>
+            <span class="hop-ok" aria-hidden="true">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2 6.4 L4.8 9 L10 3.2"/>
+              </svg>
+            </span>
+          </div>
+          <div class="vhop hop-cloud">
+            <span class="base">
+            <svg viewBox="0 0 18 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
+              <path d="M4.7 12.4C2.5 12.4 1 10.8 1 9c0-1.8 1.4-3.3 3.2-3.4C4.6 3.1 6.8 1.3 9.4 1.3c2.6 0 4.7 1.8 5.1 4.3C15.9 6 17 7.3 17 8.8c0 1.9-1.5 3.6-3.7 3.6Z"/>
+            </svg>托管服务器</span>
+            <span class="lit" aria-hidden="true">
+              <svg viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" style="width:15px;height:15px">
+                <path d="M4.7 12.4C2.5 12.4 1 10.8 1 9c0-1.8 1.4-3.3 3.2-3.4C4.6 3.1 6.8 1.3 9.4 1.3c2.6 0 4.7 1.8 5.1 4.3C15.9 6 17 7.3 17 8.8c0 1.9-1.5 3.6-3.7 3.6Z"/>
+              </svg>托管服务器
+            </span>
+            <span class="hop-ok" aria-hidden="true">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2 6.4 L4.8 9 L10 3.2"/>
+              </svg>
+            </span>
+          </div>
+          <div class="packet">
+            <svg viewBox="0 0 64 64" aria-hidden="true" style="transform:rotate(34deg)">
+              <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+                <path fill="var(--cyan)" d="M44 26 C49 30 48 39 40 43 C32 47 21 45 17 40 L5 43 L12 32 C15 25 24 20 31 20 C37 20 42 22 44 26 Z"/>
+                <path class="wing" fill="var(--yellow)" d="M17 37 C19 27 28 23 36 29 C31 37 24 41 17 37 Z"/>
+                <circle cx="43" cy="21" r="9.5" fill="var(--cyan)"/>
+                <path fill="var(--orange)" d="M51 18 L60 22 L51 25 Z"/>
+              </g>
+              <circle cx="46" cy="18" r="2.4" fill="var(--line)"/>
+            </svg>
+            <span class="load">••••</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ③ 边走边看的人：会动的那一端 -->
+      <section class="sc sc-c">
+        <div class="vsub">
+          <i class="rail-tail"><span class="bird"><svg viewBox="0 0 64 64" aria-hidden="true" style="transform:rotate(34deg)">
+              <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+                <path fill="var(--cyan)" d="M44 26 C49 30 48 39 40 43 C32 47 21 45 17 40 L5 43 L12 32 C15 25 24 20 31 20 C37 20 42 22 44 26 Z"/>
+                <path class="wing" fill="var(--yellow)" d="M17 37 C19 27 28 23 36 29 C31 37 24 41 17 37 Z"/>
+                <circle cx="43" cy="21" r="9.5" fill="var(--cyan)"/>
+                <path fill="var(--orange)" d="M51 18 L60 22 L51 25 Z"/>
+              </g>
+              <circle cx="46" cy="18" r="2.4" fill="var(--line)"/>
+            </svg></span></i>
+
+          <!-- ① 街景。只是一排楼和一盏路灯，压到几乎看不见——
+               它要说的只有一句「他人在外面」，抢一点戏这一幕就散了。 -->
+          <svg class="vsub-bg" viewBox="0 0 420 360" aria-hidden="true">
+            <g fill="var(--line)" opacity=".085">
+              <rect x="4" y="118" width="62" height="228" rx="4"/>
+              <rect x="78" y="74" width="56" height="272" rx="4"/>
+              <rect x="146" y="140" width="50" height="206" rx="4"/>
+              <rect x="208" y="92" width="64" height="254" rx="4"/>
+              <rect x="284" y="130" width="56" height="216" rx="4"/>
+              <rect x="352" y="66" width="52" height="280" rx="4"/>
+            </g>
+            <g fill="var(--line)" opacity=".13">
+              <rect x="14" y="134" width="12" height="14" rx="2"/><rect x="34" y="134" width="12" height="14" rx="2"/>
+              <rect x="14" y="166" width="12" height="14" rx="2"/><rect x="44" y="166" width="12" height="14" rx="2"/>
+              <rect x="88" y="92" width="12" height="14" rx="2"/><rect x="110" y="92" width="12" height="14" rx="2"/>
+              <rect x="88" y="126" width="12" height="14" rx="2"/><rect x="110" y="158" width="12" height="14" rx="2"/>
+              <rect x="362" y="84" width="12" height="14" rx="2"/><rect x="384" y="84" width="12" height="14" rx="2"/>
+              <rect x="362" y="118" width="12" height="14" rx="2"/><rect x="384" y="150" width="12" height="14" rx="2"/>
+              <rect x="294" y="148" width="12" height="14" rx="2"/><rect x="316" y="180" width="12" height="14" rx="2"/>
+            </g>
+            <!-- 路灯与地平线 -->
+            <g fill="none" stroke="var(--line)" opacity=".22" stroke-linecap="round" stroke-linejoin="round">
+              <path stroke-width="4" d="M392 346 V196 C392 184 380 178 372 182"/>
+              <path stroke-width="4" d="M4 346 H416"/>
+            </g>
+            <ellipse cx="368" cy="186" rx="11" ry="8" fill="var(--yellow)" opacity=".5"/>
+          </svg>
+
+          <!-- ② 人。正面朝着你、把手机举到胸前。
+               每个 path 都显式写 fill——不写就是浏览器默认的黑色实心。
+               头发不用 fill="var(--line)"：深色主题下它是薄荷绿，一大片会亮瞎。
+               做法和后脑那一版一样，--card 打底再压一层低透明度的 --line。 -->
+          <svg class="vsub-mid" viewBox="0 0 420 360" aria-hidden="true">
+            <g stroke="var(--line)" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round">
+              <!-- 身体：帽衫。先画，头和手压在它上面 -->
+              <path fill="var(--violet)" d="M4 360 C4 264 30 210 72 188 C80 206 106 206 114 188 C156 210 182 264 182 360 Z"/>
+              <!-- 帽子：堆在脖子后面那一卷。原来这里只有一道弧线，
+                   看起来像衣服上随便画了一笔 -->
+              <path fill="var(--violet)" d="M58 208 C58 182 70 172 92 172 C114 172 126 182 126 208 C112 196 72 196 58 208 Z"/>
+              <!-- 右肩的袖缝。左边那条被胳膊挡住，不画 -->
+              <path fill="none" stroke-width="3" d="M146 214 C156 240 160 274 160 306"/>
+              <!-- 前兜。胳膊压在它上面，正好只露出右半边 -->
+              <path fill="none" stroke-width="3" d="M58 320 C78 340 130 336 148 312"/>
+              <!-- 脖子 -->
+              <path fill="var(--skin)" stroke="none" d="M79 152 H107 V190 H79 Z"/>
+              <path fill="none" stroke-width="3.4" d="M79 158 V186 M107 158 V186"/>
+              <!-- 耳朵先画，脸压上去只露外缘 -->
+              <circle cx="49" cy="126" r="9" fill="var(--skin)"/>
+              <circle cx="135" cy="126" r="9" fill="var(--skin)"/>
+              <!-- 脸 -->
+              <path fill="var(--skin)" d="M50 116 C50 86 68 70 92 70 C116 70 134 86 134 116 C134 148 117 168 92 168 C67 168 50 148 50 116 Z"/>
+            </g>
+            <!-- 头发：先照着脸的轮廓铺满上半边，再挖出额前那道刘海 -->
+            <g stroke="var(--line)" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round">
+              <path fill="var(--card)"
+                    d="M46 122 C40 84 62 58 92 58 C123 58 145 82 138 122 C134 112 130 102 126 96
+                       C116 108 88 114 68 104 C60 108 50 112 46 122 Z"/>
+              <path fill="var(--line)" stroke="none" opacity=".24"
+                    d="M46 122 C40 84 62 58 92 58 C123 58 145 82 138 122 C134 112 130 102 126 96
+                       C116 108 88 114 68 104 C60 108 50 112 46 122 Z"/>
+            </g>
+            <!-- 五官。眼睛是两颗豆子加一点高光，笑是一条弧——
+                 再多一笔，缩到手机上就糊成一团 -->
+            <g fill="var(--ink)">
+              <ellipse cx="76" cy="128" rx="5.4" ry="6.6"/>
+              <ellipse cx="108" cy="128" rx="5.4" ry="6.6"/>
+            </g>
+            <g fill="#fff">
+              <circle cx="78" cy="125" r="1.9"/>
+              <circle cx="110" cy="125" r="1.9"/>
+            </g>
+            <g fill="var(--pink)" opacity=".55">
+              <ellipse cx="63" cy="140" rx="8" ry="5"/>
+              <ellipse cx="121" cy="140" rx="8" ry="5"/>
+            </g>
+            <path fill="none" stroke="var(--ink)" stroke-width="3.2" stroke-linecap="round"
+                  d="M84 146 C89 152 95 152 100 146"/>
+
+            <!-- 举起手机的那条前臂。两处都改过：
+                 ① 原来从 (40,330) 起笔，圆头正好落在帽衫中间，看起来像胸口
+                    鼓了一块紫色。现在从画幅外起笔，只露出斜上来的那一段。
+                 ② 袖子换成薄荷色。和身上同色的时候，这条胳膊在帽衫上只剩
+                    一道黑边，和前兜的弧线搅在一起谁也认不出——**撞色的套头衫
+                    本来就是常见款**，而它顺手把「这是一条胳膊」说清楚了。 -->
+            <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <!-- 上臂：从肩膀顺着身子垂下来 -->
+              <path stroke="var(--line)" stroke-width="33" d="M30 228 C24 272 26 310 38 332"/>
+              <path stroke="var(--mint)" stroke-width="25" d="M30 228 C24 272 26 310 38 332"/>
+              <!-- 前臂：从肘折回来、朝自己抬起，托住手机。
+                   原来这里只有一条从画幅左下角斜上来的直线，看不出肘在哪，
+                   于是整条胳膊读起来像一条搭在身上的带子。 -->
+              <path stroke="var(--line)" stroke-width="31" d="M38 332 C56 320 74 296 88 266"/>
+              <path stroke="var(--mint)" stroke-width="23" d="M38 332 C56 320 74 296 88 266"/>
+              <!-- 袖口 -->
+              <path stroke="var(--line)" stroke-width="3" d="M84 284 C90 292 94 300 96 308"/>
+            </g>
+            <!-- 手机：我们看到的是**背面**。
+                 他正低头看屏幕，屏幕就该朝着他自己；原来画的是屏幕朝外，
+                 于是这只手和这台手机怎么摆都是拧着的——手背、掌心、指尖
+                 三样的前后关系全部对不上。
+                 背面只画摄像头模组，不写任何内容：内容在右边那个气泡里，
+                 这里再来一份既重复又会互相打架。 -->
+            <g stroke="var(--line)" stroke-linejoin="round" fill="var(--card)">
+              <rect x="96" y="186" width="52" height="82" rx="10" stroke-width="3.5"/>
+              <rect x="119" y="192" width="25" height="25" rx="7.5" stroke-width="3"/>
+              <circle cx="126.5" cy="199.5" r="3.8" stroke-width="2.5"/>
+              <circle cx="136.5" cy="209.5" r="3.8" stroke-width="2.5"/>
+            </g>
+            <!-- 握着它的那只手。
+                 前几版都怪在**四根一模一样的水平胶囊摞成一摞**——那是暖气片，
+                 不是手。真的手绕在机身上有三件事：整只手是**斜的**（手腕从
+                 左下伸上来，手指不可能是水平的）、四根**指尖不齐**（中指最长、
+                 小指最短）、指缝只在**靠指尖那一段**看得见，不横穿整只手。
+
+                 画法是「先描边、后填色」：同样几个形状先用两倍粗的 --line 描
+                 一遍，再用 --skin 实心盖一遍——union 内部的线全被盖掉，只剩
+                 外轮廓那半边，掌和四指连成一只手而不是五块拼在一起。 -->
+            <g transform="rotate(-13 98 258)" fill="var(--skin)" stroke="var(--line)"
+               stroke-width="2.9" stroke-linejoin="round" stroke-linecap="round">
+              <!-- **不画手掌。** 掌背是这只手里最难摆对的一块：它既要落在小臂和
+                   指根之间（落在手指正下方就是一只爪子），又要够高把四根指根
+                   都盖住，还不能大到把整块背板糊掉——前后试了三版都不对。
+                   干脆让**袖子一直画到指根**，四根手指直接从袖口伸出来。
+                   袖口盖住指根这件事本来就成立（套头衫的袖子就是这么长的），
+                   而「胳膊 → 袖口 → 手指」这条线一眼就读得通。
+                   **手指必须互相压着画、各自留着自己的描边**——
+                   前一版把它们并进一个 union 里，指缝只剩几条淡线，
+                   整只手糊成一只连指手套。
+                   **粗细按机身量**：手指是横着搭在机身**长边**上的，
+                   一台手机的长边约等于八九根手指宽，四根加起来只该占一半，
+                   一根 18 个单位（四根盖满整块背板）一眼就是假的。
+                   指根也不能甩到机身外面太远：手指是**贴在背板上**的，
+                   露在左缘外的只该是绕过边缘那一点点，甩出去二十个单位就成了
+                   四根悬在帽衫上的香肠。 -->
+              <rect x="70" y="220" width="28" height="54" rx="14" fill="var(--mint)" stroke-width="3.1"/>
+              <rect x="90" y="251" width="24" height="12" rx="6"/>
+              <rect x="88" y="240" width="34" height="12" rx="6"/>
+              <rect x="86" y="229" width="42" height="12" rx="6"/>
+              <rect x="88" y="218" width="34" height="12" rx="6"/>
+            </g>
+          </svg>
+
+          <!-- ③ 联想气泡：里面是放大的那块手机屏幕。
+               字是真的、能选中、复制按钮真能用 -->
+          <i class="vtail vtail-b"></i>
+          <i class="vtail vtail-a"></i>
+          <div class="vbub">
+            <div class="vbub-bar">
+              <span class="sig"><i></i><i></i><i></i><i></i></span>
+              <svg class="wifi" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                   stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+                <path d="M1.6 5.6C5.2 2.5 10.8 2.5 14.4 5.6"/>
+                <path d="M4.2 8.6C6.4 6.8 9.6 6.8 11.8 8.6"/>
+                <path d="M6.7 11.5C7.5 10.9 8.5 10.9 9.3 11.5"/>
+              </svg>
+              <b id="v2_clock2">22:16</b>
+              <span class="batt"><i></i></span>
+            </div>
+            <div class="vbub-scr">
+              <div class="bub-date" id="v2_date2">9 月 18 日 周五</div>
+              <div class="bub-time" id="v2_big2">0:48</div>
+              <div class="bub-nf">
+                <span class="bub-ic"><img src="/logo.svg" alt="" width="17" height="17"></span>
+                <p class="bub-t"><b>Homing</b><em>家里 · 安卓备用机</em><span>现在</span></p>
+                <p class="bub-b">【招商银行】您的验证码是 <b class="bub-code" id="v2_code">1357</b>，5 分钟内有效。</p>
+                <button type="button" class="bn-copy" id="v2_copy">复制验证码</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+        <p class="vtag">你 · <span id="v2_where">地铁上</span></p>
+      </section>
+
+    </div>
+
+    <p class="stage-cue"><i>↓</i> <span id="stage_cue_t">下滑查看</span></p>
   </div>
 </div>
 
-<!-- ══ 第一屏 ══ -->
+<!-- ══ 从故事落到正文 ══
+  舞台是 sticky 的，走完那一刻它整块让开、正文直接顶上来，太硬。
+  中间垫一段安静的话：它既是刚才那一趟的收束，也是下面那一堆步骤的由头。
+-->
+<div class="bridge"><div class="wrap">
+  <p data-reveal>刚才那一趟，每天都在发生。</p>
+  <p class="sub" data-reveal style="--i:1">下面是它需要你准备的东西——一共三件。</p>
+</div></div>
+
 <div class="wrap">
   <section class="hero">
     <div class="hero-grid">

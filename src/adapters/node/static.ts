@@ -30,6 +30,17 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
   let pathname = decodeURIComponent(url.pathname)
   if (pathname === '/') pathname = '/index.html'
 
+  /**
+   * 落地页做第二版时它临时挂在 `/welcome2` 上，2026-09-18 正式换成了唯一那版，
+   * 文件也搬回了 `welcome.html`。这条跳转是给**已经发出去的链接**留的：
+   * 聊天记录里、别人的书签里、我自己的笔记里都还写着那个地址，
+   * 而落地页正是给还没有账号的人看的——落到 404 就是白丢一个人。
+   */
+  if (pathname === '/welcome2' || pathname === '/welcome2.html') {
+    res.writeHead(301, { location: '/welcome', 'cache-control': 'no-cache' }).end()
+    return true
+  }
+
   // 路径穿越防护：规范化后必须仍在 root 之内
   const abs = resolve(join(root, normalize(pathname)))
   const rootAbs = resolve(root)
