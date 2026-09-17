@@ -120,6 +120,16 @@
       if (fly > 1) fly = 1
       el.style.setProperty('--fly', fly.toFixed(4))
 
+      /*
+       * `--land` 只管第三幕那几秒：航线的最后一截被画出来、鸽子沉下去
+       * 落到肩上、然后才开口。默认值写成 1（已落地），所以不跑 JS 或
+       * 关了动效时它本来就站在肩上，而不是悬在半空等一个永远不来的信号。
+       */
+      var land = (p - 0.77) / 0.11
+      if (land < 0) land = 0
+      if (land > 1) land = 1
+      el.style.setProperty('--land', land.toFixed(4))
+
       if (cue) {
         var t = p < 0.22 ? '往下滑' : p < 0.78 ? '继续往下滑' : '再往下，是正文'
         if (t !== lastCue) { cue.textContent = t; lastCue = t }
@@ -136,11 +146,32 @@
     frame()
   }
 
+  /**
+   * 第一幕那台手机上的时间，取**读者自己**浏览器的。
+   *
+   * 写死一个 20:23 的代价不是不准，是不真：这一屏讲的是「此刻家里那台
+   * 收到了一条」，而屏幕上挂着一个与读者无关的时间，整件事就退回成一张插图。
+   *
+   * HTML 里留了一个静态默认值，JS 没跑就用它——这一段是装饰，
+   * 不值得为它多一个空白位。
+   */
+  function clock() {
+    var d = new Date()
+    var hh = String(d.getHours()).padStart(2, '0')
+    var mm = String(d.getMinutes()).padStart(2, '0')
+    var t = hh + ':' + mm
+    var a = document.getElementById('ph_clock')
+    var b = document.getElementById('ph_time')
+    if (a) a.textContent = t
+    if (b) b.textContent = t
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { start(); nudge(); stage() })
+    document.addEventListener('DOMContentLoaded', function () { start(); nudge(); stage(); clock() })
   } else {
     start()
     nudge()
     stage()
+    clock()
   }
 })()
