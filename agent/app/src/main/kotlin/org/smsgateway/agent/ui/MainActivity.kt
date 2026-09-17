@@ -61,8 +61,8 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
         val denied = result.filterValues { !it }.keys
-        if (denied.isEmpty()) toast("权限已全部授予")
-        else toast("以下权限被拒绝：${denied.joinToString { it.substringAfterLast('.') }}")
+        if (denied.isEmpty()) toast(getString(R.string.toast_perms_all))
+        else toast(getString(R.string.toast_perms_denied, denied.joinToString { it.substringAfterLast('.') }))
         // 前台定位到手之后才谈得上后台定位，见 requestBackgroundLocation()
         requestBackgroundLocation()
         render(lastState, lastPending)
@@ -78,27 +78,27 @@ class MainActivity : AppCompatActivity() {
         val text = result.contents ?: return@registerForActivityResult   // 用户取消
         val p = PairPayload.parse(text)
         if (p == null) {
-            toast("这不是配对二维码")
+            toast(getString(R.string.toast_not_pair_qr))
             return@registerForActivityResult
         }
         // 先让人看清要连到哪：扫错一个码，这台手机之后收到的每一条验证码
         // 都会发给别人。这一次确认的成本远小于那个后果。
         AlertDialog.Builder(this)
-            .setTitle("确认配对")
-            .setMessage("将把这台手机接入：\n\n${p.url}\n\n之后收到的短信、来电、通知都会上报到这个地址。")
-            .setPositiveButton("配对") { _, _ ->
+            .setTitle(R.string.dlg_pair_title)
+            .setMessage(getString(R.string.dlg_pair_msg, p.url))
+            .setPositiveButton(R.string.btn_pair) { _, _ ->
                 vb.urlInput.setText(p.url)
                 vb.codeInput.setText(p.code)
                 pair()
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton(R.string.btn_cancel, null)
             .show()
     }
 
     private val cameraPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) launchScanner() else toast("没有摄像头权限，只能手动填写")
+        if (granted) launchScanner() else toast(getString(R.string.toast_no_camera))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -129,7 +129,7 @@ class MainActivity : AppCompatActivity() {
                     vb.urlInput.setText(p.url)
                     vb.urlInput.setSelection(p.url.length)
                     vb.codeInput.setText(p.code)
-                    toast("已识别配对信息，确认后点「配对」")
+                    toast(getString(R.string.toast_qr_ok))
                 }
             }
         })
@@ -157,7 +157,7 @@ class MainActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 app.pairPhase.collect { phase ->
                     vb.pairButton.isEnabled = phase !is PairPhase.Running
-                    vb.pairButton.text = if (phase is PairPhase.Running) "配对中…" else "配对"
+                    vb.pairButton.setText(if (phase is PairPhase.Running) R.string.btn_pairing else R.string.btn_pair)
                     if (phase is PairPhase.Done) {
                         toast(phase.message)
                         // 配对码用过即弃，不留在界面上
@@ -185,7 +185,7 @@ class MainActivity : AppCompatActivity() {
          * 颜色按控制台那张语义表来（style.css）：
          * 成功/在线 = 薄荷，失败/吊销 = 粉，中间态 = 黄，未开始 = 卡片底。
          */
-        vb.statusText.text = s.label(App.get().prefs.isPaired)
+        vb.statusText.text = s.label(this, App.get().prefs.isPaired)
         val chip = when (s) {
             is ConnState.Connected -> R.color.brand_mint
             is ConnState.Fatal -> R.color.brand_pink
@@ -197,16 +197,16 @@ class MainActivity : AppCompatActivity() {
         vb.detailText.text = buildString {
             val p = App.get().prefs
             if (paired) {
-                appendLine("设备：${p.deviceName}")
-                appendLine("服务端：${p.serverUrl}")
+                appendLine(getString(R.string.detail_device, p.deviceName))
+                appendLine(getString(R.string.detail_server, p.serverUrl))
             }
             when (s) {
-                is ConnState.Connected -> appendLine("连接于 ${fmt.format(Date(s.since))}")
+                is ConnState.Connected -> appendLine(getString(R.string.detail_connected_at, fmt.format(Date(s.since))))
                 is ConnState.Fatal -> appendLine(s.message)
                 else -> {}
             }
-            appendLine("待补传：$pending 条")
-            appendLine("电池：${batteryText()}")
+            appendLine(getString(R.string.detail_pending, pending))
+            appendLine(getString(R.string.detail_battery, batteryText()))
         }
 
         /*
@@ -228,18 +228,18 @@ class MainActivity : AppCompatActivity() {
         val bgLocMissing = if (hasForegroundLocation() && !hasBackgroundLocation()) 1 else 0
         val todo = missing + bgLocMissing
         vb.permButton.text = when {
-            todo == 0 -> "采集权限 · 已全部授予"
-            bgLocMissing == 1 && missing == 0 -> "定位还差「始终允许」"
-            else -> "申请权限 · 还差 $todo 项"
+            todo == 0 -> getString(R.string.perms_all_granted)
+            bgLocMissing == 1 && missing == 0 -> getString(R.string.perms_loc_always)
+            else -> getString(R.string.perms_missing, todo)
         }
         vb.permButton.isEnabled = todo > 0
 
         val notifyOk = NotificationCapture.isEnabled(this@MainActivity)
-        vb.notifyButton.text = if (notifyOk) "通知使用权 · 已授予" else "授予通知使用权 · 未授予"
+        vb.notifyButton.setText(if (notifyOk) R.string.notify_granted else R.string.notify_missing)
         vb.notifyButton.isEnabled = !notifyOk
 
         val batteryOk = isIgnoringBattery()
-        vb.batteryButton.text = if (batteryOk) "电池优化白名单 · 已加入" else "加入电池优化白名单 · 未加入"
+        vb.batteryButton.setText(if (batteryOk) R.string.battery_ok else R.string.battery_missing)
         vb.batteryButton.isEnabled = !batteryOk
     }
 
@@ -255,7 +255,7 @@ class MainActivity : AppCompatActivity() {
         scanLauncher.launch(
             ScanOptions()
                 .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                .setPrompt("对准控制台「设备」页生成的二维码")
+                .setPrompt(getString(R.string.scan_prompt))
                 .setBeepEnabled(false)
                 // 不传 setOrientationLocked：默认 true，CaptureManager 会在打开那一刻
                 // 把方向钉住，扫码途中转屏不会重建。方向本身由清单里那条
@@ -268,14 +268,14 @@ class MainActivity : AppCompatActivity() {
         val url = vb.urlInput.text.toString().trim()
         val code = vb.codeInput.text.toString().trim()
         if (url.isEmpty() || code.isEmpty()) {
-            toast("地址与配对码都要填")
+            toast(getString(R.string.toast_need_both))
             return
         }
         if (!url.startsWith("wss://") && !url.startsWith("ws://")) {
-            toast("地址必须以 wss:// 开头")
+            toast(getString(R.string.toast_need_wss))
             return
         }
-        if (url.startsWith("ws://")) toast("警告：ws:// 为明文传输")
+        if (url.startsWith("ws://")) toast(getString(R.string.toast_ws_plain))
 
         /*
          * 只发起，不等结果——请求跑在 App 的进程作用域上。
@@ -292,7 +292,7 @@ class MainActivity : AppCompatActivity() {
         val app = App.get()
         app.ws.stop()
         app.prefs.clear()
-        toast("已解除配对")
+        toast(getString(R.string.toast_unpaired))
         render(ConnState.Idle, 0)
     }
 
@@ -367,13 +367,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
         AlertDialog.Builder(this)
-            .setTitle("还差「始终允许」定位")
-            .setMessage(
-                "「查找设备」要在网关后台运行时也能定位，而这一项系统不让 App 弹窗申请，" +
-                    "只能你手动改：设置页 → 权限 → 位置 → 选「始终允许」。\n\n" +
-                    "不改也不影响短信转发，只是手机丢了的时候定不到位。",
-            )
-            .setPositiveButton("去设置") { _, _ ->
+            .setTitle(R.string.bgloc_title)
+            .setMessage(R.string.bgloc_msg)
+            .setPositiveButton(R.string.btn_open_settings) { _, _ ->
                 // 部分 ROM 没有这个 Intent，崩在这里比不跳转糟得多
                 runCatching {
                     startActivity(
@@ -382,18 +378,21 @@ class MainActivity : AppCompatActivity() {
                             Uri.parse("package:$packageName"),
                         ),
                     )
-                }.onFailure { toast("这台机器打不开应用设置页，请手动去系统设置里改") }
+                }.onFailure { toast(getString(R.string.toast_no_settings)) }
             }
-            .setNegativeButton("以后再说", null)
+            .setNegativeButton(R.string.btn_later, null)
             .show()
     }
 
     /** 界面上直观显示电量与充电状态，插没插上一眼可见。 */
     private fun batteryText(): String {
-        val bm = getSystemService(android.os.BatteryManager::class.java) ?: return "未知"
+        val bm = getSystemService(android.os.BatteryManager::class.java) ?: return getString(R.string.battery_unknown)
         val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
         val charging = runCatching { bm.isCharging }.getOrDefault(false)
-        return "$level%${if (charging) " · 充电中" else " · 未充电"}"
+        return getString(
+            R.string.battery_line, level,
+            getString(if (charging) R.string.battery_charging else R.string.battery_not_charging),
+        )
     }
 
     /**
@@ -402,12 +401,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun requestNotificationAccess() {
         if (NotificationCapture.isEnabled(this)) {
-            toast("已经授予了")
+            toast(getString(R.string.toast_already_granted))
             return
         }
         runCatching { startActivity(NotificationCapture.settingsIntent()) }
-            .onSuccess { toast("在列表里找到「短信网关」并打开") }
-            .onFailure { toast("此设备不支持直接跳转，请到系统设置 → 通知使用权 手动开启") }
+            .onSuccess { toast(getString(R.string.toast_find_in_list)) }
+            .onFailure { toast(getString(R.string.toast_no_jump_notify)) }
     }
 
     private fun isIgnoringBattery(): Boolean {
@@ -418,7 +417,7 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("BatteryLife")
     private fun requestBatteryWhitelist() {
         if (isIgnoringBattery()) {
-            toast("已经在白名单里了")
+            toast(getString(R.string.toast_already_whitelisted))
             return
         }
         runCatching {
@@ -426,7 +425,7 @@ class MainActivity : AppCompatActivity() {
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
                     .setData(Uri.parse("package:$packageName")),
             )
-        }.onFailure { toast("此设备不支持直接跳转，请到系统设置手动添加") }
+        }.onFailure { toast(getString(R.string.toast_no_jump_battery)) }
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()

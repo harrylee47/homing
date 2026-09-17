@@ -1,15 +1,112 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  **默认语言是英文**，中文在 values-zh/。
+
+  这个顺序是有意的：values/ 是所有「没有对应翻译」的语言的兜底。
+  放中文的话，一个德国人装上看到的是满屏中文；放英文的话他至少读得懂。
+  中文用户由 values-zh 覆盖，一点不受影响。
+
+  什么该进这里：**手机上看得见的字**。
+  什么不该：Log.* 的诊断信息（那是运维从控制台「取 Agent 日志」时看的，
+  与手机语言无关），以及上报给服务端当数据用的串（它们显示在控制台里，
+  该跟控制台的语言走，不是跟手机的）。
+-->
 <resources>
     <string name="app_name">Homing</string>
-    <!--
-      渠道名。系统设置里「应用 → Homing → 通知」那一页标题已经是 Homing，
-      渠道再叫「Homing 服务」等于什么都没说。说用途。
-    -->
-    <string name="notification_channel">运行状态</string>
-    <string name="notification_title">Homing 运行中</string>
-    <!--
-      作者与项目地址。版本号由 MainActivity 在运行时补在后面。
-      开头不再写 Homing：页面顶上那个品牌头已经说了，这里再来一遍是重复。
-    -->
-    <string name="about_line">作者 Kou. · https://kou.im</string>
+
+    <!-- 常驻通知 -->
+    <string name="notification_channel">Status</string>
+    <string name="notification_channel_desc">Ongoing notification. Turn it off and the system will stop the gateway — your codes will no longer be forwarded.</string>
+    <string name="notification_title">Homing is running</string>
+
+    <!-- 连接状态。界面上的色块与常驻通知共用这一组 -->
+    <string name="state_unpaired">Not paired</string>
+    <string name="state_disconnected">Disconnected</string>
+    <string name="state_connecting">Connecting…</string>
+    <string name="state_connected">Connected</string>
+    <string name="state_waiting">Reconnecting in %1$ds</string>
+    <string name="state_stopped">Stopped: %1$s</string>
+
+    <!-- 配对 -->
+    <string name="btn_scan">Scan to pair</string>
+    <string name="or_manual">or enter it by hand</string>
+    <string name="label_server">Server address</string>
+    <string name="label_code">Pairing code (from the console, valid 5 minutes)</string>
+    <string name="hint_code">8 letters or digits</string>
+    <string name="btn_pair">Pair</string>
+    <string name="btn_pairing">Pairing…</string>
+    <string name="btn_unpair">Unpair</string>
+    <string name="scan_prompt">Point at the QR code on the console\'s Devices page</string>
+    <string name="dlg_pair_title">Confirm pairing</string>
+    <string name="dlg_pair_msg">This phone will be connected to:\n\n%1$s\n\nEvery SMS, call and notification it receives will be reported to that address.</string>
+    <string name="toast_qr_ok">Pairing info recognised — check it, then tap Pair</string>
+    <string name="toast_not_pair_qr">That is not a pairing QR code</string>
+    <string name="toast_need_both">Both the address and the code are required</string>
+    <string name="toast_need_wss">The address must start with wss://</string>
+    <string name="toast_ws_plain">Warning: ws:// is unencrypted</string>
+    <string name="toast_unpaired">Unpaired</string>
+
+    <!-- 详情 -->
+    <string name="detail_device">Device: %1$s</string>
+    <string name="detail_server">Server: %1$s</string>
+    <string name="detail_connected_at">Connected at %1$s</string>
+    <string name="detail_pending">Queued: %1$d</string>
+    <string name="detail_battery">Battery: %1$s</string>
+    <string name="battery_line">%1$d%% · %2$s</string>
+    <string name="battery_charging">charging</string>
+    <string name="battery_not_charging">not charging</string>
+    <string name="battery_unknown">unknown</string>
+
+    <!-- 三项「还没办的事」。状态写在按钮自己身上 -->
+    <string name="perms_all_granted">Capture permissions · all granted</string>
+    <string name="perms_missing">Grant permissions · %1$d missing</string>
+    <string name="perms_loc_always">Location still needs “Allow all the time”</string>
+    <string name="notify_granted">Notification access · granted</string>
+    <string name="notify_missing">Grant notification access · not granted</string>
+    <string name="battery_ok">Battery whitelist · added</string>
+    <string name="battery_missing">Add to battery whitelist · not added</string>
+    <string name="toast_perms_all">All permissions granted</string>
+    <string name="toast_perms_denied">Denied: %1$s</string>
+    <string name="toast_no_camera">No camera permission — enter it by hand instead</string>
+    <string name="toast_already_granted">Already granted</string>
+    <string name="toast_find_in_list">Find “Homing” in the list and switch it on</string>
+    <string name="toast_no_jump_notify">This device can\'t open that page directly. Go to Settings → Notification access.</string>
+    <string name="toast_already_whitelisted">Already whitelisted</string>
+    <string name="toast_no_jump_battery">This device can\'t open that page directly. Add it in Settings by hand.</string>
+
+    <!-- 后台定位。API 30+ 系统不再弹窗，只能把人送去设置页 -->
+    <string name="bgloc_title">Location needs “Allow all the time”</string>
+    <string name="bgloc_msg">“Find device” has to work while the gateway runs in the background, and Android won\'t let an app ask for that in a dialog — you have to change it yourself: Settings → Permissions → Location → Allow all the time.\n\nSkipping it doesn\'t affect SMS forwarding; it only means you can\'t locate the phone if it goes missing.</string>
+    <string name="btn_open_settings">Open settings</string>
+    <string name="btn_later">Later</string>
+    <string name="btn_cancel">Cancel</string>
+    <string name="toast_no_settings">This device can\'t open the app settings page. Please change it in Settings by hand.</string>
+
+    <!-- 短信指令的回复。人在外面读的就是这几句 -->
+    <string name="sms_help">Gateway commands: status · network · battery · locate · reconnect.\nSend the passphrase followed by the command, e.g. “passphrase status”. The space is optional.</string>
+
+    <!-- 作者与项目地址。版本号由 MainActivity 在运行时补在后面 -->
+    <string name="about_line">by Kou. · https://kou.im</string>
+    <!-- 三颗按钮在布局里的初始文案。render() 一跑就换成带状态的版本，
+         但布局总得有个值，而且它同样要能翻译 -->
+    <string name="btn_perms_default">Grant permissions</string>
+    <string name="btn_notify_default">Grant notification access</string>
+    <string name="btn_battery_default">Add to battery whitelist</string>
+    <string name="toast_pair_ok">Paired: %1$s</string>
+    <!-- 短信指令的回复。人在外面用另一台手机读的就是这几句，
+         所以跟**这台手机**的语言走（发指令的人就是设置它的人） -->
+    <string name="sms_reconnected">Gateway restarted. %1$s</string>
+    <string name="sms_locate_fail">Location failed: %1$s</string>
+    <string name="sms_locate_unknown">unknown reason</string>
+    <string name="sms_location">Location %1$s</string>
+    <string name="sms_cached">(cached)</string>
+    <string name="sms_pending">; %1$d queued</string>
+    <string name="conn_connected">Gateway connected</string>
+    <string name="conn_connected_min">Gateway connected for %1$d min</string>
+    <string name="conn_connecting">Gateway connecting</string>
+    <string name="conn_waiting">Gateway reconnecting (in %1$ds)</string>
+    <string name="conn_stopped">Gateway stopped: %1$s</string>
+    <string name="conn_idle">Gateway not running</string>
+    <string name="sms_battery">Battery %1$s%%%2$s</string>
+    <string name="sms_battery_charging"> (charging)</string>
 </resources>

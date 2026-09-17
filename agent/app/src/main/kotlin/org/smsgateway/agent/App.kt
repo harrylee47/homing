@@ -75,7 +75,7 @@ class App : Application() {
                     ws.stop()
                     ws.start()
                     Log.i("配对成功 ${r.data.deviceName}")
-                    _pairPhase.value = PairPhase.Done(true, "配对成功：${r.data.deviceName}")
+                    _pairPhase.value = PairPhase.Done(true, getString(R.string.toast_pair_ok, r.data.deviceName))
                 }
                 is PairingClient.Result.Fail -> {
                     _pairPhase.value = PairPhase.Done(false, r.message)
@@ -133,7 +133,7 @@ class App : Application() {
         scope.launch {
             ws.state.collect { s ->
                 runCatching {
-                    Cactus.instance.setContent(s.label(prefs.isPaired)).updateNotification(this@App)
+                    Cactus.instance.setContent(s.label(this@App, prefs.isPaired)).updateNotification(this@App)
                 }.onFailure { Log.w("更新常驻通知失败 ${it.javaClass.simpleName}") }
             }
         }
@@ -152,7 +152,7 @@ class App : Application() {
              * 而收走之后验证码不再转发，且不会有任何报错。
              * 系统设置里那一页只给渠道名，不写清楚就是让人凭感觉决定。
              */
-            description = "常驻通知。关掉它，系统会把网关停掉，验证码就不会再转发过来。"
+            description = getString(R.string.notification_channel_desc)
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
     }
@@ -179,7 +179,7 @@ class App : Application() {
             setChannelName(getString(R.string.notification_channel))
             setTitle(getString(R.string.notification_title))
             // 初始值也要说事，不能是应用名（头部本来就渲染应用名了）
-            setContent(if (prefs.isPaired) "未连接" else "未配对")
+            setContent(getString(if (prefs.isPaired) R.string.state_disconnected else R.string.state_unpaired))
             setSmallIcon(R.drawable.ic_notification)
             setPendingIntent(pi)
             setCrashRestartUIEnabled(true)

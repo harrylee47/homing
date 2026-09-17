@@ -9,6 +9,7 @@ import android.os.Build
 import android.telephony.TelephonyManager
 import kotlinx.coroutines.launch
 import org.smsgateway.agent.App
+import org.smsgateway.agent.R
 import org.smsgateway.agent.db.PendingEvent
 import org.smsgateway.agent.location.Locator
 import org.smsgateway.agent.net.ConnState
@@ -61,7 +62,7 @@ class SmsCommandHandler(private val ctx: Context) {
         }
 
         if (parsed is SmsCommand.Parsed.UnknownAction) {
-            reply(from, SmsCommand.HELP, cfg.reply)
+            reply(from, ctx.getString(R.string.sms_help), cfg.reply)
             report(from, "未知指令", null)
             return true
         }
@@ -70,20 +71,26 @@ class SmsCommandHandler(private val ctx: Context) {
         Log.i("短信指令：执行 $action ← ${Log.phone(from)}")
 
         when (action) {
-            SmsCommand.Action.HELP -> finish(from, action, SmsCommand.HELP, cfg.reply)
+            SmsCommand.Action.HELP -> finish(from, action, ctx.getString(R.string.sms_help), cfg.reply)
             SmsCommand.Action.STATUS -> finish(from, action, statusText(), cfg.reply)
             SmsCommand.Action.NETWORK -> finish(from, action, networkText(), cfg.reply)
             SmsCommand.Action.BATTERY -> finish(from, action, batteryText(), cfg.reply)
             SmsCommand.Action.RECONNECT -> {
                 app.ws.restart()
-                finish(from, action, "已重连网关服务。${connText()}", cfg.reply)
+                finish(from, action, ctx.getString(R.string.sms_reconnected, connText()), cfg.reply)
             }
             SmsCommand.Action.LOCATE -> Locator(ctx).locate { r, err ->
-                val text = if (r == null) "定位失败：${err ?: "未知原因"}"
-                    else "位置 ${"%.5f".format(r.lat)},${"%.5f".format(r.lng)}" +
+                val text = if (r == null) {
+                    ctx.getString(R.string.sms_locate_fail, err ?: ctx.getString(R.string.sms_locate_unknown))
+                } else {
+                    ctx.getString(
+                        R.string.sms_location,
+                        "${"%.5f".format(r.lat)},${"%.5f".format(r.lng)}",
+                    ) +
                         (r.accuracy?.let { " ±${it.toInt()}m" } ?: "") +
-                        (if (r.cached) "（缓存）" else "") +
+                        (if (r.cached) ctx.getString(R.string.sms_cached) else "") +
                         " https://maps.google.com/?q=${r.lat},${r.lng}"
+                }
                 finish(from, action, text, cfg.reply)
             }
         }
@@ -103,18 +110,19 @@ class SmsCommandHandler(private val ctx: Context) {
         append("；").append(networkText())
         append("；").append(batteryText())
         val pending = App.get().ws.pendingCount.value
-        if (pending > 0) append("；待补传 ").append(pending).append(" 条")
+        if (pending > 0) append(ctx.getString(R.string.sms_pending, pending))
     }
 
     private fun connText(): String = when (val s = App.get().ws.state.value) {
         is ConnState.Connected -> {
             val min = (System.currentTimeMillis() - s.since) / 60000
-            if (min < 1) "网关已连接" else "网关已连接 ${min}分钟"
+            if (min < 1) ctx.getString(R.string.conn_connected)
+            else ctx.getString(R.string.conn_connected_min, min)
         }
-        is ConnState.Connecting -> "网关连接中"
-        is ConnState.Waiting -> "网关重连中（${s.retryInSec}s 后）"
-        is ConnState.Fatal -> "网关已停止：${s.code}"
-        ConnState.Idle -> "网关未运行"
+        is ConnState.Connecting -> ctx.getString(R.string.conn_connecting)
+        is ConnState.Waiting -> ctx.getString(R.string.conn_waiting, s.retryInSec)
+        is ConnState.Fatal -> ctx.getString(R.string.conn_stopped, s.code)
+        ConnState.Idle -> ctx.getString(R.string.conn_idle)
     }
 
     /**
@@ -149,7 +157,10 @@ class SmsCommandHandler(private val ctx: Context) {
          * 仓库里另外两处（WsClient、MainActivity）本来就是无条件调的。
          */
         val charging = runCatching { bm?.isCharging == true }.getOrDefault(false)
-        return "电量 ${pct ?: "?"}%${if (charging) "（充电中）" else ""}"
+        return ctx.getString(
+            R.string.sms_battery, pct?.toString() ?: "?",
+            if (charging) ctx.getString(R.string.sms_battery_charging) else "",
+        )
     }
 
     // ── 回复与上报 ──────────────────────────────────────────

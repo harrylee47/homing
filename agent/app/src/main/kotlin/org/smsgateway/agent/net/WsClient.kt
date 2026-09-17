@@ -2,6 +2,7 @@ package org.smsgateway.agent.net
 
 import android.Manifest
 import android.content.Context
+import org.smsgateway.agent.R
 import android.content.pm.PackageManager
 import android.os.BatteryManager
 import androidx.core.content.ContextCompat
@@ -49,13 +50,16 @@ sealed interface ConnState {
  *
  * `paired` 单独传：ConnState.Idle 既可能是「还没配对」也可能是「配过但没连上」，
  * 这两句话对读的人意味着完全不同的下一步。
+ *
+ * 要 Context 是因为文案走 strings.xml（英文默认 + values-zh）。
+ * WsClient 本来就持有 Context，调用方也都有，不算额外负担。
  */
-fun ConnState.label(paired: Boolean): String = when (this) {
-    is ConnState.Idle -> if (paired) "未连接" else "未配对"
-    is ConnState.Connecting -> "连接中…"
-    is ConnState.Connected -> "已连接"
-    is ConnState.Waiting -> "等待重连（${retryInSec}s）"
-    is ConnState.Fatal -> "已停止：$code"
+fun ConnState.label(ctx: Context, paired: Boolean): String = when (this) {
+    is ConnState.Idle -> ctx.getString(if (paired) R.string.state_disconnected else R.string.state_unpaired)
+    is ConnState.Connecting -> ctx.getString(R.string.state_connecting)
+    is ConnState.Connected -> ctx.getString(R.string.state_connected)
+    is ConnState.Waiting -> ctx.getString(R.string.state_waiting, retryInSec)
+    is ConnState.Fatal -> ctx.getString(R.string.state_stopped, code)
 }
 
 /**

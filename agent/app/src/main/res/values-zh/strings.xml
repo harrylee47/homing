@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 中文。默认（英文）在 values/，那里的注释说明了为什么是这个顺序。 -->
+<resources>
+    <string name="notification_channel">运行状态</string>
+    <string name="notification_channel_desc">常驻通知。关掉它，系统会把网关停掉，验证码就不会再转发过来。</string>
+    <string name="notification_title">Homing 运行中</string>
+
+    <string name="state_unpaired">未配对</string>
+    <string name="state_disconnected">未连接</string>
+    <string name="state_connecting">连接中…</string>
+    <string name="state_connected">已连接</string>
+    <string name="state_waiting">等待重连（%1$ds）</string>
+    <string name="state_stopped">已停止：%1$s</string>
+
+    <string name="btn_scan">扫码配对</string>
+    <string name="or_manual">或者手动填写</string>
+    <string name="label_server">服务端地址</string>
+    <string name="label_code">配对码（控制台生成，5 分钟内有效）</string>
+    <string name="hint_code">8 位字母数字</string>
+    <string name="btn_pair">配对</string>
+    <string name="btn_pairing">配对中…</string>
+    <string name="btn_unpair">解除配对</string>
+    <string name="scan_prompt">对准控制台「设备」页生成的二维码</string>
+    <string name="dlg_pair_title">确认配对</string>
+    <string name="dlg_pair_msg">将把这台手机接入：\n\n%1$s\n\n之后收到的短信、来电、通知都会上报到这个地址。</string>
+    <string name="toast_qr_ok">已识别配对信息，确认后点「配对」</string>
+    <string name="toast_not_pair_qr">这不是配对二维码</string>
+    <string name="toast_need_both">地址与配对码都要填</string>
+    <string name="toast_need_wss">地址必须以 wss:// 开头</string>
+    <string name="toast_ws_plain">警告：ws:// 为明文传输</string>
+    <string name="toast_unpaired">已解除配对</string>
+
+    <string name="detail_device">设备：%1$s</string>
+    <string name="detail_server">服务端：%1$s</string>
+    <string name="detail_connected_at">连接于 %1$s</string>
+    <string name="detail_pending">待补传：%1$d 条</string>
+    <string name="detail_battery">电池：%1$s</string>
+    <string name="battery_line">%1$d%% · %2$s</string>
+    <string name="battery_charging">充电中</string>
+    <string name="battery_not_charging">未充电</string>
+    <string name="battery_unknown">未知</string>
+
+    <string name="perms_all_granted">采集权限 · 已全部授予</string>
+    <string name="perms_missing">申请权限 · 还差 %1$d 项</string>
+    <string name="perms_loc_always">定位还差「始终允许」</string>
+    <string name="notify_granted">通知使用权 · 已授予</string>
+    <string name="notify_missing">授予通知使用权 · 未授予</string>
+    <string name="battery_ok">电池优化白名单 · 已加入</string>
+    <string name="battery_missing">加入电池优化白名单 · 未加入</string>
+    <string name="toast_perms_all">权限已全部授予</string>
+    <string name="toast_perms_denied">以下权限被拒绝：%1$s</string>
+    <string name="toast_no_camera">没有摄像头权限，只能手动填写</string>
+    <string name="toast_already_granted">已经授予了</string>
+    <string name="toast_find_in_list">在列表里找到「Homing」并打开</string>
+    <string name="toast_no_jump_notify">此设备不支持直接跳转，请到系统设置 → 通知使用权 手动开启</string>
+    <string name="toast_already_whitelisted">已经在白名单里了</string>
+    <string name="toast_no_jump_battery">此设备不支持直接跳转，请到系统设置手动添加</string>
+
+    <string name="bgloc_title">还差「始终允许」定位</string>
+    <string name="bgloc_msg">「查找设备」要在网关后台运行时也能定位，而这一项系统不让 App 弹窗申请，只能你手动改：设置页 → 权限 → 位置 → 选「始终允许」。\n\n不改也不影响短信转发，只是手机丢了的时候定不到位。</string>
+    <string name="btn_open_settings">去设置</string>
+    <string name="btn_later">以后再说</string>
+    <string name="btn_cancel">取消</string>
+    <string name="toast_no_settings">这台机器打不开应用设置页，请手动去系统设置里改</string>
+
+    <string name="sms_help">网关指令：状态(总览) 网络(WiFi) 电量 定位 重连。\n发法：口令后面跟指令，如「口令 状态」，中间空格可有可无</string>
+
+    <string name="about_line">作者 Kou. · https://kou.im</string>
+    <string name="btn_perms_default">申请权限</string>
+    <string name="btn_notify_default">授予通知使用权</string>
+    <string name="btn_battery_default">加入电池优化白名单</string>
+    <string name="toast_pair_ok">配对成功：%1$s</string>
+    <string name="sms_reconnected">已重连网关服务。%1$s</string>
+    <string name="sms_locate_fail">定位失败：%1$s</string>
+    <string name="sms_locate_unknown">未知原因</string>
+    <string name="sms_location">位置 %1$s</string>
+    <string name="sms_cached">（缓存）</string>
+    <string name="sms_pending">；待补传 %1$d 条</string>
+    <string name="conn_connected">网关已连接</string>
+    <string name="conn_connected_min">网关已连接 %1$d 分钟</string>
+    <string name="conn_connecting">网关连接中</string>
+    <string name="conn_waiting">网关重连中（%1$ds 后）</string>
+    <string name="conn_stopped">网关已停止：%1$s</string>
+    <string name="conn_idle">网关未运行</string>
+    <string name="sms_battery">电量 %1$s%%%2$s</string>
+    <string name="sms_battery_charging">（充电中）</string>
+</resources>
