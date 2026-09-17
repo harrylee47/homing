@@ -215,6 +215,14 @@
     var t = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
     var a = document.getElementById('v2_clock')
     if (a) a.textContent = t
+    var big = document.getElementById('v2_big')
+    if (big) big.textContent = t
+    // 锁屏上的日期也取读者自己的。写死一个日期和写死一个时间是同一种不真
+    var day = document.getElementById('v2_date')
+    if (day) {
+      var W = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+      day.textContent = (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日 ' + W[d.getDay()]
+    }
   }
 
   function boot() { start(); nudge(); stage2(); copy(); clock() }

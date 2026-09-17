@@ -103,16 +103,16 @@
      原来写的是「在线 · 充电中」五个字——那两件事本来就有图标，
      画出来比写出来省一行，也更像一台真的手机。 */
   .vdev-bar {
-    display: flex; align-items: center; gap: 7px; padding: 7px 12px;
+    display: flex; align-items: center; gap: 5px; padding: 6px 9px;
     border-bottom: var(--bw) solid var(--line);
-    font-size: 11px; font-weight: 800; color: var(--fg);
+    font-size: 10px; font-weight: 800; color: var(--fg); white-space: nowrap;
   }
   .vdev-bar b { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums }
   .sig { display: flex; align-items: flex-end; gap: 2px; flex: none }
   .sig i { width: 3px; background: var(--fg); border-radius: 1px; display: block }
   .sig i:nth-child(1) { height: 4px } .sig i:nth-child(2) { height: 6px }
   .sig i:nth-child(3) { height: 8px } .sig i:nth-child(4) { height: 10px }
-  .carrier { letter-spacing: .02em }
+  .carrier { letter-spacing: .02em; white-space: nowrap }
   .wifi { width: 13px; height: 13px; flex: none; display: block; color: var(--fg) }
   /* 电池里那道闪电就是「插着电」。--mint 填满电量，深浅两套都看得出满格 */
   .batt {
@@ -137,24 +137,22 @@
   /* 熄屏那一刻的样子：手机桌面上一个短信 App，右上角一颗红色的 1。
      原来是一行「收到新消息 · 1 条未读」——那是把手机会做的事写成了字。 */
   .scr-idle {
-    display: flex; flex-direction: column; align-items: center; gap: 7px;
-    padding: 14px 0 10px;
+    font-size: 12px; font-weight: 700; color: var(--muted); margin: 0;
     opacity: calc((.037 - var(--p, 0)) / .022);
   }
   .appicon {
-    position: relative; width: 52px; height: 52px; border-radius: 13px;
+    position: relative; width: 22px; height: 22px; border-radius: 6px; flex: none;
     background: var(--mint); color: var(--on-bright);
     border: var(--bw) solid var(--line);
     box-shadow: var(--shadow); display: grid; place-items: center;
   }
-  .appicon svg { width: 28px; height: 28px; display: block }
-  .applabel { font-size: 11px; font-weight: 700; color: var(--muted) }
+  .appicon svg { width: 13px; height: 13px; display: block }
   /* 角标：红色（--pink 是这套配色里「失败 / 要注意」那一档），压在右上角外沿 */
   .badge1 {
-    position: absolute; top: -8px; right: -9px; min-width: 21px; height: 21px;
+    position: absolute; top: -7px; right: -7px; min-width: 16px; height: 16px;
     border-radius: 999px; background: var(--pink); color: var(--on-bright);
     border: var(--bw) solid var(--line); font-style: normal;
-    font-size: 12px; font-weight: 800; line-height: 1; display: grid; place-items: center;
+    font-size: 10px; font-weight: 800; line-height: 1; display: grid; place-items: center;
   }
   /*
    * 闪的是**角标**，不是 .scr-idle 本身。
@@ -167,10 +165,11 @@
   .vmsg {
     border: var(--bw) solid var(--line); border-radius: 13px 13px 13px 4px;
     background: var(--cyan); color: var(--on-bright); padding: 10px 12px;
-    font-size: 14px; line-height: 1.55;
+    font-size: 12.5px; line-height: 1.5; padding: 0; border: 0; border-radius: 0;
+    background: transparent; color: var(--fg);
     opacity: calc((var(--p, 1) - .015) / .022);
   }
-  .vmsg b { display: block; font-size: 11px; letter-spacing: .04em; margin-bottom: 3px; opacity: .7 }
+  .vmsg b { display: block; font-size: 10px; letter-spacing: .04em; margin-bottom: 2px; opacity: .7 }
   /* 明文与打码固定宽度、都居中：这是一句话中间的一个词，
      不能因为换了状态就把整句话的长度改掉 */
   .vswap { position: relative; display: inline-block; width: 3.1em; text-align: center }
@@ -179,52 +178,74 @@
   .vswap .plain { opacity: calc((.115 - var(--p, 1)) / .028) }
   .vswap .mask  { opacity: calc((var(--p, 1) - .115) / .028) }
 
-  /* ── 场景一：斜俯视看桌上那台 ──────────────────────────────
-     从「站在桌前低头看」这个角度画。上一版是正面立视：柜子、台灯、月亮
-     都画得出来，但手机是**立着**的——而家里那台备用机实际上就是平放在桌上。
-     视角一换，「它在那儿待着」这件事不用解释。
+  /* ── 场景一：站在桌角低头看那台 ──────────────────────────
+     照着「一张桌角的照片」来：桌面铺满整个画面、只在左上角露出一条桌沿与
+     窗外的光，手机斜着躺在中间，四周散着绿植 / 书 / 杯子 / 本子。
+     上一版是把整张桌子画进画面里——那是在看一张桌子的**照片**，
+     而这一版是你**站在桌前**。
 
      手机屏幕里是活的 HTML 文字（要能选中、要过对比度检查、时间由 JS 填），
-     所以不能改画成 SVG。改用 3D 变换把整张卡片压下去：
-     `perspective(900px) rotateX(32deg) rotateZ(-3deg)`。
-     32° 是试出来的上限——再大文字纵向压缩得太狠（cos32≈0.85 还读得动，
-     cos48≈0.67 就开始费劲了），而这一屏的全部意义就是让人看清那条短信。 */
-  .ddesk { position: relative; width: min(470px, 100%); margin: 0 auto }
-
-  /* 桌面：近大远小的梯形铺满画幅，上边缘留一条墙根。
-     桌沿往下一路出血到底边——桌子不该有下边框，有了就成了一块悬空的板。 */
+     所以不能改画成 SVG。整张卡片上 3D 变换：
+     `perspective(880px) rotateX(31deg) rotateZ(-13deg)`。
+     31° 是上限——再大文字纵向压缩得太狠（cos31≈0.86 还读得动，
+     cos48≈0.67 就开始费劲），而这一屏的全部意义就是让人看清那条短信。 */
+  /*
+   * 窄屏出血到两边（负边距抵掉 .sc 的 16px，不用 100vw——那会算进滚动条宽度，
+   * 可能把 body 撑出横向滚动）；宽屏收成定宽。
+   * SVG 是等比缩放的：铺到 1280 宽时绿植和杯子会一起放大成巨物，
+   * 而手机是按 vw 定宽的，两者比例当场崩掉。
+   */
+  .ddesk { position: relative; align-self: stretch; margin: 0 -16px }
+  @media (min-width: 620px) {
+    .ddesk { align-self: center; width: 560px; margin: 0 auto }
+  }
   .ddesk-top { display: block; width: 100%; height: auto; aspect-ratio: 470 / 340 }
   /*
    * 灯光那一摊要分主题调。浅色下黄压在白桌面上是暖色的一片，好看；
    * 深色下同样的黄压在深灰桌面上混成橄榄色，读起来像桌上洒了东西。
-   * 深色主题下压到 .1：在场的目的是「这儿亮着」，不是「这儿是黄的」。
    */
-  .ddesk-pool { opacity: .2 }
-  @media (prefers-color-scheme: dark) { .ddesk-pool { opacity: .1 } }
+  .ddesk-pool { opacity: .22 }
+  @media (prefers-color-scheme: dark) { .ddesk-pool { opacity: .06 } }
 
-  /* 手机：绝对定位压在桌面上，整张一起躺下去。
-     transform-origin 放在中下部，转起来才像「贴着桌面倒下去」而不是绕中心翻跟头。 */
   .ddesk-phone {
-    position: absolute; left: 51%; top: 31%; width: min(236px, 55vw); z-index: 2;
-    transform: translate(-50%, 0) perspective(900px) rotateX(32deg) rotateZ(-3deg);
-    transform-origin: 50% 80%;
+    position: absolute; left: 50%; top: 24%; width: min(170px, 40vw, 31%); z-index: 2;
+    transform: translate(-50%, 0) perspective(880px) rotateX(31deg) rotateZ(-13deg);
+    transform-origin: 50% 75%;
   }
-  .ddesk-phone .vdev { width: 100% }
-  /* 躺下之后卡片的视觉高度只剩八成多，屏幕区按比例补回来，
-     否则短信气泡贴着机身下沿 */
-  .ddesk-phone .vdev-scr { min-height: 124px }
+  .ddesk-phone .vdev { width: 100%; border-radius: 20px }
+  .ddesk-phone .vdev-scr { min-height: 0; padding: 0 }
+
+  /* ── 锁屏 ────────────────────────────────────────────────
+     大时间 + 日期，下面一张通知卡。这是手机放在桌上、你走过去瞥一眼时
+     真正看到的样子——上一版画的是解锁之后的桌面，那要先按一下。 */
+  .lock { background: var(--bg); padding: 12px 9px 10px; text-align: center }
+  .lock-time { font-size: 26px; font-weight: 800; line-height: 1; letter-spacing: -.02em;
+               font-variant-numeric: tabular-nums }
+  .lock-date { font-size: 11px; font-weight: 700; color: var(--muted); margin-top: 4px }
+  .notif {
+    margin: 10px 2px 4px; padding: 7px 8px; text-align: left;
+    background: var(--card); border: var(--bw) solid var(--line);
+    border-radius: 12px; box-shadow: var(--shadow);
+  }
+  .nf-head { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 800 }
+  .nf-head span.when { margin-left: auto; font-weight: 700; color: var(--muted) }
+  /* 通知卡里那两截叠在一起：收起时一行「1 条新消息」，下滑才展开成正文。
+     叠着放而不是前后排，是为了机身高度不随内容跳动——一跳，
+     斜着压在桌上的那张卡片和它底下的桌子就都跟着动了。 */
+  .nf-body { position: relative; min-height: 58px; margin-top: 6px }
+  .scr-idle, .vmsg { position: absolute; left: 0; right: 0; top: 0 }
 
   /* 鸽子站在桌面上，**不跟着卡片转**——它是站着的，不是躺着的。
      所以它挂在 .ddesk 上而不是 .vdev-wrap 上：在里面的话，
      一加 3D 变换整只鸟就跟着躺平了。 */
   .vhomi {
-    position: absolute; right: 7%; top: 19%; width: min(58px, 13.5vw); height: auto; z-index: 3;
+    position: absolute; left: 6%; top: 60%; width: min(52px, 12vw); height: auto; z-index: 3;
     transform: rotate(calc(var(--wake, 1) * -8deg)); transform-origin: 46% 88%;
     /* 它在 --mid 起步（p=0.10）之前离开：从那一刻起，飞的那只就是它 */
     opacity: calc((.106 - var(--p, 1)) / .028);
   }
   .vding {
-    position: absolute; right: calc(7% + min(58px, 13.5vw) + 4px); top: 20%; z-index: 3;
+    position: absolute; left: calc(6% + min(52px, 12vw) + 4px); top: 61%; z-index: 3;
     font-size: 13px; font-weight: 800; color: var(--cyan);
     opacity: calc(min((var(--p, 1) - .006) / .012, (.11 - var(--p, 1)) / .04));
   }
@@ -727,51 +748,62 @@
         <div class="deskset">
           <div class="ddesk">
 
-            <!-- 桌面。坐标系 470×340，从「站在桌前低头看」的角度画：
-                 远端窄、近端宽，桌沿 y=58 往下一路出血到底边。
-                 桌子不该有下边框——有了就成了一块悬空的板。
+            <!-- 桌角。坐标系 470×340：桌沿从左边 y=118 斜到右上 y=22，
+                 桌面往下、往两边一路出血到画幅外——桌子不该有边框，
+                 有了就又变回「一张桌子的照片」而不是「你站在桌前」。
                  每个 path 都显式写 fill：不写就是浏览器默认的黑色实心，
                  深色主题下是一团黑疙瘩。 -->
             <svg class="ddesk-top" viewBox="0 0 470 340" aria-hidden="true">
               <defs>
-                <!-- 光池要裁进桌面里。不裁的话椭圆会溢出远端那两条斜边，
-                     看起来不是「灯照在桌上」，是桌面上糊了一摊 -->
-                <clipPath id="ddesk-clip"><path d="M74 58 L396 58 L470 344 L0 344 Z"/></clipPath>
+                <clipPath id="ddesk-clip"><path d="M0 118 L470 22 L470 340 L0 340 Z"/></clipPath>
               </defs>
 
-              <!-- 墙根：桌面之上那一条，给这一眼一个「地平线」 -->
-              <path fill="none" stroke="var(--line)" stroke-width="3" stroke-linecap="round"
-                    stroke-dasharray="2 13" opacity=".3" d="M20 30 L450 30"/>
+              <!-- 窗：桌沿之外那一条。三道竖线就够说明「左边是窗户」，
+                   这一屏的主角不是它 -->
+              <g stroke="var(--line)" stroke-width="3" stroke-linecap="round" opacity=".28">
+                <path d="M26 6 L26 100" fill="none"/>
+                <path d="M74 4 L74 90" fill="none"/>
+                <path d="M6 54 L104 44" fill="none"/>
+              </g>
 
-              <!-- 桌面：远端窄、近端宽，往下出血到底边。桌子不该有下边框——
-                   有了就成了一块悬空的板 -->
               <path fill="var(--card)" stroke="var(--line)" stroke-width="3.6" stroke-linejoin="round"
-                    d="M74 58 L396 58 L470 344 L0 344 Z"/>
+                    d="M0 118 L470 22 L470 340 L0 340 Z"/>
 
-              <!-- 台灯投下来的光。俯视看不到灯，看得到的是它落在桌面上那一摊：
-                   这一摊亮着就说明灯亮着，也就说明是夜里。 -->
               <g clip-path="url(#ddesk-clip)">
-                <ellipse class="ddesk-pool" cx="228" cy="236" rx="215" ry="125" fill="var(--yellow)"/>
+                <!-- 窗光落在桌面上的一摊。它偏左上，因为窗在那边 -->
+                <ellipse class="ddesk-pool" cx="176" cy="212" rx="228" ry="136"
+                         fill="var(--yellow)" transform="rotate(-11 176 212)"/>
               </g>
 
               <g stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round">
-                <!-- 只留两件。俯视这一格本来就窄，摆四件东西之后手机反而看不见了。
-                     马克杯在最近的左下角（所以画得大），笔记本在远端左上角，
-                     右上那块空出来给鸽子站。 -->
-                <ellipse cx="62" cy="300" rx="31" ry="22" fill="var(--orange)"/>
-                <ellipse cx="62" cy="300" rx="17" ry="12" fill="var(--card)"/>
-                <path fill="none" d="M32 294 C15 292 13 309 29 310"/>
-                <path fill="var(--violet)" d="M106 72 L190 86 L177 136 L92 121 Z"/>
-                <path fill="none" stroke-width="3" d="M120 76 L106 125"/>
-              </g>
+                <!-- 绿植：桌角最远那一件，一半出画。参考图里它就在左上角 -->
+                <path fill="var(--mint)" d="M58 92 C32 80 20 54 26 30 C54 38 70 66 64 92 Z"/>
+                <path fill="var(--mint)" d="M70 92 C88 76 96 52 90 32 C70 42 56 70 64 92 Z"/>
+                <path fill="var(--orange)" d="M34 92 L98 88 L90 138 L44 142 Z"/>
+                <path fill="none" stroke-width="3" d="M30 90 L102 85"/>
 
-              <!-- 充电线：从画外的插座绕过来，插在手机近端那条边上。
-                   俯视下它是躺在桌面上的，所以起伏要小、要贴着桌面走 -->
+                <!-- 书：右上角摞着两本，斜着放 -->
+                <path fill="var(--violet)" d="M348 46 L448 30 L460 74 L360 90 Z"/>
+                <path fill="var(--card)" d="M342 76 L444 60 L456 106 L354 122 Z"/>
+                <path fill="none" stroke-width="3" d="M356 79 L366 119"/>
+
+                <!-- 马克杯：俯视是一个圆加一只把手 -->
+                <ellipse cx="406" cy="176" rx="34" ry="25" fill="var(--card)"/>
+                <ellipse cx="406" cy="176" rx="20" ry="14" fill="var(--orange)"/>
+                <path fill="none" d="M441 168 C460 166 462 186 444 189"/>
+
+                <!-- 本子 + 笔：右下角，一半出画 -->
+                <path fill="var(--card)" d="M336 248 L458 230 L470 320 L350 340 Z"/>
+                <path fill="none" stroke-width="3" d="M350 252 L366 338"/>
+                <path fill="var(--violet)" stroke-width="2.6" d="M382 284 L436 276 L437 285 L383 293 Z"/>
+                <path fill="var(--line)" stroke-width="2.2" d="M436 276 L448 276 L449 285 L437 285 Z"/>
+
+              <!-- 充电线：从画外的插座绕过来，插在手机近端那条边上 -->
               <path fill="none" stroke="var(--line)" stroke-width="4" stroke-linecap="round"
-                    d="M470 306 C412 312 380 298 348 286 C318 275 292 272 268 276"/>
+                    d="M0 296 C52 306 96 300 138 292 C176 285 208 286 232 292"/>
             </svg>
 
-            <!-- 手机：平躺在桌上。整张卡片一起做 3D 变换，屏幕里仍然是活的 HTML -->
+            <!-- 手机：斜着躺在桌上。整张卡片一起做 3D 变换，屏幕里仍然是活的 HTML -->
             <div class="ddesk-phone">
               <div class="vdev-wrap">
                 <div class="vdev">
@@ -788,18 +820,26 @@
                     <span class="batt"><i></i></span>
                   </div>
                   <div class="vdev-scr">
-                    <!-- 熄屏时的桌面：一个短信 App，右上角一颗红色的 1 -->
-                    <p class="scr-idle">
-                      <span class="appicon">
-                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                          <path d="M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9.6L5 20.6V17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/>
-                        </svg>
-                        <i class="badge1">1</i>
-                      </span>
-                      <span class="applabel">信息</span>
-                    </p>
-                    <div class="vmsg">
-                      <b>95588</b>【招商银行】您的验证码是<span class="vswap"><i class="plain">1357</i><i class="mask">••••</i></span>，5 分钟内有效。
+                    <div class="lock">
+                      <div class="lock-time" id="v2_big">22:16</div>
+                      <div class="lock-date" id="v2_date">9 月 17 日 周三</div>
+                      <div class="notif">
+                        <div class="nf-head">
+                          <span class="appicon">
+                            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                              <path d="M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9.6L5 20.6V17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/>
+                            </svg>
+                            <i class="badge1">1</i>
+                          </span>
+                          信息<span class="when">现在</span>
+                        </div>
+                        <div class="nf-body">
+                          <p class="scr-idle">95588 · 1 条新消息</p>
+                          <div class="vmsg">
+                            <b>95588</b>【招商银行】您的验证码是 <span class="vswap"><i class="plain">1357</i><i class="mask">••••</i></span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -808,15 +848,15 @@
 
             <span class="vding">叮</span>
             <svg class="vhomi" viewBox="0 0 64 64" aria-hidden="true">
-            <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
-              <path d="M30 52 L30 58 M38 52 L38 58"/>
-              <path fill="var(--cyan)" d="M20 52 C12 46 14 32 26 27 C36 23 46 26 49 34 C52 42 46 51 36 53 Z"/>
-              <path fill="var(--yellow)" d="M26 36 C31 31 39 32 43 38 C38 45 30 45 26 36 Z"/>
-              <circle cx="27" cy="21" r="9" fill="var(--cyan)"/>
-              <path fill="var(--orange)" d="M18 19 L9 22 L18 25 Z"/>
-            </g>
-            <circle cx="24" cy="18" r="2.5" fill="var(--line)"/>
-          </svg>
+              <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+                <path d="M30 52 L30 58 M38 52 L38 58"/>
+                <path fill="var(--cyan)" d="M20 52 C12 46 14 32 26 27 C36 23 46 26 49 34 C52 42 46 51 36 53 Z"/>
+                <path fill="var(--yellow)" d="M26 36 C31 31 39 32 43 38 C38 45 30 45 26 36 Z"/>
+                <circle cx="27" cy="21" r="9" fill="var(--cyan)"/>
+                <path fill="var(--orange)" d="M18 19 L9 22 L18 25 Z"/>
+              </g>
+              <circle cx="24" cy="18" r="2.5" fill="var(--line)"/>
+            </svg>
           </div>
         </div>
         <p class="vtag">家里 · 安卓备用机</p>
