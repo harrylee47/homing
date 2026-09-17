@@ -337,6 +337,19 @@ const apiDeps = {
   barkPublicUrl: cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, '')}/bark` : null,
   baseUrl: cfg.baseUrl,
   onLoginLockout: (ip: string, n: number) => void alertLoginLockout(ip, n),
+  /** 口令被自助找回：通知本人自己的渠道。没有第二因素时这是唯一的事后检测手段 */
+  onPasswordRecovered: (userId: string, ip: string) => void (async () => {
+    const channels = await liveChannels(userId)
+    if (channels.length === 0) return
+    const { dispatch } = await import('../../core/notifier.js')
+    await dispatch(channels, {
+      title: '🔑 你的口令刚刚被重置',
+      body: `有人用你的两步验证码从 ${ip} 重置了这个账号的口令，所有已登录的会话都已下线。`
+        + `如果不是你本人操作，说明你的认证器已经泄露——请立刻用新口令登录、重新绑定两步验证。`,
+      alert: true, priority: 'high', code: null, eventId: '', occurredAt: Date.now(), consoleUrl: cfg.baseUrl,
+    }).catch(() => { /* 告警失败不影响找回本身 */ })
+  })(),
+
   onUnknownIpLogin: (ip: string) => void (async () => {
     const channels = await adminChannels()
     if (channels.length === 0) return

@@ -2,7 +2,7 @@
 import type { Connection, Hub } from '../hub.js'
 import type {
   ChannelRecord, DeviceRecord, EventFilter, EventQuery, InsertEventResult, OutboundFilter, OutboundRecord,
-  MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord, UserRecord,
+  InviteRecord, MessageRefRecord, PairingCodeRecord, RuleRecord, SessionRecord, Store, StoredEvent, TaskRecord, UserRecord,
 } from '../store.js'
 
 /** 与 SQLite 实现保持一致的状态机顺序 */
@@ -139,6 +139,23 @@ export class MemoryStore implements Store {
   async upsertRule(r: RuleRecord) { this.rules.set(r.id, r) }
   async deleteRule(id: string, userId: string) {
     if (this.rules.get(id)?.user_id === userId) this.rules.delete(id)
+  }
+
+  invites = new Map<string, InviteRecord>()
+
+  async listInvites() { return [...this.invites.values()] }
+  async createInvite(i: InviteRecord) { this.invites.set(i.code_hash, i) }
+  async takeInvite(hash: string, userId: string, now: number) {
+    const i = this.invites.get(hash)
+    // 与 SQLite 的 UPDATE...WHERE used_at IS NULL 等价：只能取用一次
+    if (!i || i.used_at !== null || i.expires_at <= now) return null
+    const used = { ...i, used_at: now, used_by: userId }
+    this.invites.set(hash, used)
+    return used
+  }
+  async deleteInvite(hash: string) {
+    const i = this.invites.get(hash)
+    return i && i.used_at === null ? this.invites.delete(hash) : false
   }
 
   async createPairingCode(p: PairingCodeRecord) { this.pairings.set(p.code_hash, p) }

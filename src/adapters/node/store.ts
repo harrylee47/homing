@@ -17,6 +17,7 @@ import type {
   MessageRefRecord,
   EventFilter,
   PairingCodeRecord,
+  InviteRecord,
   SessionRecord,
   TaskRecord,
   UserRecord,
@@ -496,6 +497,42 @@ export class SqliteStore implements Store {
 
   async deleteRule(id: string, userId: string): Promise<void> {
     this.db.prepare('DELETE FROM rules WHERE id = ? AND user_id = ?').run(id, userId)
+  }
+
+  // ── 邀请码 ────────────────────────────────────────────
+
+  async listInvites(): Promise<InviteRecord[]> {
+    return this.db.prepare('SELECT * FROM invites ORDER BY created_at DESC')
+      .all() as unknown as InviteRecord[]
+  }
+
+  async createInvite(i: InviteRecord): Promise<void> {
+    this.db
+      .prepare(`INSERT INTO invites (code_hash, created_by, note, valid_days, expires_at, used_at, used_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(i.code_hash, i.created_by, i.note, i.valid_days, i.expires_at, i.used_at, i.used_by, i.created_at)
+  }
+
+  /**
+   * 取用邀请码。
+   *
+   * 照抄 takePairingCode 的写法：UPDATE ... WHERE used_at IS NULL 的 changes
+   * 决定是否取用成功，这样并发请求下只有一个能成功，不需要额外加锁。
+   * 分成「先查再更新」两步的话，两个人同时用同一个码能开出两个账号。
+   */
+  async takeInvite(codeHash: string, userId: string, now: number): Promise<InviteRecord | null> {
+    const r = this.db
+      .prepare(`UPDATE invites SET used_at = ?, used_by = ?
+                WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`)
+      .run(now, userId, codeHash, now)
+    if (Number(r.changes) === 0) return null
+    return this.db.prepare('SELECT * FROM invites WHERE code_hash = ?')
+      .get(codeHash) as unknown as InviteRecord
+  }
+
+  async deleteInvite(codeHash: string): Promise<boolean> {
+    return Number(this.db.prepare('DELETE FROM invites WHERE code_hash = ? AND used_at IS NULL')
+      .run(codeHash).changes) > 0
   }
 
   // ── 配对码 ────────────────────────────────────────────

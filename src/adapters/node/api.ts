@@ -53,6 +53,8 @@ export interface ApiDeps {
   onLoginLockout?: ((ip: string, attempts: number) => void) | undefined
   /** 陌生网段登录成功时的告警回调 */
   onUnknownIpLogin?: ((ip: string) => void) | undefined
+  /** 口令被自助找回时通知本人的渠道。没有第二因素时这是唯一的事后检测手段 */
+  onPasswordRecovered?: ((userId: string, ip: string) => void) | undefined
   /** 立即执行一个计划任务（忽略排期），用于控制台的「立即测试」。 */
   runTask?: ((task: ParsedTask) => Promise<{ sent: boolean; reason?: string }>) | undefined
   /** 向设备请求一次定位 */
@@ -565,6 +567,314 @@ route('POST', '/api/users/:id/reset', async ({ user, res, params, deps, ip }) =>
   const uri = totpUri(secret, target.name)
   json(res, 200, { name: target.name, password, secret, uri, qr: toSvg(uri) })
 })
+
+// ── 两步验证：自助绑定、解绑、找回 ──────────────────────────
+
+/**
+ * 两步验证现在是**可选**的。
+ *
+ * 这一条推翻了 CLAUDE.md 里原来的红线「TOTP 强制，不提供关闭选项」。
+ * 那条红线不是「多一层总是好的」——控制台公网可达，门后是全部短信明文
+ * 含银行验证码，拿到验证码就能过别人的银行二次验证。放宽是有代价的。
+ *
+ * 所以放宽不是一刀切，是分级：
+ *  - **管理员必须绑**，不提供关闭。他是唯一能建号、删号、改别人有效期的身份。
+ *  - 成员可选：注册后引导绑定，跳过也能用，但要看到后果。
+ *  - 没绑的账号：口令要 12 位三类、不给 30 天免验会话、且**没有自助找回**。
+ *
+ * 最后一条正是「没设两步验证就无法找回口令」的落地：找回流程以 TOTP
+ * 为唯一凭据，没绑就只能找管理员重置——而管理员重置意味着他能进你的账号。
+ */
+
+/** 绑定前先拿密钥与二维码。此刻还没写进账号，验证通过才算数 */
+route('POST', '/api/auth/totp/setup', async ({ user, res, deps }) => {
+  const secret = generateTotpSecret()
+  pendingTotp.set(user.id, { secret, until: now() + 10 * 60 * 1000 })
+  const uri = totpUri(secret, user.name)
+  json(res, 200, { secret, uri, qr: toSvg(uri) })
+})
+
+/**
+ * 待验证的 TOTP 密钥。
+ *
+ * 不直接写进账号：写了再验的话，用户扫码失败就把自己锁在门外了。
+ * 放内存里 10 分钟——重启丢掉只是要重新扫一次，没有损失。
+ */
+const pendingTotp = new Map<string, { secret: string; until: number }>()
+
+route('POST', '/api/auth/totp/enable', async ({ user, res, body, deps, ip }) => {
+  const p = pendingTotp.get(user.id)
+  if (!p || p.until < now()) return json(res, 400, { error: '绑定已超时，请重新开始' })
+  const code = (body as { code?: string })?.code ?? ''
+  if (!(await verifyTotp(p.secret, code))) return json(res, 401, { error: '验证码不正确' })
+
+  pendingTotp.delete(user.id)
+  await deps.store.upsertUser({ ...user, totp_secret: p.secret })
+  await deps.store.audit({ user_id: user.id, actor: user.name, action: 'totp.enable', detail: null, ip, created_at: now() })
+  json(res, 200, { ok: true })
+})
+
+/** 解绑。要同时验口令与当前动态码——这一步的后果是失去自助找回的能力 */
+route('POST', '/api/auth/totp/disable', async ({ user, res, body, deps, ip }) => {
+  if (user.role === 'admin') {
+    return json(res, 403, { error: '管理员必须开启两步验证。这个账号能建号、删号、改别人的有效期' })
+  }
+  if (!user.totp_secret) return json(res, 400, { error: '本来就没开' })
+
+  const b = body as { password?: string; code?: string }
+  const okPw = await withPasswordSlot(async () => verifyPassword(b?.password ?? '', user.password_hash))
+  if (!okPw || !(await verifyTotp(user.totp_secret, b?.code ?? ''))) {
+    return json(res, 401, { error: '口令或验证码不正确' })
+  }
+  await deps.store.upsertUser({ ...user, totp_secret: '' })
+  await deps.store.audit({ user_id: user.id, actor: user.name, action: 'totp.disable', detail: null, ip, created_at: now() })
+  json(res, 200, { ok: true })
+})
+
+/**
+ * 自助找回口令：用动态码换新口令，不需要旧口令。
+ *
+ * 这确实把 TOTP 从「第二因素」变成了「能单独接管账号的凭据」——
+ * 看过一次你认证器屏幕的人就能改你的口令。所以配了三道补偿：
+ *  1. 限速与登录同一套，且口令运算走并发闸
+ *  2. 成功后**全端下线**，旧会话立刻作废
+ *  3. 给这个账号自己的渠道发一条告警——这是没有第二因素时唯一的事后检测手段
+ *
+ * 不做这个功能的替代方案是「只能找管理员重置」，而管理员重置意味着
+ * 他拿到你的新口令、能进你的账号。两害相权，这条更可控，且它是用户
+ * 自己按「我要能自己找回」做出的选择。
+ */
+route('POST', '/api/auth/recover', async ({ res, body, deps, ip }) => {
+  if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
+
+  const b = body as { name?: string; code?: string; password?: string }
+  const acct = await deps.store.getUserByName((b?.name ?? '').trim())
+  const pwCheck = validatePassword(b?.password ?? '', !acct?.totp_secret)
+  if (!pwCheck.ok) return json(res, 400, { error: pwCheck.error })
+
+  // 没绑两步验证 = 没有自助找回。不区分「账号不存在」与「没绑」，
+  // 否则这里就成了一个「谁开了两步验证」的探测器
+  const ok = !!acct && userActive(acct, now()) && acct.totp_secret !== ''
+    && (await verifyTotp(acct.totp_secret, b?.code ?? ''))
+  if (!ok) return json(res, 401, { error: '无法找回。没有开启两步验证的账号只能请管理员重置' })
+
+  await deps.store.upsertUser({
+    ...acct!,
+    password_hash: await withPasswordSlot(() => hashPassword(b!.password!)),
+  })
+  await deps.store.revokeAllSessions(acct!.id)
+  await deps.store.audit({ user_id: acct!.id, actor: acct!.name, action: 'auth.recover', detail: null, ip, created_at: now() })
+  log.warn('口令已通过两步验证找回', { name: acct!.name, ip })
+  // 告警走用户自己的渠道：没有第二因素时，这是唯一的事后检测手段
+  void deps.onPasswordRecovered?.(acct!.id, ip)
+  json(res, 200, { ok: true })
+}, false)
+
+// ── 邀请与自助注册 ──────────────────────────────────────────
+
+/** 注册开关。off=只有管理员能建号；invite=凭邀请码自助注册。没有「完全开放」这一档 */
+const S_REGISTRATION = 'registration_mode'
+
+/**
+ * 为什么没有「完全开放」。
+ *
+ * 这台服务器持有所有注册者短信正文的解密能力，且无法通过技术手段放弃——
+ * 服务端必须解密才能跑规则和转发。也就是说，来注册的每一个陌生人的
+ * 银行验证码、快递地址、实名信息，都落在运营者名下的机器上。
+ *
+ * 邀请制本身就是最有效的一道风控，因为你知道码发给了谁。
+ * 完全开放在这个架构下不该做，所以干脆不提供这个选项。
+ */
+export async function registrationMode(store: Store): Promise<'off' | 'invite'> {
+  return (await store.getSetting(S_REGISTRATION)) === 'invite' ? 'invite' : 'off'
+}
+
+route('GET', '/api/registration', async ({ user, res, deps }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能改注册设置' })
+  json(res, 200, { mode: await registrationMode(deps.store), validity_days: VALIDITY_DAYS })
+})
+
+route('POST', '/api/registration', async ({ user, res, body, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能改注册设置' })
+  const mode = (body as { mode?: string })?.mode === 'invite' ? 'invite' : 'off'
+  await deps.store.setSetting(S_REGISTRATION, mode)
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'registration.mode',
+    detail: mode, ip, created_at: now(),
+  })
+  json(res, 200, { mode })
+})
+
+/** 邀请码的字母表与配对码一致：去掉 O/0/I/1，人要抄写它 */
+const INVITE_LEN = 10
+const generateInviteCode = (): string =>
+  Array.from(crypto.getRandomValues(new Uint8Array(INVITE_LEN)))
+    .map((b) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32])
+    .join('')
+
+/** 邀请码自己的有效期：没人用也会失效，别让它永远躺在那儿 */
+const INVITE_TTL_MS = 7 * 86_400_000
+
+route('GET', '/api/invites', async ({ user, res, deps }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
+  const users = new Map((await deps.store.listUsers()).map((u) => [u.id, u.name]))
+  const t = now()
+  json(res, 200, {
+    invites: (await deps.store.listInvites()).map((i) => ({
+      // 码本身只存哈希，列表里给不出明文——生成时那一次就是唯一一次
+      code_hash: i.code_hash,
+      note: i.note,
+      valid_days: i.valid_days,
+      expires_at: i.expires_at,
+      used_at: i.used_at,
+      used_by: i.used_by ? users.get(i.used_by) ?? i.used_by : null,
+      expired: i.used_at === null && i.expires_at <= t,
+      created_at: i.created_at,
+    })),
+  })
+})
+
+route('POST', '/api/invites', async ({ user, res, body, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
+  const b = body as { note?: string; days?: number }
+  const code = generateInviteCode()
+  const t = now()
+  await deps.store.createInvite({
+    code_hash: await hashToken(code),
+    created_by: user.id,
+    note: (b?.note ?? '').trim().slice(0, 64) || null,
+    valid_days: (VALIDITY_DAYS as readonly number[]).includes(Number(b?.days)) ? Number(b.days) : null,
+    expires_at: t + INVITE_TTL_MS,
+    used_at: null, used_by: null, created_at: t,
+  })
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'invite.create',
+    // 码本身不进审计：审计日志会被看、会被导出，而这个码等于一个账号
+    detail: b?.note ? `备注 ${b.note}` : null, ip, created_at: t,
+  })
+
+  /**
+   * 注册链接把码放在 **fragment** 里而不是查询串。
+   *
+   * fragment 不会发给服务器，因此不会进反代日志、不会进访问日志、
+   * 也不会出现在 Referer 里。而这个码等于一个能看银行验证码的账号。
+   */
+  const url = deps.baseUrl ? `${deps.baseUrl.replace(/\/$/, '')}/register#${code}` : null
+  json(res, 200, { code, url, expires_at: t + INVITE_TTL_MS })
+})
+
+route('DELETE', '/api/invites/:hash', async ({ user, res, params, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能管理邀请码' })
+  const ok = await deps.store.deleteInvite(params.hash!)
+  if (!ok) return json(res, 404, { error: '邀请码不存在或已被使用' })
+  await deps.store.audit({ user_id: user.id, actor: user.name, action: 'invite.revoke', detail: null, ip, created_at: now() })
+  json(res, 200, { ok: true })
+})
+
+/** 注册限速。与配对码那套分开——配对失败不该把注册一起锁死，反之亦然 */
+const regAttempts = new Map<string, { n: number; until: number }>()
+const REG_MAX = 8
+const REG_WINDOW_MS = 15 * 60 * 1000
+
+function regLimited(ip: string): boolean {
+  const r = regAttempts.get(ip)
+  const t = now()
+  if (r && t < r.until) {
+    if (r.n >= REG_MAX) return true
+    r.n++
+    return false
+  }
+  regAttempts.set(ip, { n: 1, until: t + REG_WINDOW_MS })
+  return false
+}
+
+/**
+ * 注册页要先知道这台机器开不开放注册。
+ *
+ * 免鉴权可达，但只回一个布尔值——不回用户数、不回版本、不回实例名。
+ */
+route('GET', '/api/register/status', async ({ res, deps }) => {
+  json(res, 200, {
+    open: (await registrationMode(deps.store)) === 'invite',
+    privacy_version: PRIVACY_VERSION,
+  })
+}, false)
+
+/**
+ * 自助注册。
+ *
+ * 免鉴权可达，所以每一处细节都要按「对面是攻击者」来写：
+ *
+ * - **先消费邀请码，再看用户名**。反过来的话，带一个乱填的码提交，
+ *   「用户名被占」与「邀请码无效」两种回答就把注册接口变成了一个
+ *   不需要邀请码的用户名枚举器。
+ * - 失败一律同一句话、同一个状态码，不区分「码不存在 / 已用 / 过期 / 名字被占」。
+ *   这和 redeemPairing 的做法一致。
+ * - 限速发生在口令运算之前，且口令运算本身有并发闸（withPasswordSlot）。
+ * - 必须显式同意隐私声明，且记下同意的是哪一版。
+ */
+route('POST', '/api/register', async ({ res, body, deps, ip }) => {
+  if (regLimited(ip)) {
+    log.warn('注册请求超出限速', { ip })
+    return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
+  }
+  if ((await registrationMode(deps.store)) !== 'invite') {
+    return json(res, 403, { error: '这台服务器没有开放注册' })
+  }
+
+  const b = body as { code?: string; name?: string; password?: string; agree?: boolean }
+  if (b?.agree !== true) return json(res, 400, { error: '需要先同意隐私与风险声明' })
+
+  const name = (b?.name ?? '').trim()
+  const nameCheck = validateUserName(name)
+  if (!nameCheck.ok) return json(res, 400, { error: nameCheck.error })
+
+  // 未绑两步验证的账号口令要求更高——见 validatePassword 的说明
+  const pwCheck = validatePassword(b?.password ?? '', true)
+  if (!pwCheck.ok) return json(res, 400, { error: pwCheck.error })
+
+  const code = (b?.code ?? '').trim().toUpperCase()
+  if (!code) return json(res, 401, { error: REGISTER_FAIL })
+
+  /**
+   * 先把码消费掉再看用户名。
+   *
+   * 顺序反过来更「体贴」（名字占了就不白费一个码），但那正是枚举器的来源。
+   * 名字撞车是极少数情况，代价是重新要一个码——比把枚举通道开在这里划算。
+   */
+  const id = newId('usr')
+  const invite = await deps.store.takeInvite(await hashToken(code), id, now())
+  if (!invite) return json(res, 401, { error: REGISTER_FAIL })
+
+  if (await deps.store.getUserByName(name)) {
+    // 码已经消费掉了，如实说明——这时对方已经证明自己有合法邀请码，
+    // 不再是匿名攻击者，告诉他真实原因是应该的
+    return json(res, 409, { error: '这个用户名已经有人用了，请向邀请你的人再要一个码' })
+  }
+
+  const t = now()
+  await deps.store.upsertUser({
+    id, name,
+    password_hash: await withPasswordSlot(() => hashPassword(b!.password!)),
+    // 两步验证是可选的：注册完引导绑定，跳过也能用
+    totp_secret: '',
+    role: 'member', bot_token: generateSessionToken(),
+    disabled: false,
+    expires_at: invite.valid_days === null ? null : t + invite.valid_days * 86_400_000,
+    agreed_version: PRIVACY_VERSION, agreed_at: t,
+    created_at: t,
+  })
+  await deps.store.audit({
+    user_id: id, actor: name, action: 'user.register',
+    detail: invite.note ? `邀请备注：${invite.note}` : null, ip, created_at: t,
+  })
+  log.info('新用户注册', { name, expires_at: invite.valid_days })
+
+  json(res, 200, { ok: true, name })
+}, false)
+
+/** 注册失败一律这一句：不区分码不存在 / 已用 / 过期，避免给枚举提供反馈 */
+const REGISTER_FAIL = '邀请码无效或已被使用'
 
 // ── 设备与配对 ──────────────────────────────────────────────
 

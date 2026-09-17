@@ -265,6 +265,27 @@ export interface UserRecord {
   created_at: number
 }
 
+/**
+ * 邀请码。
+ *
+ * 语义等同配对码：在有效期内拿到码就能开一个能看银行验证码的账号。
+ * 所以待遇也一样——**只存哈希**，兑换是「取出即标记已用」的原子操作。
+ * 拆成「先查再更新」两步的话，并发下同一个码能开出两个号。
+ */
+export interface InviteRecord {
+  code_hash: string
+  created_by: string
+  /** 给管理员自己看的备注：这个码是发给谁的 */
+  note: string | null
+  /** 用这个码注册出来的账号能用多少天。null = 永久 */
+  valid_days: number | null
+  /** 码本身的过期时刻——没人用也会失效，别让它永远躺在那儿 */
+  expires_at: number
+  used_at: number | null
+  used_by: string | null
+  created_at: number
+}
+
 export interface Store {
   /** 启动时执行迁移。必须幂等。 */
   migrate(): Promise<void>
@@ -324,6 +345,14 @@ export interface Store {
   listRules(userId: string): Promise<RuleRecord[]>
   upsertRule(r: RuleRecord): Promise<void>
   deleteRule(id: string, userId: string): Promise<void>
+
+  // 邀请码
+  listInvites(): Promise<InviteRecord[]>
+  createInvite(i: InviteRecord): Promise<void>
+  /** 按哈希取出未使用且未过期的邀请码，**并原子地标记已用**。并发下只能成功一次 */
+  takeInvite(codeHash: string, userId: string, now: number): Promise<InviteRecord | null>
+  /** 撤销尚未使用的邀请码 */
+  deleteInvite(codeHash: string): Promise<boolean>
 
   // 配对码
   createPairingCode(p: PairingCodeRecord): Promise<void>
