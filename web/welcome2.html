@@ -1275,24 +1275,23 @@
                  这里再来一份既重复又会互相打架。 -->
             <g stroke="var(--line)" stroke-linejoin="round" fill="var(--card)">
               <rect x="96" y="186" width="52" height="82" rx="10" stroke-width="3.5"/>
-              <rect x="103" y="193" width="26" height="26" rx="8" stroke-width="3"/>
-              <circle cx="110.5" cy="200.5" r="4" stroke-width="2.6"/>
-              <circle cx="121" cy="211" r="4" stroke-width="2.6"/>
+              <rect x="119" y="192" width="25" height="25" rx="7.5" stroke-width="3"/>
+              <circle cx="126.5" cy="199.5" r="3.8" stroke-width="2.5"/>
+              <circle cx="136.5" cy="209.5" r="3.8" stroke-width="2.5"/>
             </g>
-            <!-- 握着它的那只手：掌心贴在背板上，所以朝着我们的是**手背**，
-                 四根手指从左缘绕到屏幕那一侧去，指尖看不见。
-                 先画手指再画手背，手背正好压住指根。 -->
+            <!-- 握着它的那只手。上一版把手背画成一整块圆角白团、再在上面刻三道
+                 指骨——那一块谁也认不出是手，真人反馈原话是「这一块白色的也不是
+                 手指 是什么呢」。**能让人一眼认出手的是分开的手指，不是掌背。**
+                 所以现在只画四根**各自分开**的手指搭在背板上（指根在机身左缘
+                 外一点点，说明手是从背后绕过来的），底下露一小块掌根接到手腕。
+                 手背的主体藏在机身后面——那本来就是看不见的部分。 -->
+            <path fill="var(--card)" stroke="var(--line)" stroke-width="3.2" stroke-linejoin="round"
+                  d="M98 272 C88 282 88 302 100 309 C112 316 128 312 132 301 C136 289 132 276 122 271 Z"/>
             <g fill="var(--card)" stroke="var(--line)" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
-              <rect x="84" y="222" width="36" height="15" rx="7.5"/>
-              <rect x="82" y="242" width="38" height="15" rx="7.5"/>
-              <rect x="86" y="262" width="34" height="14" rx="7"/>
-              <path d="M104 240 C92 252 92 290 106 300 C120 310 148 306 154 292 C160 276 156 246 144 238 Z"/>
-            </g>
-            <!-- 手背上的三道指骨。没有它，那一块就只是个白团 -->
-            <g fill="none" stroke="var(--line)" stroke-width="2.4" stroke-linecap="round" opacity=".4">
-              <path d="M112 262 C114 274 114 282 112 290"/>
-              <path d="M126 260 C128 274 128 282 126 290"/>
-              <path d="M140 260 C142 272 142 278 140 286"/>
+              <rect x="88" y="222" width="32" height="14" rx="7"/>
+              <rect x="86" y="240" width="34" height="14" rx="7"/>
+              <rect x="88" y="257" width="32" height="14" rx="7"/>
+              <rect x="92" y="274" width="28" height="13" rx="6.5"/>
             </g>
           </svg>
 
