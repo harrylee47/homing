@@ -2036,7 +2036,14 @@ function ruleEditor(rule, chs, devs = []) {
         <label>分组名</label>
         <input id="b_group" value="${esc(bark.group || '')}" placeholder="如 验证码">
         <div class="muted">通知中心按分组分栏。多设备时会自动再缀上设备名。</div>
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="b_copy" style="width:auto"${bark.auto_copy_code ? ' checked' : ''}><span>长按通知自动复制验证码</span></label>
+        <label>长按通知复制什么</label>
+        <select id="b_copymode">
+          <option value="code"${(bark.copy_mode ?? 'code') === 'code' ? ' selected' : ''}>验证码（需同时开启下方「提取验证码」）</option>
+          <option value="body"${bark.copy_mode === 'body' ? ' selected' : ''}>整条正文</option>
+          <option value="none"${bark.copy_mode === 'none' ? ' selected' : ''}>不复制</option>
+        </select>
+        <div class="muted" id="b_copywarn"></div>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="b_copy" style="width:auto"${bark.auto_copy_code ? ' checked' : ''}><span>不用长按，通知到达即进剪贴板（部分 iOS 版本支持）</span></label>
         <label>点击通知跳转到</label>
         <select id="b_link">
           <option value="event"${bark.deep_link === 'event' ? ' selected' : ''}>消息详情</option>
@@ -2102,6 +2109,7 @@ function ruleEditor(rule, chs, devs = []) {
       kind: kinds.length === 1 ? kinds[0] : 'sms',
       direction: dir || 'in',
       extractCode: $('#extract').checked,
+      copyMode: $('#b_copymode')?.value,
       // 设备名与卡槽只在真的分得清的时候才出现在通知里，预览也照这个来
       device: devs.filter((d) => d.status !== 'revoked').length > 1 ? '日本卡' : '',
       sim: allSims.length > 1 ? simText(allSims[0]) : '',
@@ -2112,11 +2120,31 @@ function ruleEditor(rule, chs, devs = []) {
   app.addEventListener('click', (e) => {
     if (e.target.classList?.contains('spoiler')) e.target.classList.toggle('show')
   })
+  /**
+   * 「复制验证码」和「提取验证码」是两个开关，但只有一个能单独生效。
+   *
+   * 选了复制验证码却没开提取，是个**不报错的死配置**：没有码可复制，
+   * 发给 Bark 的请求里连 copy 字段都不会出现。踩到的人只会觉得
+   * 「长按复制怎么没反应」，而界面上两个勾都好好地开着。
+   * 拦不住（用户可能正要去开提取），但必须说出来。
+   */
+  const paintCopyWarn = () => {
+    const warn = $('#b_copywarn')
+    if (!warn) return
+    const bad = $('#b_copymode').value === 'code' && !$('#extract').checked
+    warn.innerHTML = bad
+      ? '<span class="badge err">这样配不会复制任何东西</span> 选了复制验证码，' +
+        '但下方「提取验证码」没开——没有码可复制。要么把它打开，要么改成「整条正文」。'
+      : ''
+  }
+
   // 类型、方向、提取验证码都会改变通知的样子，改哪个都要重画
-  $('#extract').onchange = paintPreview
+  $('#extract').onchange = () => { paintPreview(); paintCopyWarn() }
   $('#direction').onchange = paintPreview
+  if ($('#b_copymode')) $('#b_copymode').onchange = () => { paintPreview(); paintCopyWarn() }
   for (const c of app.querySelectorAll('[data-kind]')) c.addEventListener('change', paintPreview)
   paintPreview()
+  paintCopyWarn()
 
   const collect = () => {
     const kinds = [...app.querySelectorAll('[data-kind]')].filter((c) => c.checked).map((c) => c.dataset.kind)
@@ -2157,6 +2185,7 @@ function ruleEditor(rule, chs, devs = []) {
           ? {
               level: $('#b_level').value,
               group: $('#b_group').value.trim() || null,
+              copy_mode: $('#b_copymode').value,
               auto_copy_code: $('#b_copy').checked,
               deep_link: $('#b_link').value,
             }
@@ -2274,8 +2303,25 @@ function notifyPreview(template, opts) {
     <div class="pvbubble">
       <div><b>${esc(barkTitle)}</b></div>
       <div style="margin-top:2px">${esc(body).replace(/\n/g, '<br>')}</div>
-      ${code ? `<div class="muted" style="font-size:12px;margin-top:6px">长按可复制 ${esc(code)}</div>` : ''}
+      ${copyHint(opts.copyMode, code, body)}
     </div>`
+}
+
+/**
+ * 预览里那句「长按可复制 …」。
+ *
+ * 要照着 bark.ts 的分支算，别只在有验证码时才显示——否则选了「复制整条正文」
+ * 的人在预览里什么都看不到，会以为没生效。code 模式下没提取到码时
+ * 明确说「复制不到」，这正是那个死配置的样子。
+ */
+function copyHint(mode, code, body) {
+  const m = mode || 'code'
+  const line = (t) => `<div class="muted" style="font-size:12px;margin-top:6px">${t}</div>`
+  if (m === 'none') return ''
+  if (m === 'body') return line(`长按可复制整条正文（${esc(body.slice(0, 16))}${body.length > 16 ? '…' : ''}）`)
+  return code
+    ? line(`长按可复制 ${esc(code)}`)
+    : line('<span class="badge err">复制不到</span> 选的是复制验证码，但没开「提取验证码」')
 }
 
 /** 带秒的时间，与通知头部一致——两条几乎同时到的消息要分得出先后。 */
@@ -2388,8 +2434,20 @@ async function channels() {
                嫌麻烦就点 App 里任意一条示例右上角的复制按钮，把整条地址粘到下面，自动认。</div>
                <input id="f_paste" class="mono" placeholder="或粘贴整条推送地址，自动提取 Key">
                <div class="muted" id="f_pastehint"></div>
+               <label>通知图标（可选）</label>
+               <input id="f_icon" class="mono" value="${esc(iconUrl())}" placeholder="留空则不显示图标">
+               <div class="muted">显示在通知左侧，让人一眼认出这条是网关发的。
+               去图的是<b>你的 iPhone</b> 而不是服务器，所以地址必须公网可达；
+               而且只认 <b>PNG / JPEG</b>——填 .svg 的话图标位置会是空的，不报错。
+               上面预填的是本网关自己的图标。</div>
                <div class="muted">验证码会放进通知标题，长按即可复制，无需打开任何 App。</div>`,
-        collect: () => ({ server: $('#f_server').value.trim(), key: $('#f_key').value.trim() }),
+        collect: () => ({
+          server: $('#f_server').value.trim(),
+          key: $('#f_key').value.trim(),
+          // 空串要送 null 而不是 ''：schema 是 .url()，空串过不了校验，
+          // 而「不要图标」是个合法选择
+          icon: $('#f_icon').value.trim() || null,
+        }),
       },
       telegram: {
         name: '主 Telegram',
@@ -2472,9 +2530,7 @@ async function channels() {
         b.disabled = true
         try {
           const r = await api(`/channels/${id}/test`, { method: 'POST' })
-          out.innerHTML = r.ok
-            ? '<span class="badge ok">测试消息已发出</span>'
-            : `<span class="badge err">失败：${esc(r.error)}</span>`
+          out.innerHTML = testResultHtml(r)
         } catch (e) { out.innerHTML = `<span class="badge err">${esc(e.message)}</span>` }
         b.disabled = false
       }
@@ -2513,6 +2569,7 @@ function channelEditor(c, bark) {
     bark: [
       { key: 'server', label: '推送地址（内部）', secret: false, placeholder: bark?.upstream || 'http://bark:8080' },
       { key: 'key', label: '设备 Key', secret: true },
+      { key: 'icon', label: '通知图标（PNG/JPEG 的公网地址）', secret: false, placeholder: iconUrl(), clearable: true },
     ],
     webhook: [{ key: 'url', label: '目标地址', secret: false }],
   }
@@ -2536,7 +2593,9 @@ function channelEditor(c, bark) {
       ${fields.map((f) => `
         <label>${esc(f.label)}</label>
         <input id="c_${esc(f.key)}" class="mono" type="${f.secret ? 'password' : 'text'}"
-               placeholder="${esc(f.placeholder || (f.secret ? '留空则不变' : '留空则不变'))}" autocomplete="off">
+               placeholder="${esc(f.placeholder || '留空则不变')}" autocomplete="off">
+        ${f.clearable ? `<label style="text-transform:none;letter-spacing:0;font-size:13px;color:var(--fg)">
+          <input type="checkbox" id="c_${esc(f.key)}_clear" style="width:auto;margin-right:6px">清空这一项</label>` : ''}
       `).join('')}
     </div>
     <div class="btnrow">
@@ -2553,6 +2612,8 @@ function channelEditor(c, bark) {
   $('#c_save').onclick = async () => {
     const config = {}
     for (const f of fields) {
+      // 勾了「清空」就送显式 null——服务端把 null 当清空、把空串当「没填」
+      if (f.clearable && $(`#c_${f.key}_clear`)?.checked) { config[f.key] = null; continue }
       const v = $(`#c_${f.key}`).value.trim()
       if (v) config[f.key] = v
     }
@@ -2574,9 +2635,7 @@ function channelEditor(c, bark) {
     $('#c_result').textContent = '发送中…'
     try {
       const r = await api(`/channels/${c.id}/test`, { method: 'POST' })
-      $('#c_result').innerHTML = r.ok
-        ? '<span class="badge ok">测试消息已发出</span>'
-        : `<span class="badge err">失败：${esc(r.error)}</span>`
+      $('#c_result').innerHTML = testResultHtml(r)
     } catch (e) { $('#c_result').innerHTML = `<span class="badge err">${esc(e.message)}</span>` }
   }
 
@@ -2596,6 +2655,30 @@ function channelEditor(c, bark) {
  *
  * 也接受直接粘一串裸 Key。
  */
+/**
+ * 本网关自己那张通知图标的公网地址。
+ *
+ * 取 location.origin 而不是配置里的 GW_BASE_URL：去取这张图的是**用户的 iPhone**，
+ * 而用户此刻正是从这个地址打开的控制台——他能访问到，他的手机多半也能。
+ */
+/**
+ * 渠道测试的结果。
+ *
+ * 成功时必须把「发给了谁」显示出来（Telegram 会回 chat 身份）：
+ * chat_id 填错的后果是把自己的全部短信长期转发给陌生人，
+ * 而收不到的是填错的人自己——操作者这边只会看到一个绿色的「已发出」。
+ * 这一行是他当场发现填错的唯一机会。
+ */
+function testResultHtml(r) {
+  if (!r.ok) return `<span class="badge err">失败：${esc(r.error || '未知错误')}</span>`
+  return '<span class="badge ok">测试消息已发出</span>'
+    + (r.to ? ` 发给了 <b>${esc(r.to)}</b><div class="muted" style="font-size:12px;margin-top:4px">不是你？那就是接收地址填错了，改掉它——否则你的短信会一直发到那里。</div>` : '')
+}
+
+function iconUrl() {
+  return `${location.origin}/icon-192.png`
+}
+
 function barkKeyFrom(text) {
   const t = String(text || '').trim()
   if (!t) return ''

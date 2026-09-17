@@ -40,6 +40,8 @@ export interface DeliveryResult {
   error: string | null
   /** 渠道侧消息标识，供「Reply 即回复」建立映射 */
   ref?: string | undefined
+  /** 对端身份的人类描述，只有渠道测试会读它（见 SendResult.to） */
+  to?: string | undefined
 }
 
 const MAX_ATTEMPTS = 3
@@ -79,6 +81,7 @@ async function sendWithRetry(ch: ChannelConfig, msg: NotifyMessage, opts: Dispat
       return {
         channelId: ch.id, channelType: ch.type, ok: true, attempts: attempt, error: null,
         ref: r && typeof r === 'object' ? r.ref : undefined,
+        to: r && typeof r === 'object' ? r.to : undefined,
       }
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e)

@@ -16,6 +16,19 @@ export const BarkConfig = z.object({
   server: z.string().url(),
   /** 设备 key，由 Bark App 生成 */
   key: z.string().min(4).max(128),
+  /**
+   * 通知左侧的小图标，一个公网可达的 **PNG/JPEG** 地址。
+   *
+   * 三件事要知道：
+   * ① **不能给 SVG**。iOS 的通知附件不认，表现是图标位置空着，没有任何报错。
+   *    网关自己那张在 `/icon-192.png`（由 web/logo.svg 栅格化而来）。
+   * ② 取图的是**用户的 iPhone**，不是服务端。所以地址必须从公网够得到，
+   *    填内网地址会静默失败。
+   * ③ 它配在渠道上而不是规则上：这是「这条推送来自哪台网关」，
+   *    一台网关只有一个身份。随消息类型变化的东西（级别、分组、复制什么）
+   *    才配在规则的 action 里。
+   */
+  icon: z.string().url().max(500).nullish(),
 })
 export type BarkConfig = z.infer<typeof BarkConfig>
 
@@ -28,7 +41,20 @@ export const BarkOptions = z.object({
   level: z.enum(['critical', 'timeSensitive', 'active', 'passive']).default('active'),
   /** 按发件人分组，通知中心不会糊成一片 */
   group: z.string().max(64).nullish(),
-  /** 自动把验证码复制到剪贴板 */
+  /**
+   * 长按通知时复制什么。
+   *
+   * - `code` 复制提取出的验证码，**要求同一条规则也开了 extract_code**。
+   *   只开这个不开那个，是个不报错的死配置：没有码可复制，
+   *   Bark 请求里连 copy 字段都不会出现。界面上会拦这种组合。
+   * - `body` 复制整条正文。快递单号、取件码、一次性口令这类
+   *   「不是 4-8 位数字、但你就是想要那串字」的场景靠它。
+   * - `none` 不复制。
+   *
+   * 默认 code：这是改这个字段之前的行为，老规则升级后表现不变。
+   */
+  copy_mode: z.enum(['code', 'body', 'none']).default('code'),
+  /** 自动复制（部分 iOS 版本上不用长按，通知到达即进剪贴板） */
   auto_copy_code: z.boolean().default(true),
   /** 点击通知跳转：event=事件详情，compose=预填回复，none=不跳转 */
   deep_link: z.enum(['event', 'compose', 'none']).default('event'),
@@ -63,11 +89,18 @@ export const barkProvider: Provider<BarkConfig> = {
     }
 
     // copy 指定长按通知时复制的内容；autoCopy 在部分 iOS 版本上可直接进剪贴板。
-    // 有验证码就只复制验证码——复制整条短信没有意义。
-    if (msg.code) {
-      body.copy = msg.code
+    // code 模式下没提取到码就整个不带 copy——宁可不复制，也不要让人长按之后
+    // 粘出来一整条「【建设银行】您尾号…」。
+    const copy = o.copy_mode === 'code' ? msg.code
+      : o.copy_mode === 'body' ? (msg.body || null)
+      : null
+    if (copy) {
+      body.copy = copy
       if (o.auto_copy_code) body.autoCopy = 1
     }
+
+    // 图标由用户的 iPhone 去取，服务端只是把地址转述过去
+    if (cfg.icon) body.icon = cfg.icon
 
     const url = deepLink(msg, o.deep_link)
     if (url) body.url = url

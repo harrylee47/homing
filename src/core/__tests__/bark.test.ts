@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BarkOptions, deepLink } from '../providers/bark.js'
+import { BarkConfig, BarkOptions, barkProvider, deepLink } from '../providers/bark.js'
 import type { NotifyMessage } from '../providers/types.js'
 
 const msg = (o: Partial<NotifyMessage> = {}): NotifyMessage => ({
@@ -87,5 +87,98 @@ describe('Bark 多设备', () => {
 
     expect(captured!.title).toBe('95533')
     expect(captured!.group).toBe('验证码')
+  })
+})
+
+describe('复制什么 —— copy_mode', () => {
+  /** 拦下 fetch，把真正发给 bark-server 的那个 JSON 取出来 */
+  const capture = async (options: Record<string, unknown>, over: Partial<NotifyMessage> = {}, cfgOver = {}) => {
+    const orig = globalThis.fetch
+    let sent: Record<string, unknown> = {}
+    globalThis.fetch = (async (_u: unknown, init: { body: string }) => {
+      sent = JSON.parse(init.body) as Record<string, unknown>
+      return { ok: true, status: 200, text: async () => '', json: async () => ({}) }
+    }) as unknown as typeof fetch
+    try {
+      await barkProvider.send(
+        { server: 'https://bark.example.com', key: 'k'.repeat(8), ...cfgOver },
+        { ...msg(over), options: { bark: options } },
+      )
+    } finally { globalThis.fetch = orig }
+    return sent
+  }
+
+  it('默认复制验证码 —— 和加这个字段之前的行为一致', async () => {
+    const b = await capture({})
+    expect(b.copy).toBe('123456')
+    expect(b.autoCopy).toBe(1)
+  })
+
+  it('body 模式复制整条正文', async () => {
+    const b = await capture({ copy_mode: 'body' })
+    expect(b.copy).toBe('验证码 123456')
+  })
+
+  it('none 模式什么都不复制', async () => {
+    const b = await capture({ copy_mode: 'none' })
+    expect(b.copy).toBeUndefined()
+    expect(b.autoCopy).toBeUndefined()
+  })
+
+  /**
+   * 这正是界面要拦的那个死配置：选了复制验证码但规则没开提取，
+   * msg.code 是 null，于是 copy 整个不出现——不报错，就是永远复制不到。
+   */
+  it('code 模式下没提取到码，就整个不带 copy', async () => {
+    const b = await capture({ copy_mode: 'code' }, { code: null })
+    expect(b.copy).toBeUndefined()
+  })
+
+  it('body 模式下正文为空也不带 copy —— 别送一个空剪贴板', async () => {
+    const b = await capture({ copy_mode: 'body' }, { body: '' })
+    expect(b.copy).toBeUndefined()
+  })
+
+  it('关掉自动复制仍然可以长按复制', async () => {
+    const b = await capture({ copy_mode: 'body', auto_copy_code: false })
+    expect(b.copy).toBe('验证码 123456')
+    expect(b.autoCopy).toBeUndefined()
+  })
+})
+
+describe('通知图标', () => {
+  const capture = async (cfgOver: Record<string, unknown>) => {
+    const orig = globalThis.fetch
+    let sent: Record<string, unknown> = {}
+    globalThis.fetch = (async (_u: unknown, init: { body: string }) => {
+      sent = JSON.parse(init.body) as Record<string, unknown>
+      return { ok: true, status: 200, text: async () => '', json: async () => ({}) }
+    }) as unknown as typeof fetch
+    try {
+      await barkProvider.send(
+        { server: 'https://bark.example.com', key: 'k'.repeat(8), ...cfgOver } as never,
+        { ...msg(), options: { bark: {} } },
+      )
+    } finally { globalThis.fetch = orig }
+    return sent
+  }
+
+  it('配了就带上', async () => {
+    expect((await capture({ icon: 'https://gw.example.com/icon-192.png' })).icon)
+      .toBe('https://gw.example.com/icon-192.png')
+  })
+
+  it('没配就不带 —— 不要送一个 undefined 过去', async () => {
+    expect('icon' in (await capture({}))).toBe(false)
+  })
+
+  it('配置结构允许省略 icon，老渠道不会因为多了这个字段而校验失败', () => {
+    const r = BarkConfig.safeParse({ server: 'https://bark.example.com', key: 'k'.repeat(8) })
+    expect(r.success).toBe(true)
+  })
+
+  it('icon 必须是合法 URL —— 填个文件名是最常见的错法', () => {
+    const r = BarkConfig.safeParse({ server: 'https://bark.example.com', key: 'k'.repeat(8), icon: 'logo.png' })
+    expect(r.success).toBe(false)
   })
 })

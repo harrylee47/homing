@@ -72,6 +72,15 @@ export interface NotifyMessage {
 /** 发送结果。ref 是渠道侧的消息标识，用于把用户的回复关联回原事件。 */
 export interface SendResult {
   ref?: string | undefined
+  /**
+   * 这条消息**实际落到了哪里**，给人看的一句话（如「@harry（私聊）」）。
+   *
+   * 只有渠道测试会用它。填错 chat_id 的后果是把自己的全部短信长期转发给
+   * 陌生人，而「测试成功」这四个字完全看不出这件事——收不到的是填错的人自己，
+   * 操作者只看到 Telegram 返回 200。把对端身份原样回显，是这条链路上
+   * 唯一不需要新增流程就能让人当场发现填错的地方。
+   */
+  to?: string | undefined
 }
 
 export interface Provider<C = unknown> {

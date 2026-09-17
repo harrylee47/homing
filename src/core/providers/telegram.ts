@@ -64,10 +64,42 @@ export const telegramProvider: Provider<TelegramConfig> = {
     }
 
     // 返回 message_id：用户直接引用回复这条推送时，据此反查原事件的发件人
-    const body = (await res.json().catch(() => null)) as { result?: { message_id?: number } } | null
+    const body = (await res.json().catch(() => null)) as {
+      result?: { message_id?: number; chat?: TelegramChat }
+    } | null
     const id = body?.result?.message_id
-    return { ref: id != null ? String(id) : undefined }
+    return {
+      ref: id != null ? String(id) : undefined,
+      to: describeChat(body?.result?.chat),
+    }
   },
+}
+
+interface TelegramChat {
+  id?: number | string
+  type?: string
+  title?: string
+  username?: string
+  first_name?: string
+}
+
+/**
+ * 把 Telegram 回的 chat 对象说成一句人话。
+ *
+ * 用于渠道测试的回显：「已发到 @harry（私聊）」和「已发到 群「家里」」
+ * 是两件完全不同的事，而后者意味着群里每个人都会收到你的银行验证码。
+ * 不回显的话，这两种情况在界面上都只是一个绿色的「测试消息已发出」。
+ */
+function describeChat(chat: TelegramChat | undefined): string | undefined {
+  if (!chat) return undefined
+  const kind = chat.type === 'private' ? '私聊'
+    : chat.type === 'group' || chat.type === 'supergroup' ? '群'
+    : chat.type === 'channel' ? '频道'
+    : chat.type ?? ''
+  const who = chat.username ? `@${chat.username}`
+    : chat.title ? `「${chat.title}」`
+    : chat.first_name ?? String(chat.id ?? '')
+  return kind ? `${who}（${kind}）` : who
 }
 
 /**

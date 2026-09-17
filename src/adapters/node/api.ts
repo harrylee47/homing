@@ -1419,6 +1419,38 @@ function sanitizeChannelConfig(
   return { ok: true, config: { ...cfg, allow_private: allowPrivate } }
 }
 
+/**
+ * 同一个 Telegram Bot token 不能被两条渠道用。
+ *
+ * Telegram 只允许**一个**程序对一个 token 做长轮询。两条渠道就是两个实例，
+ * 互撞 409：谁抢到是随机的，而抢到的那个会把另一个人 chat 的更新一并拉下来，
+ * 白名单不匹配就静默丢弃，同时 offset 往前走——那条命令对另一个实例
+ * 永远消失了。表现是「Bot 命令时灵时不灵」，而且只有服务端日志里有线索。
+ *
+ * 推送方向其实不受影响（各发各的 chat_id），所以这不是安全漏洞而是可用性陷阱；
+ * 但它排查成本极高，值得在保存那一刻就拦住。
+ *
+ * 跨用户检查，因此要读 listAllChannels。这会泄漏「这个 token 在这台网关上
+ * 已被使用」——但对面本来就握着这个 token，而不说的代价是两个人一起懵。
+ * 不说是谁在用。
+ */
+async function telegramTokenTaken(
+  deps: ApiDeps, token: string, exceptChannelId: string | null,
+): Promise<boolean> {
+  for (const row of await deps.store.listAllChannels()) {
+    if (row.type !== 'telegram' || row.id === exceptChannelId) continue
+    try {
+      const cfg = JSON.parse(await deps.cipher.decrypt(row.config_enc)) as { bot_token?: string }
+      if (cfg.bot_token && timingSafeEqual(cfg.bot_token, token)) return true
+    } catch { /* 解不开的老配置跳过，不能因为一条坏数据挡住所有人保存 */ }
+  }
+  return false
+}
+
+const TOKEN_TAKEN = '这个 Bot 已经被这台网关上的另一个账号用了。'
+  + 'Telegram 只允许一个程序拉取一个 Bot 的消息，共用会让双方的 Bot 命令互相丢失。'
+  + '请去 @BotFather 发 /newbot 建一个自己的。'
+
 route('POST', '/api/channels', async ({ user, res, body, deps, ip }) => {
   const b = body as { type?: string; name?: string; config?: unknown; enabled?: boolean }
   const provider = b.type ? PROVIDERS[b.type] : undefined
@@ -1430,6 +1462,11 @@ route('POST', '/api/channels', async ({ user, res, body, deps, ip }) => {
   }
   const safe = sanitizeChannelConfig(b.type!, parsed.data as Record<string, unknown>, user.role === 'admin')
   if (!safe.ok) return json(res, 400, { error: safe.error })
+
+  if (b.type === 'telegram') {
+    const token = (safe.config as { bot_token?: string }).bot_token ?? ''
+    if (await telegramTokenTaken(deps, token, null)) return json(res, 409, { error: TOKEN_TAKEN })
+  }
 
   const id = newId('ch')
   await deps.store.audit({ actor: 'admin', action: 'channel.create', detail: `${b.type}:${b.name ?? b.type}`, ip, created_at: now() })
@@ -1461,8 +1498,12 @@ route('PUT', '/api/channels/:id', async ({ user, res, params, body, deps, ip }) 
     const old = JSON.parse(await deps.cipher.decrypt(c.config_enc)) as Record<string, unknown>
     const merged = { ...old }
     for (const [k, v] of Object.entries(b.config)) {
-      // 空字符串 = 不修改这一项，而不是把它清空
-      if (v === '' || v === undefined || v === null) continue
+      // 空字符串 / undefined = 这一项没填，沿用旧值（密钥不回显，所以「没填」是常态）
+      if (v === '' || v === undefined) continue
+      // 显式 null = 清空这一项。两者必须分开：可选字段（Bark 的 icon）
+      // 一旦填上就再也删不掉的话，那不是「没做」，是个改不回去的坑。
+      // 必填字段上传 null 会在下面的 schema 校验里 400，不会静默改坏。
+      if (v === null) { delete merged[k]; continue }
       merged[k] = v
     }
     const parsed = provider.configSchema.safeParse(merged)
@@ -1471,6 +1512,10 @@ route('PUT', '/api/channels/:id', async ({ user, res, params, body, deps, ip }) 
     }
     const safe = sanitizeChannelConfig(c.type, parsed.data as Record<string, unknown>, user.role === 'admin')
     if (!safe.ok) return json(res, 400, { error: safe.error })
+    if (c.type === 'telegram') {
+      const token = (safe.config as { bot_token?: string }).bot_token ?? ''
+      if (await telegramTokenTaken(deps, token, c.id)) return json(res, 409, { error: TOKEN_TAKEN })
+    }
     configEnc = await deps.cipher.encrypt(JSON.stringify(safe.config))
   }
 
@@ -1567,10 +1612,21 @@ route('POST', '/api/channels/:id/test', async ({ user, res, params, deps }) => {
     id: c.id, type: c.type, name: c.name, config: parsed.data, enabled: true,
   }
   const [r] = await dispatch([cfg], {
-    title: '✅ 渠道测试', body: '这是一条测试消息，收到即说明渠道配置正确。',
+    title: '✅ 渠道测试',
+    // 正文写给**收到的那个人**看，而不是写给点测试的人看：
+    // 如果 chat_id 填成了别人的，看到这条的就是那个陌生人，
+    // 他需要知道自己为什么收到了它、以及接下来会收到什么
+    body: '这是一条测试消息，收到即说明渠道配置正确。'
+      + '如果你并没有配置过这台网关，说明有人把接收地址填成了你的——'
+      + '请告诉他，否则他的短信会一直发到你这里。',
     alert: true, priority: 'normal', code: null, eventId: '', occurredAt: now(),
   })
-  json(res, r?.ok ? 200 : 502, { ok: r?.ok ?? false, attempts: r?.attempts ?? 0, error: r?.error ?? null })
+  json(res, r?.ok ? 200 : 502, {
+    ok: r?.ok ?? false, attempts: r?.attempts ?? 0, error: r?.error ?? null,
+    // 让操作者当场看见「发给了谁」。填错 chat_id 时这是唯一的线索——
+    // 否则界面上只有一个绿色的「已发出」，而收到的是别人
+    to: r?.to ?? null,
+  })
 })
 
 // ── 规则 ────────────────────────────────────────────────────
