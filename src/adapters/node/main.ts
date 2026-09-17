@@ -519,7 +519,31 @@ const server = createServer((req, res) => {
    */
   if (req.url === '/qr/apk.svg') {
     const base = cfg.baseUrl?.replace(/\/$/, '')
-    if (!base) { res.writeHead(404).end(); return }
+    /**
+     * 没配 `GW_BASE_URL` 时给一张**占位图**，不是 404。
+     *
+     * 二维码本身确实不能给——指向 localhost 的错二维码比没有更难排查
+     * （见 CLAUDE.md「配对与 Bark 接入都走扫码」）。但落地页里那个
+     * `<img src="/qr/apk.svg">` 是写死在 HTML 里的，404 的后果是**刚装完的
+     * 自建者打开自己的首页，看见两个碎图标**，而且看不出该去配什么。
+     * CSP 禁内联事件处理器，前端也没法 onerror 把它藏掉。
+     * 占位图把话直接写在图上，operator 一眼知道少配了哪个环境变量。
+     */
+    if (!base) {
+      const ph = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="未配置 GW_BASE_URL，暂时没有下载二维码">`
+        + `<rect x="2" y="2" width="116" height="116" rx="10" fill="none" stroke="#9b958d" stroke-width="2.5" stroke-dasharray="7 6"/>`
+        + `<text x="60" y="52" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" font-weight="700" fill="#6b6560">未配置</text>`
+        + `<text x="60" y="70" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#6b6560">GW_BASE_URL</text>`
+        + `<text x="60" y="90" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#9b958d">配好后这里是二维码</text>`
+        + `</svg>`
+      res.writeHead(200, {
+        'content-type': 'image/svg+xml; charset=utf-8',
+        'cache-control': 'no-cache',
+        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
+      })
+      res.end(ph)
+      return
+    }
     const svg = toSvg(`${base}/download/homing.apk`, { cell: 4, label: '扫码下载 Homing 安卓 App' })
     res.writeHead(200, {
       'content-type': 'image/svg+xml; charset=utf-8',
