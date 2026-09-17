@@ -132,6 +132,17 @@ export class MemoryStore implements Store {
     return [...this.events.values()].filter((e) => e.user_id === userId && e.kind === kind).length
   }
 
+  async trimOutbound(userId: string, keep: number, batch: number, before = Infinity): Promise<number> {
+    if (keep <= 0) return 0
+    const all = [...this.outbound.values()].filter((o) => o.user_id === userId)
+    const rank = new Map([...all].sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? 1 : -1)).map((o, i) => [o.id, i]))
+    const doomed = all
+      .filter((o) => o.created_at < before && (rank.get(o.id) ?? 0) >= keep)
+      .sort((a, b) => a.created_at - b.created_at).slice(0, batch)
+    for (const o of doomed) this.outbound.delete(o.id)
+    return doomed.length
+  }
+
   async oldestEventAt(userId: string, kind: string): Promise<number | null> {
     const t = [...this.events.values()]
       .filter((e) => e.user_id === userId && e.kind === kind).map((e) => e.occurred_at)

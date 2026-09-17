@@ -501,6 +501,25 @@ export class SqliteStore implements Store {
     return Number(r.changes)
   }
 
+  async trimOutbound(userId: string, keep: number, batch: number, before: number): Promise<number> {
+    if (keep <= 0) return 0
+    const r = this.db.prepare(
+      `DELETE FROM outbound WHERE id IN (
+         SELECT id FROM outbound
+          WHERE user_id = ?
+            -- 护栏：刚发出去的不动，等状态机跑完（accepted → sent → delivered）
+            AND created_at < ?
+            AND id NOT IN (
+              SELECT id FROM outbound WHERE user_id = ?
+               ORDER BY created_at DESC, id DESC LIMIT ?
+            )
+          ORDER BY created_at ASC, id ASC
+          LIMIT ?
+       )`,
+    ).run(userId, before, userId, keep, batch)
+    return Number(r.changes)
+  }
+
   async oldestEventAt(userId: string, kind: EventKind): Promise<number | null> {
     const r = this.db.prepare(
       'SELECT MIN(occurred_at) AS t FROM events WHERE user_id = ? AND kind = ?',

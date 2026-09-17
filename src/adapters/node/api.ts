@@ -26,7 +26,7 @@ import { log } from '../../core/logging.js'
 import { dispatch, PROVIDERS, type ChannelConfig } from '../../core/notifier.js'
 import { createPairing, redeemPairing } from '../../core/pairing.js'
 import {
-  RETAINABLE_KINDS, RETENTION_CHOICES, RETENTION_SETTING, newAccountRetention,
+  RETAINABLE_KINDS, RETENTION_CHOICES, RETENTION_KEYS, RETENTION_SETTING, newAccountRetention,
   parseRetention, sanitizeRetention, serializeRetention, trimUserNow,
   type RetainableKind,
 } from '../../core/retention.js'
@@ -2598,6 +2598,7 @@ route('GET', '/api/retention', async ({ user, res, deps }) => {
   const cfg = parseRetention(await deps.store.getUserSetting(user.id, RETENTION_SETTING))
   const counts: Record<string, number> = {}
   for (const k of RETAINABLE_KINDS) counts[k] = await deps.store.countEventsByKind(user.id, k)
+  counts.outbound = await deps.store.countOutbound({ user_id: user.id })
   json(res, 200, { retention: cfg, counts, choices: RETENTION_CHOICES })
 })
 
@@ -2616,9 +2617,11 @@ route('POST', '/api/retention', async ({ user, res, body, deps, ip }) => {
    */
   const willDelete: Record<string, number> = {}
   let total = 0
-  for (const k of RETAINABLE_KINDS) {
+  for (const k of RETENTION_KEYS) {
     if (next[k] <= 0) continue
-    const n = await deps.store.countEventsByKind(user.id, k)
+    const n = k === 'outbound'
+      ? await deps.store.countOutbound({ user_id: user.id })
+      : await deps.store.countEventsByKind(user.id, k)
     const over = Math.max(n - next[k], 0)
     if (over > 0) { willDelete[k] = over; total += over }
   }
@@ -2640,12 +2643,14 @@ route('POST', '/api/retention', async ({ user, res, body, deps, ip }) => {
     getUserSetting: (u, k) => deps.store.getUserSetting(u, k),
     countEventsByKind: (u, k) => deps.store.countEventsByKind(u, k),
     trimEvents: (u, k, keep, batch, before) => deps.store.trimEvents(u, k, keep, batch, before),
+    countOutbound: (flt) => deps.store.countOutbound(flt),
+    trimOutbound: (u, keep, batch, before) => deps.store.trimOutbound(u, keep, batch, before),
   }, user.id)
 
-  const actually = RETAINABLE_KINDS.reduce((n, k) => n + trimmed.deleted[k], 0)
+  const actually = RETENTION_KEYS.reduce((n, k) => n + trimmed.deleted[k], 0)
   await deps.store.audit({
     user_id: user.id, actor: user.name, action: 'retention.set',
-    detail: RETAINABLE_KINDS.map((k) => `${k}=${next[k] || '不限'}`).join(' ')
+    detail: RETENTION_KEYS.map((k) => `${k}=${next[k] || '不限'}`).join(' ')
       + (actually > 0 ? ` 已删除 ${actually} 条` : ''),
     ip, created_at: now(),
   })

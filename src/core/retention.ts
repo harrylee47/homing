@@ -14,9 +14,28 @@
  * ② 上限生效后界面要说明，否则「搜不到三个月前那条」会被当成搜索坏了。
  */
 
-/** 能设上限的三种消息。发送记录（outbound）不在内——它是另一张表、另一套语义。 */
+/**
+ * 走 `events` 表的三类。
+ *
+ * 它们各自对应 `events.kind`，所以能共用 `trimEvents`。
+ */
 export const RETAINABLE_KINDS = ['sms', 'call', 'notification'] as const
 export type RetainableKind = (typeof RETAINABLE_KINDS)[number]
+
+/**
+ * 能设上限的四项 —— 比上面多一个 `outbound`（网关自己发出去的短信）。
+ *
+ * 它在**另一张表**、另一套字段（没有 occurred_at，只有 created_at），所以
+ * 不能共用 trimEvents，要单独一条路。但它必须在这里，理由是会话视图：
+ * CLAUDE.md 要求「事件流与 outbound 表要并成一条时间线」——那是「像短信 App
+ * 一样」的全部意义。只管收到的那一半，老时段里收到的被删了、发出去的还在，
+ * 同一段对话看起来就像自言自语。
+ *
+ * 顺带这也让设置项的名字对得上：叫「消息保留上限」却不管发送记录，
+ * 用户设完发现发送记录一条没少，会以为功能坏了。
+ */
+export const RETENTION_KEYS = ['sms', 'call', 'notification', 'outbound'] as const
+export type RetentionKey = (typeof RETENTION_KEYS)[number]
 
 /**
  * 可选的上限档位。
@@ -32,10 +51,10 @@ export const DEFAULT_RETENTION = 999
 /** 存在 user_settings 里的键。 */
 export const RETENTION_SETTING = 'retention'
 
-/** 一个账号的三档上限。`0` 表示不限制。 */
-export type RetentionConfig = Record<RetainableKind, number>
+/** 一个账号的四档上限。`0` 表示不限制。 */
+export type RetentionConfig = Record<RetentionKey, number>
 
-export const UNLIMITED: RetentionConfig = { sms: 0, call: 0, notification: 0 }
+export const UNLIMITED: RetentionConfig = { sms: 0, call: 0, notification: 0, outbound: 0 }
 
 /**
  * 把存的字符串解析成配置。
@@ -51,7 +70,7 @@ export function parseRetention(raw: string | null): RetentionConfig {
     const o = JSON.parse(raw) as Record<string, unknown>
     if (!o || typeof o !== 'object' || Array.isArray(o)) return { ...UNLIMITED }
     const out = { ...UNLIMITED }
-    for (const k of RETAINABLE_KINDS) {
+    for (const k of RETENTION_KEYS) {
       const v = o[k]
       // 只接受非负整数。负数、NaN、Infinity、字符串 "999" 一律当没设——
       // 「999」这种字符串是最容易从手写 JSON 里混进来的，
@@ -68,7 +87,7 @@ export function parseRetention(raw: string | null): RetentionConfig {
 export function sanitizeRetention(input: unknown): RetentionConfig {
   const o = (input ?? {}) as Record<string, unknown>
   const out = { ...UNLIMITED }
-  for (const k of RETAINABLE_KINDS) {
+  for (const k of RETENTION_KEYS) {
     const v = Number(o[k])
     if ((RETENTION_CHOICES as readonly number[]).includes(v)) out[k] = v
   }
@@ -79,7 +98,8 @@ export const serializeRetention = (c: RetentionConfig): string => JSON.stringify
 
 /** 新账号建号时写的那份。 */
 export const newAccountRetention = (): RetentionConfig => ({
-  sms: DEFAULT_RETENTION, call: DEFAULT_RETENTION, notification: DEFAULT_RETENTION,
+  sms: DEFAULT_RETENTION, call: DEFAULT_RETENTION,
+  notification: DEFAULT_RETENTION, outbound: DEFAULT_RETENTION,
 })
 
 /**
@@ -101,6 +121,9 @@ export interface RetentionStore {
   getUserSetting(userId: string, key: string): Promise<string | null>
   countEventsByKind(userId: string, kind: RetainableKind): Promise<number>
   trimEvents(userId: string, kind: RetainableKind, keep: number, batch: number, before: number): Promise<number>
+  /** 发送记录走另一张表：没有 occurred_at，按 created_at 排 */
+  countOutbound(filter: { user_id: string }): Promise<number>
+  trimOutbound(userId: string, keep: number, batch: number, before: number): Promise<number>
 }
 
 /** 单轮单类最多删多少条。见 overflow() 上面那段为什么要分批。 */
@@ -140,8 +163,9 @@ export async function runRetention(
   store: RetentionStore,
   batch = TRIM_BATCH,
   now = Date.now(),
-): Promise<{ user_id: string; kind: RetainableKind; deleted: number }[]> {
-  const out: { user_id: string; kind: RetainableKind; deleted: number }[] = []
+): Promise<{ user_id: string; kind: RetentionKey; deleted: number }[]> {
+  const out: { user_id: string; kind: RetentionKey; deleted: number }[] = []
+  const guard = now - TRIM_GUARD_MS
   for (const u of await store.listUsers()) {
     const cfg = parseRetention(await store.getUserSetting(u.id, RETENTION_SETTING))
     for (const kind of RETAINABLE_KINDS) {
@@ -149,8 +173,15 @@ export async function runRetention(
       if (limit <= 0) continue          // 不限制
       const total = await store.countEventsByKind(u.id, kind)
       if (overflow(total, limit, batch) === 0) continue
-      const deleted = await store.trimEvents(u.id, kind, limit, batch, now - TRIM_GUARD_MS)
+      const deleted = await store.trimEvents(u.id, kind, limit, batch, guard)
       if (deleted > 0) out.push({ user_id: u.id, kind, deleted })
+    }
+    if (cfg.outbound > 0) {
+      const total = await store.countOutbound({ user_id: u.id })
+      if (overflow(total, cfg.outbound, batch) > 0) {
+        const deleted = await store.trimOutbound(u.id, cfg.outbound, batch, guard)
+        if (deleted > 0) out.push({ user_id: u.id, kind: 'outbound', deleted })
+      }
     }
   }
   return out
@@ -174,18 +205,27 @@ export async function trimUserNow(
   batch = TRIM_BATCH,
   maxRounds = 10,
   now = Date.now(),
-): Promise<{ deleted: Record<RetainableKind, number>; done: boolean }> {
+): Promise<{ deleted: Record<RetentionKey, number>; done: boolean }> {
   const cfg = parseRetention(await store.getUserSetting(userId, RETENTION_SETTING))
-  const deleted = { sms: 0, call: 0, notification: 0 } as Record<RetainableKind, number>
+  const deleted = { sms: 0, call: 0, notification: 0, outbound: 0 } as Record<RetentionKey, number>
+  const guard = now - TRIM_GUARD_MS
   let done = true
   for (const kind of RETAINABLE_KINDS) {
     const limit = cfg[kind]
     if (limit <= 0) continue
     for (let i = 0; ; i++) {
       if (i >= maxRounds) { done = false; break }
-      const n = await store.trimEvents(userId, kind, limit, batch, now - TRIM_GUARD_MS)
+      const n = await store.trimEvents(userId, kind, limit, batch, guard)
       deleted[kind] += n
       if (n < batch) break      // 这一轮没删满，说明已经到位
+    }
+  }
+  if (cfg.outbound > 0) {
+    for (let i = 0; ; i++) {
+      if (i >= maxRounds) { done = false; break }
+      const n = await store.trimOutbound(userId, cfg.outbound, batch, guard)
+      deleted.outbound += n
+      if (n < batch) break
     }
   }
   return { deleted, done }

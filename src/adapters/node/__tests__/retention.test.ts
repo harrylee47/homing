@@ -153,3 +153,61 @@ describe('trimEvents', () => {
     expect(await store.countEventsByKind('u1', 'sms')).toBe(3)
   })
 })
+
+
+/**
+ * 发送记录走另一张表、另一套字段。护栏在这里防的不是时钟
+ * （created_at 本来就是服务端写的），而是**正在途中的那几条**：
+ * 发送状态机是 accepted → sent → delivered，每一步都要回来更新这一行。
+ */
+describe('trimOutbound', () => {
+  const ob = (id: string, over: Record<string, unknown> = {}) => ({
+    id, user_id: 'u1', device_id: 'dev_1', to_number: '13800138000',
+    content_enc: new Uint8Array([1]), sim_slot: null, status: 'delivered',
+    error: null, created_at: 1_000_000, updated_at: 1_000_000, ...over,
+  })
+
+  it('留最新 keep 条，删更旧的', async () => {
+    for (let i = 0; i < 10; i++) await store.createOutbound(ob(`o${i}`, { created_at: 1000 + i }) as never)
+    expect(await store.trimOutbound('u1', 3, 100, Infinity)).toBe(7)
+    expect(await store.countOutbound({ user_id: 'u1' })).toBe(3)
+  })
+
+  it('护栏：刚发出去的不动 —— 否则回执落空，记录永远停在「已接受」', async () => {
+    const NOW = 1_800_000_000_000
+    for (let i = 0; i < 10; i++) {
+      await store.createOutbound(ob(`old${i}`, { created_at: NOW - 86400000 + i }) as never)
+    }
+    // 刚发出去、还在等回执的两条
+    for (let i = 0; i < 2; i++) {
+      await store.createOutbound(ob(`live${i}`, { created_at: NOW - 60_000, status: 'accepted' }) as never)
+    }
+    await store.trimOutbound('u1', 1, 100, NOW - 3600_000)
+    const left = (await store.listOutbound(50, 0, { user_id: 'u1' })).map((o) => o.id)
+    expect(left).toContain('live0')
+    expect(left).toContain('live1')
+  })
+
+  it('keep=0 不删（0 是不限制）', async () => {
+    for (let i = 0; i < 5; i++) await store.createOutbound(ob(`o${i}`, { created_at: 1000 + i }) as never)
+    expect(await store.trimOutbound('u1', 0, 100, Infinity)).toBe(0)
+  })
+
+  it('只动这个账号', async () => {
+    for (let i = 0; i < 5; i++) await store.createOutbound(ob(`a${i}`, { created_at: 1000 + i }) as never)
+    for (let i = 0; i < 5; i++) {
+      await store.createOutbound(ob(`b${i}`, { user_id: 'u2', device_id: 'dev_2', created_at: 1000 + i }) as never)
+    }
+    await store.trimOutbound('u1', 1, 100, Infinity)
+    expect(await store.countOutbound({ user_id: 'u1' })).toBe(1)
+    expect(await store.countOutbound({ user_id: 'u2' })).toBe(5)
+  })
+
+  it('分批收敛', async () => {
+    for (let i = 0; i < 20; i++) await store.createOutbound(ob(`o${i}`, { created_at: 1000 + i }) as never)
+    expect(await store.trimOutbound('u1', 5, 4, Infinity)).toBe(4)
+    let guard = 0
+    while (await store.trimOutbound('u1', 5, 4, Infinity)) { if (++guard > 20) throw new Error('没收敛') }
+    expect(await store.countOutbound({ user_id: 'u1' })).toBe(5)
+  })
+})

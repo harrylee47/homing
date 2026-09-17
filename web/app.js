@@ -4431,6 +4431,9 @@ async function paintRetention() {
     { k: 'sms', label: '短信' },
     { k: 'call', label: '通话记录' },
     { k: 'notification', label: '应用通知' },
+    // 发送记录必须在这儿。会话视图把它和收到的消息并成一条时间线，
+    // 只管一半的话，老时段里收到的被删了、发出去的还在，看着像自言自语
+    { k: 'outbound', label: '发送记录' },
   ]
   let d
   try { d = await api('/retention') } catch { box.innerHTML = ''; return }
@@ -4442,7 +4445,8 @@ async function paintRetention() {
     box.innerHTML = `
       <h2>消息保留上限</h2>
       <div class="card">
-        <p class="muted">超出上限的旧消息会被自动删除，<b>删除不可恢复</b>。三类各算各的。</p>
+        <p class="muted">超出上限的旧记录会被自动删除，<b>删除不可恢复</b>。四项各算各的。
+        最近 1 小时内到达或发出的不会被自动删——留出补传和送达回执的时间。</p>
         ${KINDS.map(({ k, label }) => `
           <label>${label}<span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400"> · 当前 ${d.counts[k]} 条</span></label>
           <select id="ret_${k}">${opt(d.retention[k])}</select>

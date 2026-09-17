@@ -447,6 +447,19 @@ export interface Store {
   countOutbound(filter: OutboundFilter): Promise<number>
   /** 删除一条发送记录。返回是否真的删掉了 */
   deleteOutbound(id: string, userId: string): Promise<boolean>
+
+  /**
+   * 发送记录的保留上限：留最新 `keep` 条，删更旧的。
+   *
+   * 与 trimEvents 分开，因为它在另一张表、按 `created_at` 排（outbound 没有
+   * occurred_at——它是网关自己发出去的，不存在「事件发生时间」这回事）。
+   *
+   * `before` 护栏在这里防的不是时钟（created_at 本来就是服务端写的），
+   * 而是**正在途中的那几条**：发送状态机是 accepted → sent → delivered，
+   * 每一步都要回来更新这一行。刚发出去就被删掉，回执落空，
+   * 用户看到的是一条永远停在「已接受」的记录，而实际上它送达了。
+   */
+  trimOutbound(userId: string, keep: number, batch: number, before: number): Promise<number>
   /**
    * 状态机推进。只允许前进不允许后退：delivered 之后再收到 sent 必须忽略，
    * 因为多段短信的回执顺序不保证。
