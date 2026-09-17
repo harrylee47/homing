@@ -260,8 +260,6 @@ route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
   if (!nameCheck.ok) return json(res, 400, { error: nameCheck.error })
 
   const secret = generateTotpSecret()
-  // 口令强度只有此刻判得了：之后库里只剩哈希
-  pendingSetup.strongPassword = validatePassword(pw, true).ok
   // 向导可能被重复提交（TOTP 那步没过就回来改口令），按固定 id 覆盖而不是新建
   await deps.store.upsertUser({
     id: FIRST_USER_ID, name,
@@ -275,7 +273,7 @@ route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
   await deps.store.audit({ user_id: FIRST_USER_ID, actor: 'setup', action: 'setup.password', detail: name, ip, created_at: now() })
 
   const uri = totpUri(secret, name)
-  json(res, 200, { secret, uri, qr: toSvg(uri), name, can_skip: pendingSetup.strongPassword })
+  json(res, 200, { secret, uri, qr: toSvg(uri), name })
 }, false, true)
 
 /** 第二步：验证一次 TOTP，确认认证器已正确绑定，然后才置初始化标记。 */
@@ -283,11 +281,8 @@ route('POST', '/api/setup/password', async ({ res, body, deps, ip }) => {
  * 第二步：绑定两步验证，或者明确跳过。
  *
  * 两步验证是可选的，所以这一步必须能跳——否则「第一个管理员从哪来」
- * 就没有不绑的路径了。但跳过要满足一个前提：**口令必须够强**
- * （12 位三类），因为跳过之后它就是这个账号唯一的钥匙。
- *
- * 强度在第一步就算好了（那时才有明文口令），结论记在 pendingSetup 里。
- * 进程重启会丢——那只是要重走一遍向导，没有损失。
+ * 就没有不绑的路径了。跳过之后口令就是这个账号唯一的钥匙，
+ * 界面上要把这件事连同「没有自助找回」一起讲清楚。
  */
 route('POST', '/api/setup/verify', async ({ res, body, deps, ip }) => {
   if (await isInitialized(deps.store)) return json(res, 409, { error: '已初始化' })
@@ -297,12 +292,6 @@ route('POST', '/api/setup/verify', async ({ res, body, deps, ip }) => {
 
   const skip = (body as { skip?: boolean })?.skip === true
   if (skip) {
-    if (!pendingSetup.strongPassword) {
-      return json(res, 400, {
-        error: '要跳过两步验证，口令至少 12 位且同时包含英文、数字和符号——'
-          + '跳过之后它就是这个账号唯一的钥匙。请返回上一步换一个更强的口令。',
-      })
-    }
     // 跳过 = 不绑：把向导生成的那个密钥丢掉，别让它悬在账号上
     await deps.store.upsertUser({ ...first, totp_secret: '' })
   } else {
@@ -318,12 +307,6 @@ route('POST', '/api/setup/verify', async ({ res, body, deps, ip }) => {
   json(res, 200, { ok: true, totp: !skip })
 }, false, true)
 
-/**
- * 向导中途的状态。只有一个字段：第一步那个口令够不够强到可以不绑两步验证。
- *
- * 只能在第一步判断——那是唯一拿得到明文口令的时刻，之后库里只有哈希。
- */
-const pendingSetup = { strongPassword: false }
 
 // ── 登录 ────────────────────────────────────────────────────
 
@@ -407,7 +390,8 @@ route('POST', '/api/auth/login', async ({ user, req, res, body, deps, ip }) => {
       return json(res, 403, {
         error: why === 'expired'
           ? `账号已于 ${new Date(acct.expires_at!).toLocaleDateString('zh-CN')} 到期，服务已暂停。`
-            + `你的数据还在，续期后自动恢复。${contact ? `请联系：${contact}` : '请联系这台服务器的管理员续期。'}`
+            + `你的数据还在，续期后自动恢复。`
+            + `有新的邀请码可以在登录页自助续期；${contact ? `没有就联系：${contact}` : '没有就联系这台服务器的管理员。'}`
           : `账号已被停用。${contact ? `请联系：${contact}` : '请联系这台服务器的管理员。'}`,
         reason: why,
       })
@@ -692,12 +676,14 @@ route('POST', '/api/users/:id/reset', async ({ user, res, params, deps, ip }) =>
  * 放宽是**知情的选择**，不是默认关掉：注册与向导都引导绑定，跳过要点一下，
  * 并且看得到后果。管理员也可以不绑——这台机器是他的，风险自负。
  *
- * 但补偿是按「这个账号有没有第二因素」给的，与角色无关：
- *  - 没绑的账号口令要 12 位三类（原来的 8 位两类**是以强制 TOTP 为前提定的**）
- *  - 没绑的账号不给 30 天免验会话（那个豁免的正当性来自 TOTP 带来的摩擦）
- *  - 没绑的账号**没有自助找回**——这正是「没设两步验证就无法找回口令」的落地
+ * 口令规则对所有人一样（8 位两类）——按运营者的判断，这台机器上的信息
+ * 没有重要到值得为「没有第二因素」再加一层长度摩擦。
  *
- * 关掉两步验证时要先把口令换强，否则「8 位注册 → 绑 → 再关」能无声地绕开规则。
+ * 两条与第二因素直接相关的差别保留着，因为它们不是摩擦而是语义：
+ *  - 没绑的账号不给 30 天免验会话。那个豁免的正当性本来就来自 TOTP 带来的
+ *    摩擦；而信任会话**不校验 IP 段**，单因素 + 30 天 + 不绑网段
+ *    等于一个长期令牌躺在 localStorage 里。界面上会写明「开启后可用」。
+ *  - 没绑的账号**没有自助找回**——这正是「没设两步验证就无法找回口令」的落地。
  */
 
 /** 绑定前先拿密钥与二维码。此刻还没写进账号，验证通过才算数 */
@@ -740,10 +726,8 @@ route('POST', '/api/auth/totp/disable', async ({ user, res, body, deps, ip }) =>
    * 再把两步验证关掉，于是绕开了「没两步验证要 12 位」这条规则，
    * 而且绕得毫无察觉。
    */
-  const strong = validatePassword(b?.password ?? '', true)
-  if (!strong.ok) {
-    return json(res, 400, { error: `关掉两步验证前要先把口令换强：${strong.error}` })
-  }
+  const strong = validatePassword(b?.password ?? '')
+  if (!strong.ok) return json(res, 400, { error: strong.error })
   const okPw = await withPasswordSlot(async () => verifyPassword(b?.password ?? '', user.password_hash))
   if (!okPw || !(await verifyTotp(user.totp_secret, b?.code ?? ''))) {
     return json(res, 401, { error: '口令或验证码不正确' })
@@ -771,7 +755,7 @@ route('POST', '/api/auth/recover', async ({ res, body, deps, ip }) => {
 
   const b = body as { name?: string; code?: string; password?: string }
   const acct = await deps.store.getUserByName((b?.name ?? '').trim())
-  const pwCheck = validatePassword(b?.password ?? '', !acct?.totp_secret)
+  const pwCheck = validatePassword(b?.password ?? '')
   if (!pwCheck.ok) return json(res, 400, { error: pwCheck.error })
 
   // 没绑两步验证 = 没有自助找回。不区分「账号不存在」与「没绑」，
@@ -973,8 +957,7 @@ route('POST', '/api/register', async ({ res, body, deps, ip }) => {
   const nameCheck = validateUserName(name)
   if (!nameCheck.ok) return json(res, 400, { error: nameCheck.error })
 
-  // 未绑两步验证的账号口令要求更高——见 validatePassword 的说明
-  const pwCheck = validatePassword(b?.password ?? '', true)
+  const pwCheck = validatePassword(b?.password ?? '')
   if (!pwCheck.ok) return json(res, 400, { error: pwCheck.error })
 
   const code = (b?.code ?? '').trim().toUpperCase()
@@ -1029,6 +1012,56 @@ route('POST', '/api/register', async ({ res, body, deps, ip }) => {
   log.info('新用户注册', { name, expires_at: invite.valid_days })
 
   json(res, 200, { ok: true, name })
+}, false)
+
+/**
+ * 用一个新的邀请码给自己续期。
+ *
+ * 到期的人登不进控制台，所以这条路必须是免鉴权可达的——但它**照样要验全套凭证**
+ * （口令，绑了两步验证的还要动态码）。不验的话，任何拿到邀请码的人都能给别人的
+ * 账号续期；更糟的是它会变成一个「这个用户名存不存在」的探测器。
+ *
+ * 两个刻意的边界：
+ *  - **停用的账号不能靠邀请码复活**。到期是「时间到了」，停用是「管理员说不行」，
+ *    后者不该被一个码推翻。
+ *  - 续期从**原到期时刻**往后接，没到期的部分不会被抹掉。
+ */
+route('POST', '/api/account/renew', async ({ res, body, deps, ip }) => {
+  if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
+
+  const b = body as { name?: string; password?: string; code?: string; invite?: string }
+  const acct = await deps.store.getUserByName((b?.name ?? '').trim())
+
+  const okPw = !!acct
+    && (await withPasswordSlot(async () => verifyPassword(b?.password ?? '', acct.password_hash)))
+  const okTotp = okPw && (!acct!.totp_secret || (await verifyTotp(acct!.totp_secret, b?.code ?? '')))
+  if (!acct || !okPw || !okTotp) return json(res, 401, { error: '口令或验证码不正确' })
+
+  if (acct.disabled) {
+    // 停用是人做的决定，不该被一个邀请码推翻
+    return json(res, 403, { error: '这个账号已被管理员停用，邀请码无法恢复它' })
+  }
+
+  const invite = (b?.invite ?? '').trim().toUpperCase()
+  const codeHash = await hashToken(invite)
+  if (!invite || !(await deps.store.peekInvite(codeHash, now()))) {
+    return json(res, 401, { error: REGISTER_FAIL })
+  }
+  const taken = await deps.store.takeInvite(codeHash, acct.id, now())
+  if (!taken) return json(res, 401, { error: REGISTER_FAIL })
+
+  // 码上写着能用多少天；没写有效期的码等于续成永久
+  const expires = taken.valid_days === null
+    ? null
+    : Math.max(acct.expires_at ?? 0, now()) + taken.valid_days * 86_400_000
+  await deps.store.upsertUser({ ...acct, expires_at: expires })
+  await deps.store.audit({
+    user_id: acct.id, actor: acct.name, action: 'account.renew',
+    detail: expires === null ? '永久' : new Date(expires).toISOString().slice(0, 10),
+    ip, created_at: now(),
+  })
+  log.info('账号已用邀请码自助续期', { name: acct.name, expires_at: expires })
+  json(res, 200, { ok: true, expires_at: expires })
 }, false)
 
 /** 注册失败一律这一句：不区分码不存在 / 已用 / 过期，避免给枚举提供反馈 */

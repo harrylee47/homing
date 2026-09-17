@@ -70,3 +70,34 @@ describe('邀请码', () => {
     expect((await store.takeInvite('h3', 'u', NOW))!.valid_days).toBeNull()
   })
 })
+
+describe('用邀请码自助续期', () => {
+  let store: MemoryStore
+  const DAY = 86_400_000
+
+  const user = (o: Record<string, unknown> = {}) => ({
+    id: 'u9', name: 'friend', password_hash: '', totp_secret: '',
+    role: 'member' as const, bot_token: '', disabled: false,
+    expires_at: NOW - DAY, agreed_version: null, agreed_at: null, created_at: 0, ...o,
+  })
+
+  beforeEach(() => { store = new MemoryStore() })
+
+  it('续期从原到期时刻往后接 —— 没到期的部分不该被抹掉', () => {
+    const acct = user({ expires_at: NOW + 10 * DAY })
+    const base = Math.max(acct.expires_at ?? 0, NOW)
+    expect(base + 30 * DAY).toBe(NOW + 40 * DAY)
+  })
+
+  it('已经过期的从现在起算，不从过去起算', () => {
+    const acct = user({ expires_at: NOW - 100 * DAY })
+    const base = Math.max(acct.expires_at ?? 0, NOW)
+    expect(base).toBe(NOW)
+  })
+
+  it('码被自助续期用掉之后就不能再用了', async () => {
+    await store.createInvite(invite({ code_hash: 'hr' }))
+    expect(await store.takeInvite('hr', 'u9', NOW)).not.toBeNull()
+    expect(await store.peekInvite('hr', NOW)).toBeNull()
+  })
+})

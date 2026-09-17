@@ -10,41 +10,28 @@ import { timingSafeEqual, toHex, fromHex } from './crypto.js'
 // ── 口令强度 ────────────────────────────────────────────────
 
 export const PASSWORD_MIN_LEN = 8
-/** 没绑两步验证时的口令下限。口令是这时候唯一的凭证，不能按「还有第二道」来定 */
-export const PASSWORD_MIN_LEN_NO_TOTP = 12
 
 /**
  * 口令规则：至少 8 位，且包含英文 / 数字 / 符号中的至少两类。
  *
- * 这个宽松度**是以强制 TOTP 为前提定的**：8 位混合字符前面还有
- * 第二因素、5 次失败锁定 15 分钟、失败即告警，在线爆破打不动。
+ * 这个宽松度当初是**以强制 TOTP 为前提**定的。两步验证改成可选之后，
+ * 曾经按「没有第二因素就该更长」把它提到 12 位三类，后来按运营者的判断
+ * 退回统一的 8 位两类——这台机器上的信息没有重要到值得那份摩擦，
+ * 而且跳过两步验证的地方都会把后果讲清楚。
  *
- * 两步验证改成可选之后，这个前提对「跳过了 TOTP 的账号」不再成立——
- * 口令成了唯一的凭证，而失败锁定是按 IP 的，换个代理池就清零。
- * 所以那些账号要求 12 位三类。放宽 TOTP 等于同时放宽了这一处，
- * 而这一处是隐性的、没人会想起来。
+ * 所以这道门现在真正靠的是它前面那几层：5 次失败锁定 15 分钟、
+ * 口令运算的并发闸、失败即告警、陌生网段登录告警。记住它们是一组，
+ * 谁要再放宽其中一项，得先看看另外几项还在不在。
  *
  * 非 ASCII（如中文）计入「符号」一类。
  */
-export function validatePassword(pw: string, noTotp = false): { ok: true } | { ok: false; error: string } {
-  const min = noTotp ? PASSWORD_MIN_LEN_NO_TOTP : PASSWORD_MIN_LEN
-  const needClasses = noTotp ? 3 : 2
-  if (pw.length < min) {
-    return {
-      ok: false,
-      error: noTotp
-        ? `没开两步验证时口令至少 ${min} 位——它是这时候唯一的凭证`
-        : `口令至少 ${min} 位`,
-    }
+export function validatePassword(pw: string): { ok: true } | { ok: false; error: string } {
+  if (pw.length < PASSWORD_MIN_LEN) {
+    return { ok: false, error: `口令至少 ${PASSWORD_MIN_LEN} 位` }
   }
   const classes = [/[a-zA-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((re) => re.test(pw)).length
-  if (classes < needClasses) {
-    return {
-      ok: false,
-      error: needClasses === 3
-        ? '没开两步验证时口令需要同时包含英文、数字和符号'
-        : '口令需包含英文、数字、符号中的至少两类',
-    }
+  if (classes < 2) {
+    return { ok: false, error: '口令需包含英文、数字、符号中的至少两类' }
   }
   return { ok: true }
 }
