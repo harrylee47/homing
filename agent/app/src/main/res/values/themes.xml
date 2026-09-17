@@ -1,4 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Agent" parent="Theme.Material3.DayNight.NoActionBar" />
+    <style name="Theme.Agent" parent="Theme.Material3.DayNight.NoActionBar">
+        <!--
+          M3 的 Button 是 colorPrimary 填充 + colorOnPrimary 文字。
+          colorOnPrimary **必须**是 brand_ink：默认的白字压在 #66D9EF 上
+          对比度 1.65:1，换成 #12100E 是 11.4:1。
+        -->
+        <item name="colorPrimary">@color/brand_cyan</item>
+        <item name="colorOnPrimary">@color/brand_ink</item>
+        <item name="colorSecondary">@color/brand_yellow</item>
+        <item name="colorOnSecondary">@color/brand_ink</item>
+
+        <!--
+          状态栏。不接管的话会一路继承到 ?attr/colorPrimary：浅色下是紫、
+          深色下是淡薰衣草 #D0BCFF 配白图标，时间电量信号几乎看不见。
+          让它和页面同色，再把图标方向显式指对。
+        -->
+        <!--
+          页面底色也对齐控制台的米白，而不是 M3 基线的 #FEF7FF（一层极淡的紫）。
+          两个都要设：statusBarColor 取的是 colorBackground，只改 windowBackground
+          会让状态栏和页面差一个色。
+        -->
+        <item name="android:colorBackground">@color/brand_bg</item>
+        <item name="android:windowBackground">@color/brand_bg</item>
+
+        <item name="android:statusBarColor">?android:attr/colorBackground</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

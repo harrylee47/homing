@@ -3,6 +3,7 @@ package org.smsgateway.agent.receiver
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.telephony.TelephonyManager
 import kotlinx.coroutines.launch
 import org.smsgateway.agent.App
@@ -27,7 +28,22 @@ class PhoneStateReceiver : BroadcastReceiver() {
 
         when (state) {
             TelephonyManager.EXTRA_STATE_RINGING -> {
-                if (!number.isNullOrBlank()) ringingNumber = number
+                /*
+                 * **号码取不到也要记一笔，不能整通丢掉。**
+                 *
+                 * Android 9 起，PHONE_STATE 广播里的号码要有 READ_CALL_LOG 才给，
+                 * 否则恒为 null。原来这里 `if (!isNullOrBlank())` 不成立就什么都不记，
+                 * 于是 IDLE 那一支的 `ringingNumber ?: return` 把整通来电吞掉——
+                 * 不上报、不写日志，控制台上看到的是「来电从来不响」，
+                 * 而「取 Agent 日志」里一个字都没有。
+                 *
+                 * 一通没有号码的未接来电仍然是信息，而且它顺带告诉你为什么没有号码。
+                 * 空串作哨兵：report() 那边据此在正文里说明原因。
+                 */
+                if (number.isNullOrBlank() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    Log.w("来电号码为空：Android 9 起需要 READ_CALL_LOG 才给号码")
+                }
+                ringingNumber = number?.takeIf { it.isNotBlank() } ?: ""
                 answered = false
                 // 记响铃时刻而不是挂断时刻：系统通话记录里的 date 也是通话开始时间，
                 // 两边对齐才能在「历史导入」时认出这是同一通电话。
@@ -41,6 +57,7 @@ class PhoneStateReceiver : BroadcastReceiver() {
             TelephonyManager.EXTRA_STATE_OFFHOOK -> answered = true
 
             TelephonyManager.EXTRA_STATE_IDLE -> {
+                // 空串是「响过但没拿到号码」的哨兵，不能和「压根没响过」（null）混为一谈
                 val num = ringingNumber ?: return
                 val at = ringingAt.takeIf { it > 0 } ?: System.currentTimeMillis()
                 val slot = ringingSlot
@@ -72,7 +89,12 @@ class PhoneStateReceiver : BroadcastReceiver() {
             id = "evt_${UUID.randomUUID()}",
             kind = "call",
             from = number,
-            content = if (callType == "missed") "未接来电" else "已接来电",
+            /*
+             * 号码为空时把原因缀在正文里。只报一通「未接来电」而不说为什么，
+             * 人会以为是号码隐藏；写清楚了他才知道去给 READ_CALL_LOG。
+             */
+            content = (if (callType == "missed") "未接来电" else "已接来电") +
+                if (number.isBlank()) "（未授予通话记录权限，取不到号码）" else "",
             occurredAt = at,
             simSlot = simSlot,
             callType = callType,

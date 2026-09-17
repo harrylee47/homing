@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  控制台 .badge 的安卓版：硬边框 + 亮色底。
+
+  为什么要做成色块：这一行是整个界面唯一要回答的问题（连上没有），
+  而原来「已连接」和「未连接」在屏幕上是同一个颜色、同样粗的字，
+  区别只有开头那个圆点是实心还是空心。而这台手机的用法就是走过去扫一眼——
+  style.css 开头那条「靠颜色和形状区分状态，不靠字号深浅」说的正是这种场景。
+
+  底色由代码按状态设（setColor），描边和圆角固定。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <corners android:radius="8dp" />
+    <stroke android:width="2dp" android:color="@color/brand_ink" />
+    <solid android:color="@color/brand_mint" />
+</shape>

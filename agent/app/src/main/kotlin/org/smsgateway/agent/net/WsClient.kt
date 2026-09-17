@@ -42,6 +42,23 @@ sealed interface ConnState {
 }
 
 /**
+ * 这个状态给人看是什么样。**界面与常驻通知共用这一份。**
+ *
+ * 分两处写的话迟早漂移，而漂移的那一半是常驻通知——它不会被人主动打开检查，
+ * 只会在某天他扫一眼锁屏时给出一个和 App 里不一致的说法。
+ *
+ * `paired` 单独传：ConnState.Idle 既可能是「还没配对」也可能是「配过但没连上」，
+ * 这两句话对读的人意味着完全不同的下一步。
+ */
+fun ConnState.label(paired: Boolean): String = when (this) {
+    is ConnState.Idle -> if (paired) "未连接" else "未配对"
+    is ConnState.Connecting -> "连接中…"
+    is ConnState.Connected -> "已连接"
+    is ConnState.Waiting -> "等待重连（${retryInSec}s）"
+    is ConnState.Fatal -> "已停止：$code"
+}
+
+/**
  * 握手超时：发出 hello 之后等 hello_ack 的上限。
  *
  * OkHttp 的 connectTimeout（15s）只管到 TCP/TLS 建好为止，之后就再没有

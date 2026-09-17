@@ -6,11 +6,14 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
+import com.gyf.cactus.Cactus
 import com.gyf.cactus.ext.cactus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.smsgateway.agent.net.WsClient
+import org.smsgateway.agent.net.label
 import org.smsgateway.agent.receiver.CallLogObserver
 import org.smsgateway.agent.receiver.SentSmsObserver
 import org.smsgateway.agent.ui.MainActivity
@@ -68,6 +71,23 @@ class App : Application() {
         callObserver = CallLogObserver(this).also { it.start() }
 
         if (prefs.isPaired) ws.start()
+
+        /*
+         * 常驻通知的正文跟着连接状态走。
+         *
+         * 这台手机常年锁屏、无人看管，**常驻通知是不解锁就能看到的唯一信号**。
+         * 原来它从启动到进程死都写着同一句应用名：凭证被吊销、已经彻底停止重连
+         * （ConnState.Fatal）时，它照样显示「运行中」——在最需要说实话的时候说了假话。
+         *
+         * 文案走 ConnState.label()，和 App 界面里那一行是同一份。
+         */
+        scope.launch {
+            ws.state.collect { s ->
+                runCatching {
+                    Cactus.instance.setContent(s.label(prefs.isPaired)).updateNotification(this@App)
+                }.onFailure { Log.w("更新常驻通知失败 ${it.javaClass.simpleName}") }
+            }
+        }
     }
 
     private fun createChannel() {
@@ -77,6 +97,13 @@ class App : Application() {
             // 通知栏会长期挂着，别让它出声或亮屏
             enableLights(false)
             enableVibration(false)
+            /*
+             * 把关掉它的后果写出来。这是全 App 唯一一条渠道，而它恰恰是**绝对不该
+             * 关**的那一条：多数 ROM 上关掉前台通知等于允许系统随时收走这个前台服务，
+             * 而收走之后验证码不再转发，且不会有任何报错。
+             * 系统设置里那一页只给渠道名，不写清楚就是让人凭感觉决定。
+             */
+            description = "常驻通知。关掉它，系统会把网关停掉，验证码就不会再转发过来。"
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
     }
@@ -102,10 +129,22 @@ class App : Application() {
             setChannelId(CHANNEL_ID)
             setChannelName(getString(R.string.notification_channel))
             setTitle(getString(R.string.notification_title))
-            setContent(getString(R.string.app_name))
+            // 初始值也要说事，不能是应用名（头部本来就渲染应用名了）
+            setContent(if (prefs.isPaired) "未连接" else "未配对")
             setSmallIcon(R.drawable.ic_notification)
             setPendingIntent(pi)
             setCrashRestartUIEnabled(true)
+            /*
+             * 上面那段注释说「去掉了无声音乐与一像素 Activity」，但**光写注释不算数**：
+             * Cactus 这两项默认都是开的，不显式关掉就一直在跑。
+             *
+             * 无声音乐的实际代价落在 ROM 上：华为、小米、OPPO 的耗电统计会把这个 App
+             * 标成「后台播放音频」，用户据此去限制它——而那恰好等于关掉保活，
+             * 正是我们最不想要的结果。
+             * （那个 440KB 的 mp3 打在 Cactus 的 AAR 里，关掉播放不会让它从包里消失。）
+             */
+            setMusicEnabled(false)
+            setOnePixEnabled(false)
             addCallback({ Log.d("保活 onStop") }) { Log.d("保活 doWork") }
         }
     }

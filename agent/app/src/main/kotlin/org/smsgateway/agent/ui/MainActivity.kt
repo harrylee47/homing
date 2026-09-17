@@ -33,6 +33,7 @@ import org.smsgateway.agent.BuildConfig
 import org.smsgateway.agent.R
 import org.smsgateway.agent.databinding.ActivityMainBinding
 import org.smsgateway.agent.net.ConnState
+import org.smsgateway.agent.net.label
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -48,13 +49,31 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var vb: ActivityMainBinding
 
+    /**
+     * 最近一次渲染用的状态。
+     *
+     * 权限授予完之后要立刻重画（「还差 N 项」得当场变），但那几个回调拿不到
+     * ws.state 的当前值——StateFlow 的收集在 lifecycleScope 里，只在状态变化时
+     * 才推一次。存一份最近值，回调里原样重画即可。
+     */
+    private var lastState: ConnState = ConnState.Idle
+    private var lastPending: Int = 0
+
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
         val denied = result.filterValues { !it }.keys
         if (denied.isEmpty()) toast("权限已全部授予")
         else toast("以下权限被拒绝：${denied.joinToString { it.substringAfterLast('.') }}")
+        // 前台定位到手之后才谈得上后台定位，见 requestBackgroundLocation()
+        requestBackgroundLocation()
+        render(lastState, lastPending)
     }
+
+    /** 单独申请后台定位的那一次。结果只用来刷新界面上那一行状态。 */
+    private val bgLocLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { render(lastState, lastPending) }
 
     /** 扫码结果。内容格式见服务端 api.ts 的 pairPayload。 */
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -118,7 +137,10 @@ class MainActivity : AppCompatActivity() {
         })
         vb.pairButton.setOnClickListener { pair() }
         vb.unpairButton.setOnClickListener { unpair() }
-        vb.permButton.setOnClickListener { requestPerms() }
+        vb.permButton.setOnClickListener {
+            // 前台那批齐了就直接去要后台定位，否则先要前台（回调里会接着要后台）
+            if (missingPermCount() == 0) requestBackgroundLocation() else requestPerms()
+        }
         vb.batteryButton.setOnClickListener { requestBatteryWhitelist() }
         vb.notifyButton.setOnClickListener { requestNotificationAccess() }
 
@@ -131,18 +153,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun render(s: ConnState, pending: Int) {
+        lastState = s
+        lastPending = pending
         val paired = App.get().prefs.isPaired
         vb.pairingBox.visibility = if (paired) android.view.View.GONE else android.view.View.VISIBLE
         vb.unpairButton.visibility = if (paired) android.view.View.VISIBLE else android.view.View.GONE
 
         val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-        vb.statusText.text = when (s) {
-            is ConnState.Idle -> if (App.get().prefs.isPaired) "● 未连接" else "○ 未配对"
-            is ConnState.Connecting -> "◌ 连接中…"
-            is ConnState.Connected -> "● 已连接"
-            is ConnState.Waiting -> "◌ 等待重连（${s.retryInSec}s）"
-            is ConnState.Fatal -> "✕ ${s.code}"
+        /*
+         * 文案走 ConnState.label()，和常驻通知是同一份——两处各写一份必然漂移，
+         * 而漂移的那一半是锁屏上那条，不会有人主动去核对。
+         *
+         * 颜色按控制台那张语义表来（style.css）：
+         * 成功/在线 = 薄荷，失败/吊销 = 粉，中间态 = 黄，未开始 = 卡片底。
+         */
+        vb.statusText.text = s.label(App.get().prefs.isPaired)
+        val chip = when (s) {
+            is ConnState.Connected -> R.color.brand_mint
+            is ConnState.Fatal -> R.color.brand_pink
+            is ConnState.Connecting, is ConnState.Waiting -> R.color.brand_yellow
+            is ConnState.Idle -> R.color.brand_bg
         }
+        (vb.statusText.background as? android.graphics.drawable.GradientDrawable)
+            ?.setColor(ContextCompat.getColor(this, chip))
         vb.detailText.text = buildString {
             val p = App.get().prefs
             if (paired) {
@@ -156,9 +189,40 @@ class MainActivity : AppCompatActivity() {
             }
             appendLine("待补传：$pending 条")
             appendLine("电池：${batteryText()}")
-            appendLine("电池优化白名单：${if (isIgnoringBattery()) "已加入" else "未加入"}")
-            appendLine("通知使用权：${if (NotificationCapture.isEnabled(this@MainActivity)) "已授予" else "未授予"}")
         }
+
+        /*
+         * 三项「还没办的事」的状态**写在按钮自己身上**，不写在上面那段详情里。
+         *
+         * 原来「通知使用权：未授予」在页面第二块，而对应的按钮在最底下，
+         * 中间隔着分隔线、扫码按钮、两个输入框和配对按钮——读到「未授予」的人
+         * 要滚下去，在三颗长得一模一样的满宽按钮里找对应的那一颗。
+         *
+         * 更要紧的是「申请权限」管的那一整组（短信、通话、电话状态、定位…）
+         * 原来**一行状态都没有**，而「短信权限没给全」恰恰是「收不到验证码」的
+         * 头号原因——用户在界面上完全看不出来，只能盲点一次按钮看系统弹不弹框。
+         *
+         * 办完的置灰：它已经不是一件待办了，但留着能回答「这项到底给没给」。
+         */
+        val missing = missingPermCount()
+        // 后台定位不在 requiredPerms 里（它必须单独申请），但它属于同一类
+        // 「不授予就静默失效」的东西，得一起算进「还差几项」
+        val bgLocMissing = if (hasForegroundLocation() && !hasBackgroundLocation()) 1 else 0
+        val todo = missing + bgLocMissing
+        vb.permButton.text = when {
+            todo == 0 -> "采集权限 · 已全部授予"
+            bgLocMissing == 1 && missing == 0 -> "定位还差「始终允许」"
+            else -> "申请权限 · 还差 $todo 项"
+        }
+        vb.permButton.isEnabled = todo > 0
+
+        val notifyOk = NotificationCapture.isEnabled(this@MainActivity)
+        vb.notifyButton.text = if (notifyOk) "通知使用权 · 已授予" else "授予通知使用权 · 未授予"
+        vb.notifyButton.isEnabled = !notifyOk
+
+        val batteryOk = isIgnoringBattery()
+        vb.batteryButton.text = if (batteryOk) "电池优化白名单 · 已加入" else "加入电池优化白名单 · 未加入"
+        vb.batteryButton.isEnabled = !batteryOk
     }
 
     private fun scan() {
@@ -226,7 +290,13 @@ class MainActivity : AppCompatActivity() {
         render(ConnState.Idle, 0)
     }
 
-    private fun requestPerms() {
+    /**
+     * 要申请的那一组运行时权限。**申请和查状态共用这一份。**
+     *
+     * 分两处写的话，哪天加了一项只会加到其中一处，而漏掉的那一处是静默的：
+     * 界面报「已全部授予」而实际少一项，表现就是某一类消息从来不来。
+     */
+    private fun requiredPerms(): List<String> {
         val perms = mutableListOf(
             Manifest.permission.RECEIVE_SMS,
             Manifest.permission.READ_SMS,
@@ -246,7 +316,70 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             perms += Manifest.permission.READ_PHONE_NUMBERS
         }
-        permLauncher.launch(perms.toTypedArray())
+        return perms
+    }
+
+    /** 还差几项没给。0 就是齐了。 */
+    private fun missingPermCount(): Int = requiredPerms().count {
+        ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestPerms() {
+        permLauncher.launch(requiredPerms().toTypedArray())
+    }
+
+    /** 后台定位拿到了吗。API 29 以下没有这个权限，前台定位就够。 */
+    private fun hasBackgroundLocation(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasForegroundLocation(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /**
+     * 后台定位。**必须单独申请，而且必须在前台定位到手之后。**
+     *
+     * 清单里一直声明着 ACCESS_BACKGROUND_LOCATION，但运行时一次都没申请过——
+     * 于是 Android 10 起「查找设备」必然失败：网关平时就在后台，系统什么都不返回，
+     * requestLocationUpdates 一个回调都不来、getLastKnownLocation 全是 null，
+     * 25 秒后报「定位超时且无缓存位置」——CLAUDE.md「定位」那一节点名的、
+     * 极易被误判成硬件问题的那个表现，就是这么来的。
+     *
+     * 两段路径不一样：
+     *  - API 29：系统还会弹对话框，直接单独 launch 一次（混在一批里会被直接拒）。
+     *  - API 30+：系统不再弹，requestPermissions 会自动拒绝，只能把人送去设置页
+     *    自己选「始终允许」。
+     */
+    private fun requestBackgroundLocation() {
+        if (hasBackgroundLocation() || !hasForegroundLocation()) return
+        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+            bgLocLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("还差「始终允许」定位")
+            .setMessage(
+                "「查找设备」要在网关后台运行时也能定位，而这一项系统不让 App 弹窗申请，" +
+                    "只能你手动改：设置页 → 权限 → 位置 → 选「始终允许」。\n\n" +
+                    "不改也不影响短信转发，只是手机丢了的时候定不到位。",
+            )
+            .setPositiveButton("去设置") { _, _ ->
+                // 部分 ROM 没有这个 Intent，崩在这里比不跳转糟得多
+                runCatching {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:$packageName"),
+                        ),
+                    )
+                }.onFailure { toast("这台机器打不开应用设置页，请手动去系统设置里改") }
+            }
+            .setNegativeButton("以后再说", null)
+            .show()
     }
 
     /** 界面上直观显示电量与充电状态，插没插上一眼可见。 */

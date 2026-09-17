@@ -1,5 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      配色语义与控制台的 web/style.css 对齐，**定在这一处**，别在 layout 里临时写 hex。
+
+      为什么要把它们搬过来：Theme.Agent 原来是个空壳，整个 App 走 Material3 基线
+      调色板（#6750A4 紫）。于是品牌头上那只青色的鸟底下，是一排紫色按钮——
+      加了头部也还是「看不出这是哪个 App」。
+    -->
+    <color name="brand_cyan">#66D9EF</color>
+    <color name="brand_yellow">#FFD93D</color>
+    <color name="brand_mint">#A8E6CF</color>
+    <color name="brand_pink">#FF6B9D</color>
+    <color name="brand_orange">#FFA552</color>
+
+    <!--
+      压在亮色块上的字色。青/黄/薄荷/粉在深浅两种主题下都是亮的，
+      所以它们上面的字**永远是深色**，不跟主题走——这就是 style.css 里
+      那条 on-bright（带两个连字符前缀的那个变量），写白字压在 #66D9EF 上
+      对比度只有 1.65:1。
+    -->
+    <color name="brand_ink">#12100E</color>
+
+    <color name="brand_bg">#F4F2EC</color>
+    <color name="brand_fg">#12100E</color>
+
     <!-- 启动图标底色。信鸽是青色的，底色用同系的浅色，别喧宾夺主 -->
     <color name="ic_launcher_background">#F4F2EC</color>
 </resources>

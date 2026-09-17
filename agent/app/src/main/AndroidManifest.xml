@@ -46,11 +46,20 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+
+      roundIcon 的资源一直都在，但从没在清单里引用过，等于白画——
+
+      部分 ROM（三星、一加的某些版本）优先取它。
+
+    -->
+
     <application
         android:name=".App"
         android:allowBackup="false"
         android:networkSecurityConfig="@xml/network_security_config"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Agent">
@@ -102,14 +111,31 @@
             </intent-filter>
         </receiver>
 
+        <!--
+          开机自启。
+
+          **不要加回 directBootAware / LOCKED_BOOT_COMPLETED。**
+          那两条会让系统在**用户解锁之前**就拉起这个进程并执行 Application.onCreate，
+          而 onCreate 第三行就是 Prefs(this) → getSharedPreferences。
+          targetSdk ≥ 26 的应用在解锁前读凭据加密区会直接抛
+          IllegalStateException（"SharedPreferences in credential encrypted storage
+          are not available until after user is unlocked"），从 Application.onCreate
+          里抛出来，整个进程当场死掉，onReceive 一行都没跑到。
+
+          也就是说：**任何设了锁屏密码的机器，每次重启都在开机那一刻崩一次，
+          网关不会自己起来。** Android 10 起出厂设备一律 FBE，而指纹解锁强制要先设
+          PIN——所以这是常态，不是特例。家里那台白牌备用机没设锁屏，所以从没复现过，
+          这正是这类 bug 只会被别人撞上的原因。
+
+          留着也没有收益：解锁前 prefs、Room 队列、短信库全在凭据加密区，
+          这个 App 在 direct boot 阶段本来就一件事都做不成。
+        -->
         <receiver
             android:name=".receiver.BootReceiver"
             android:enabled="true"
-            android:exported="true"
-            android:directBootAware="true">
+            android:exported="true">
             <intent-filter android:priority="2147483647">
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>

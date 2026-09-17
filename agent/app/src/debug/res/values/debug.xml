@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      debug 与 release 在桌面上要一眼分得出来。
+
+      这不只是方便：CLAUDE.md「安卓 Agent」一节把它定成安全要求——debug 包是
+      android:debuggable=true，一条 run-as 就能读走 shared_prefs 里的设备长期凭证
+      与短信指令口令，而那台常驻手机开着无线调试、常年无人看管。
+      两个包 applicationId 不同、可以并存，所以「装的是哪个」有安全后果，
+      而原来两者同名同图标，只能靠翻「设置 → 应用 → 看包名后缀」来确认。
+
+      改动只在 debug 源集，release 一个字节都不受影响。
+    -->
+    <string name="app_name">Homing debug</string>
+    <color name="ic_launcher_background">#FF6B9D</color>
+</resources>

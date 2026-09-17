@@ -2,11 +2,29 @@
 <!--
   通知栏小图标。系统会把它整体染成单色（白/灰），所以只能画剪影——
   彩色版本到了状态栏上会糊成一团黑，什么都看不出来。
+
+  两处不是随手画的：
+
+  ① **眼睛用镂空，不能省。** logo.svg 的注释写着「小尺寸下它是『这是只鸟』
+     最强的信号」，而状态栏是这个 logo 所有用法里最小的一档——恰恰最需要它。
+     单色下没法再画一个深色圆点，所以把头和眼并成一条路径 + fillType="evenOdd"：
+     内圈交叠数为偶数即成为透明孔。翅膀省掉是对的（它落在身体轮廓内，
+     单色下本来就看不见），眼睛不是。
+  ② **要留白。** 原来鸟顶着左右两边（路径 x 从 4 到 63，画布 64），
+     上下却各空 15%，摆在一排系统图标里显得又大又偏。
+     group 缩到 0.85 并把内容中心对到画布中心。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp"
     android:viewportWidth="64" android:viewportHeight="64">
-    <path android:fillColor="#FFFFFFFF" android:pathData="M47,27 C53,32 52,42 43,47 C34,52 22,49 17,43 L4,47 L12,34 C15,26 25,21 33,21 C40,21 45,23 47,27 Z"/>
-    <path android:fillColor="#FFFFFFFF" android:pathData="M45,10.5 a10.5,10.5 0 1,0 0,21.0 a10.5,10.5 0 1,0 0,-21.0 Z"/>
-    <path android:fillColor="#FFFFFFFF" android:pathData="M54,18 L63,22 L54,26 Z"/>
+    <group android:scaleX="0.85" android:scaleY="0.85"
+           android:pivotX="33.5" android:pivotY="31.25"
+           android:translateX="-1.5" android:translateY="0.75">
+        <path android:fillColor="#FFFFFFFF"
+              android:pathData="M47,27 C53,32 52,42 43,47 C34,52 22,49 17,43 L4,47 L12,34 C15,26 25,21 33,21 C40,21 45,23 47,27 Z"/>
+        <!-- 头 + 眼：一条路径，evenOdd 让内圈成为透明孔 -->
+        <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+              android:pathData="M45,10.5 a10.5,10.5 0 1,0 0,21.0 a10.5,10.5 0 1,0 0,-21.0 Z M48,15.5 a2.5,2.5 0 1,0 0,5.0 a2.5,2.5 0 1,0 0,-5.0 Z"/>
+        <path android:fillColor="#FFFFFFFF" android:pathData="M54,18 L63,22 L54,26 Z"/>
+    </group>
 </vector>

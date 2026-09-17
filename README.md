@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="web/download/homing.apk"><img src="https://img.shields.io/badge/APK-v0.1.1-66d9ef" alt="APK"></a>
+  <a href="web/download/homing.apk"><img src="https://img.shields.io/badge/APK-v0.1.2-66d9ef" alt="APK"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license"></a>
   <a href="https://github.com/rikouu/homing/actions"><img src="https://github.com/rikouu/homing/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>

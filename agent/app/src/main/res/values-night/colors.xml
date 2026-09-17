@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      只翻转「跟着主题走」的那两个。**亮色块本身不翻转**——
+      青还是那个青，压在上面的字还是深色（brand_ink）。
+      这和控制台是同一条规矩：跟主题走的是卡片底，不是色块。
+    -->
+    <color name="brand_bg">#0C0C0E</color>
+    <color name="brand_fg">#F2F0EA</color>
+</resources>

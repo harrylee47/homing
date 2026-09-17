@@ -7,10 +7,44 @@
         android:layout_width="match_parent" android:layout_height="wrap_content"
         android:orientation="vertical">
 
-        <TextView android:id="@+id/statusText"
+        <!--
+          品牌头。原来这一页从状态文字直接开始，打开它的人看不出这是哪个 App——
+          而这台手机是常年放在角落里的，几年后打开它的可能是完全不知情的人
+          （或者忘了的你自己）。底部那行署名解决的是「出问题找谁」，
+          解决不了「这是什么」。
+
+          logo 用满幅的 @drawable/logo，不是自适应图标那一份（那份主体收在
+          中心 60，摆进 ImageView 会白白空掉四成）。
+        -->
+        <LinearLayout
             android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal" android:gravity="center_vertical"
+            android:paddingBottom="18dp">
+
+            <ImageView
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:src="@drawable/logo"
+                android:importantForAccessibility="no" />
+
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:text="@string/app_name"
+                android:textSize="22sp" android:textStyle="bold" />
+        </LinearLayout>
+
+        <!--
+          状态色块。宽度 wrap_content：色块要包住字，撑满一行就成了一条横幅。
+          字色写死 brand_ink——它压在亮色块上，深浅两种主题下都得是深色。
+        -->
+        <TextView android:id="@+id/statusText"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:textSize="20sp" android:textStyle="bold"
-            android:paddingBottom="6dp" android:text="未配对" />
+            android:textColor="@color/brand_ink"
+            android:background="@drawable/status_chip"
+            android:paddingStart="12dp" android:paddingEnd="12dp"
+            android:paddingTop="5dp" android:paddingBottom="5dp"
+            android:layout_marginBottom="12dp" android:text="未配对" />
 
         <TextView android:id="@+id/detailText"
             android:layout_width="match_parent" android:layout_height="wrap_content"

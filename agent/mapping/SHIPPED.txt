@@ -1,3 +1,3 @@
-apk_sha256 8246badd1850768026b6a70789407588a9b4863bc6f33389e30be332c09f488e
-built_at 2026-09-17T18:33:06Z
-version 0.1.1 (versionCode 2)
+apk_sha256 330e3ab90c36ebaec238f5a5d16fce1ca68871fc5342637bd91a1ebbb88d5141
+built_at 2026-09-17T19:39:50Z
+version 0.1.2 (versionCode 3)

@@ -20,6 +20,8 @@ jobs:
       - run: pnpm exec tsc --noEmit
       # core 层不许引入运行时特有依赖，破了将来就不是适配而是重写
       - run: node scripts/check-core-purity.mjs
+      # 同一只鸟有四份手工副本，改了源忘了改安卓那几份是静默的
+      - run: node scripts/check-logo-sync.mjs
       - run: pnpm exec vitest run
 
   agent:

@@ -19,6 +19,10 @@ echo "── 本地检查 ──"
 cd "$ROOT"
 pnpm typecheck
 node scripts/check-core-purity.mjs
+# 同一只鸟有四份手工副本（web/logo.svg + 三个 vector drawable）。
+# 改了源忘了改安卓那几份，表现是图标悄悄变成两个样子——桌面上一个、
+# 通知栏一个，而谁都不会去比对。
+node scripts/check-logo-sync.mjs
 pnpm exec vitest run --reporter=dot 2>&1 | tail -3
 
 echo "── 同步 ──"

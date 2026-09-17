@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 13+「主题图标」那一层：系统按壁纸取色整体重绘，所以**必须是剪影**。
+
+  不能直接复用 ic_notification：那份是 64 画布，而自适应图标的每一层都会被
+  拉伸到 108 的完整边界再被蒙版裁——鸟会撑满画布、头和喙被切掉。
+  这里用和 ic_launcher_foreground 一模一样的 108 画布 + scale 0.9375 / translate 24
+  的 group，保证主题图标与彩色图标里那只鸟的位置、大小逐像素对齐。
+
+  眼睛同样走 evenOdd 镂空，理由见 ic_notification.xml。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="0.9375" android:scaleY="0.9375"
+           android:translateX="24.00" android:translateY="24.00">
+        <path android:fillColor="#FF000000"
+              android:pathData="M47,27 C53,32 52,42 43,47 C34,52 22,49 17,43 L4,47 L12,34 C15,26 25,21 33,21 C40,21 45,23 47,27 Z"/>
+        <path android:fillColor="#FF000000" android:fillType="evenOdd"
+              android:pathData="M45,10.5 a10.5,10.5 0 1,0 0,21.0 a10.5,10.5 0 1,0 0,-21.0 Z M48,15.5 a2.5,2.5 0 1,0 0,5.0 a2.5,2.5 0 1,0 0,-5.0 Z"/>
+        <path android:fillColor="#FF000000" android:pathData="M54,18 L63,22 L54,26 Z"/>
+    </group>
+</vector>

@@ -19,8 +19,8 @@ android {
         // 分发出去的那个包的内容变了，版本号就得跟着变——控制台设备页显示的是
         // 这个 versionName，同一个号对应两份不同的二进制，「他装的到底是哪一版」
         // 就再也答不上来了。0.1.0 那个包缺了握手超时与 inflight 去重两处修复。
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
     }
 
     /**

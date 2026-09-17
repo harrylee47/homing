@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Homing</string>
-    <string name="notification_channel">Homing 服务</string>
+    <!--
+      渠道名。系统设置里「应用 → Homing → 通知」那一页标题已经是 Homing，
+      渠道再叫「Homing 服务」等于什么都没说。说用途。
+    -->
+    <string name="notification_channel">运行状态</string>
     <string name="notification_title">Homing 运行中</string>
-    <!-- 作者与项目地址。版本号由 MainActivity 在运行时补在后面 -->
-    <string name="about_line">Homing · 作者 Kou. · https://kou.im</string>
+    <!--
+      作者与项目地址。版本号由 MainActivity 在运行时补在后面。
+      开头不再写 Homing：页面顶上那个品牌头已经说了，这里再来一遍是重复。
+    -->
+    <string name="about_line">作者 Kou. · https://kou.im</string>
 </resources>

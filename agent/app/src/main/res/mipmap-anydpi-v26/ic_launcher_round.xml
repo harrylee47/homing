@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 13+ 的「主题图标」：系统会拿这一层按壁纸取色重绘，所以它**必须是纯剪影**
+  ——和通知栏图标同一条道理（CLAUDE.md「Logo」那节）。直接复用 ic_notification，
+  不能复用 ic_notification：那份是 64 画布，塞进 108 的自适应图标会被撑满再裁掉。
+  这个 App 会是一圈里唯一一个彩色的，看起来像没适配。
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>

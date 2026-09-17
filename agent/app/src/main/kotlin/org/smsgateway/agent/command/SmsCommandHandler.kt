@@ -137,8 +137,18 @@ class SmsCommandHandler(private val ctx: Context) {
     private fun batteryText(): String {
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
         val pct = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.coerceIn(0, 100)
-        val charging = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) bm?.isCharging == true
-            else bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS) == BatteryManager.BATTERY_STATUS_CHARGING
+        /*
+         * 无条件用 isCharging：它是 **API 23** 就有的，低于 minSdk 24。
+         *
+         * 原来那个版本分支不但多余，在 API 24/25 上还是错的——
+         * BATTERY_PROPERTY_STATUS 是 API 26 才加的常量，更低版本上
+         * getIntProperty 返回 Integer.MIN_VALUE，永远不等于 BATTERY_STATUS_CHARGING，
+         * 于是「（充电中）」在 Android 7.x 上一辈子不出现。
+         * 而同一台手机的控制台显示「充电中」、短信指令说没充电——
+         * 「它是不是被拔了电」恰恰是你发这条指令时最想确认的事。
+         * 仓库里另外两处（WsClient、MainActivity）本来就是无条件调的。
+         */
+        val charging = runCatching { bm?.isCharging == true }.getOrDefault(false)
         return "电量 ${pct ?: "?"}%${if (charging) "（充电中）" else ""}"
     }
 
