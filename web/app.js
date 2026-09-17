@@ -2044,6 +2044,18 @@ async function rules() {
     render(`
       <h1>规则</h1>
       <p class="muted">按优先级从小到大匹配。没有规则命中时走兜底：推送到全部启用渠道并归档。</p>
+      ${!rs.length && !chs.length ? `<div class="card">
+        <!--
+          先有渠道才谈得上规则：规则的作用就是「把哪些消息发到哪些渠道」。
+          这一档原来什么都不出（写入按钮的条件是 chs.length），于是新用户
+          在这一页上看到的只有「还没有规则，当前全部走兜底」——既不知道
+          为什么没有那颗一键按钮，也不知道下一步该去哪。
+        -->
+        <b>先去加一个通知渠道</b>
+        <p class="muted" style="margin:6px 0 0">规则决定「哪些消息发到哪里」，所以得先有个「哪里」。
+        加完渠道再回到这一页，这里会出现一颗「写入建议规则」，一次把七条配好。</p>
+        <div class="btnrow"><a href="/channels"><button class="sm">去加渠道</button></a></div>
+      </div>` : ''}
       ${!rs.length && chs.length ? `<div class="card">
         <b>还没有规则</b>
         <p class="muted">可以一键写入建议规则，按顺序匹配：<br>
@@ -2054,6 +2066,15 @@ async function rules() {
         <b>普通短信</b> 以上都不是，正常推送<br>
         <b>来电</b> 单独分组，点击可预填回复<br>
 </p>
+        <!--
+          **把「推给谁」写在按钮旁边。** 一键写入会把此刻**全部**渠道写进每条
+          推送规则，而人按下去的时候多半没想过这件事——真实踩到的那次，
+          他是在只有两个渠道时按的，后来加的三个从此一条消息都收不到。
+        -->
+        <div class="notice" style="margin-top:4px">写进去的推送目标是<b>现在这 ${chs.length} 个渠道</b>：${
+          chs.map((c) => esc(c.name)).join('、')}。<br>
+          <b>以后新加的渠道不会自动进来</b>，那时候要么在这一页勾一下，
+          要么在渠道页点「加进现有的推送规则」。</div>
         <div class="btnrow"><button id="seed" class="sm">写入建议规则</button></div>
       </div>` : ''}
       ${rs.length ? `<div class="card list">${rs.map((r) => `
@@ -2079,7 +2100,9 @@ async function rules() {
       seedBtn.disabled = true
       try {
         const r = await api('/rules/seed', { method: 'POST', body: { channels: chs.map((c) => c.id) } })
-        toast(`已写入 ${r.created} 条规则`)
+        // 说清推给了谁——这一句就是上面那条 notice 的回执，
+        // 让「它推到哪去了」在按下之后仍然有一次机会被看见
+        toast(`已写入 ${r.created} 条规则，推送目标：${chs.map((c) => c.name).join('、')}`)
         rules()
       } catch (e) { toast(e.message); seedBtn.disabled = false }
     }
@@ -2645,6 +2668,12 @@ function fmtFull(ts) {
 
 // ── 渠道 ────────────────────────────────────────────────────
 
+/**
+ * 刚加完的那条渠道的 id，给下一次 channels() 渲染顶部提醒用。
+ * 用一次就清掉——它说的是「你刚刚做了什么」，不是一个持久状态。
+ */
+let justAdded = null
+
 async function channels() {
   render('<div class="loading">加载中…</div>')
   try {
@@ -2661,8 +2690,32 @@ async function channels() {
       api('/bark/info').catch(() => null),
       me ? null : api('/auth/me').then((r) => { me = r.user }).catch(() => null),
     ])
+    /*
+     * 刚加完的那一条，把「它现在还收不到消息」摆在页面最上面。
+     *
+     * 列表里每条都有徽章（in_rules === 0），但那是**稳态**的提醒；
+     * 人刚按完「添加」的那一下才是他一定在看的时刻，而且那一刻他脑子里
+     * 想的是「配完了」。错过这一下，下一次想起来就是几天后
+     * 「这个渠道怎么从来不响」。
+     */
+    const fresh = justAdded ? cs.find((c) => c.id === justAdded) : null
+    justAdded = null
+    const freshTip = fresh && fresh.in_rules === 0 ? `
+      <div class="card" style="background:var(--bg)">
+        <b>「${esc(fresh.name)}」加好了，但它现在一条消息都收不到。</b>
+        <p class="muted" style="margin:6px 0 0">新渠道<b>不会</b>自动进入已有规则——不然你新加一个渠道，
+        银行验证码就悄悄多发了一个地方。得由你自己决定让它收哪些。</p>
+        <div class="btnrow">
+          <button class="sm" id="attach_fresh">加进现有的推送规则</button>
+          <a href="/rules"><button class="ghost sm">我自己去勾</button></a>
+        </div>
+        <div class="muted" style="margin-top:6px">「加进现有的推送规则」只动<b>本来就在推送</b>的那几条；
+        「已发送短信」「去电」这种只归档的不碰。</div>
+      </div>` : ''
+
     render(`
       <h1>渠道</h1>
+      ${freshTip}
       ${cs.length ? `<div class="card list">${cs.map((c) => `
         <div class="item">
           <div class="row">
@@ -2678,7 +2731,7 @@ async function channels() {
               <button class="ghost sm" data-test="${esc(c.id)}">测试</button>
             </div>
           </div>
-          ${c.enabled && c.in_rules === 0 ? `<div class="notice" style="margin-top:8px">
+          ${c.enabled && c.in_rules === 0 && c.id !== fresh?.id ? `<div class="notice" style="margin-top:8px">
             <b>这条渠道一条真实消息都收不到。</b>没有任何启用着的规则选中它——
             「测试」能通、渠道故障告警也会到，那两条都不看规则，所以它看起来是好的。
             到<a href="/rules">规则</a>页把它勾进你要的规则里（比如「验证码」「普通短信」）。
@@ -2715,6 +2768,15 @@ async function channels() {
         </select>
         <div class="muted" id="barkdesc" style="margin-top:8px"></div>
       </div>` : ''}`)
+
+    if ($('#attach_fresh')) $('#attach_fresh').onclick = async () => {
+      $('#attach_fresh').disabled = true
+      try {
+        const r = await api(`/channels/${encodeURIComponent(fresh.id)}/rules`, { method: 'POST' })
+        toast(r.updated ? `已加进 ${r.updated} 条规则` : '没有正在推送的规则可加，先去规则页建一条')
+        channels()
+      } catch (e) { toast(e.message); $('#attach_fresh').disabled = false }
+    }
 
     const qr2 = $('#barkqr2')
     if (qr2) {
@@ -3073,11 +3135,13 @@ async function channels() {
     $('#add').onclick = async () => {
       const t = $('#type').value
       try {
-        await api('/channels', {
+        const made = await api('/channels', {
           method: 'POST',
           body: { type: t, name: $('#name').value.trim() || FORMS[t].name, config: FORMS[t].collect() },
         })
         toast('已添加')
+        // 刚加完这一下是唯一一个他一定在看的时刻，规则那句提醒要在这里说
+        justAdded = made?.id ?? null
         channels()
       } catch (e) { $('#err').textContent = e.message }
     }

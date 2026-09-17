@@ -2210,6 +2210,43 @@ route('POST', '/api/push/subscribe', async ({ user, res, body, deps, ip }) => {
  * 渠道测试。不是可选功能：配错渠道是这类系统最常见的故障，
  * 而故障时你收不到任何通知——这是个静默失败（计划 §7.4）。
  */
+/**
+ * 把这条渠道加进现有的推送规则里。
+ *
+ * 新增渠道**不会**自动进入已有规则——那是对的，新渠道不该悄悄开始收你的银行
+ * 验证码。但代价是「加完了、测试通过了，然后它一条消息都不来」，而三处界面
+ * 都只显示「启用」（见 CLAUDE.md 那一节）。让人去手改四条规则太重，
+ * 所以给一颗**由他自己按下**的按钮：按下这一下就是他的决定。
+ *
+ * 只动**本来就在推送**的规则（`channels` 非空）。`channels: []` 的那几条是
+ * 「只归档」——「已发送短信」「去电」都是故意不推的，往里塞一个渠道
+ * 等于替他改了主意，而他根本没打算改。
+ */
+route('POST', '/api/channels/:id/rules', async ({ user, res, params, deps, ip }) => {
+  const ch = (await deps.store.listChannels(user.id)).find((c) => c.id === params.id)
+  // 不属于自己的一律当「不存在」
+  if (!ch) return json(res, 404, { error: '渠道不存在' })
+
+  const rules = await deps.store.listRules(user.id)
+  const t = now()
+  let updated = 0, skipped = 0
+  for (const r of rules) {
+    let action: { channels?: unknown }
+    try { action = JSON.parse(r.action_json) as { channels?: unknown } } catch { skipped++; continue }
+    const cur = Array.isArray(action.channels) ? action.channels.filter((x): x is string => typeof x === 'string') : []
+    if (!r.enabled || cur.length === 0 || cur.includes(params.id!)) { skipped++; continue }
+    const okWrite = await deps.store.upsertRule({
+      ...r, action_json: JSON.stringify({ ...action, channels: [...cur, params.id!] }),
+    })
+    if (okWrite) updated++
+  }
+  await deps.store.audit({
+    user_id: user.id, actor: user.name, action: 'rule.update',
+    detail: `渠道 ${ch.name} 加进 ${updated} 条规则`, ip, created_at: t,
+  })
+  json(res, 200, { updated, skipped })
+})
+
 route('POST', '/api/channels/:id/test', async ({ user, res, params, deps }) => {
   const c = await deps.store.getChannel(params.id!, user.id)
   if (!c) return json(res, 404, { error: '渠道不存在' })
