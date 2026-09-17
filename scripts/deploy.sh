@@ -105,6 +105,32 @@ case "$STATUS" in
       curl -fsS -o /dev/null --max-time 10 "${HOMING_HEALTH_URL:-${GW_HEALTH_URL}}" \
         || { echo "✗ 容器在跑但接口不通"; exit 1; }
     fi
+
+    # ── 网关够不够得到同一张网里的 Bark ──────────────────────
+    #
+    # 这一条是补上一次真实故障的：compose **重建网络**（比如为了钉住网段）时，
+    # 会把正在跑的容器重新挂上去，但**没有被一起重建的那个容器拿不回服务别名**。
+    # 于是 bark-server 这个容器还在、还能用 `bark-server` 这个名字访问，
+    # 唯独 compose 服务名 `bark` 解析不了——而渠道里存的正是 http://bark:8080。
+    #
+    # 后果是**静默的**：容器全绿、接口全通、部署脚本报成功，只有真来一条验证码时
+    # 才会失败，而失败的表现是从**别的**渠道收到一条「渠道发送失败」。
+    # Bark 是 iPhone 上验证码的主通道，这一条不该靠人去发现。
+    #
+    # 修法就是把那个服务重建一次（数据在 ./bark-data 的 bind mount 里，不随容器走）。
+    BARK_DNS=$(ssh -o ConnectTimeout=20 "$HOST" 'cd ~/sms-gateway 2>/dev/null || exit 0
+      docker compose ps --services 2>/dev/null | grep -qx bark || exit 0
+      docker exec sms-gateway node -e "require(\"dns\").lookup(\"bark\",e=>process.exit(e?1:0))" >/dev/null 2>&1 \
+        && echo OK || echo BROKEN' || true)
+    if [ "$BARK_DNS" = "BROKEN" ]; then
+      echo "！ 网关解析不了 compose 服务名 bark，正在重建该服务（网络重建后会丢服务别名）"
+      ssh -o ConnectTimeout=20 "$HOST" 'cd ~/sms-gateway && docker compose up -d --force-recreate bark' >/dev/null
+      sleep 3
+      RETRY=$(ssh -o ConnectTimeout=20 "$HOST" 'docker exec sms-gateway node -e "require(\"dns\").lookup(\"bark\",e=>process.exit(e?1:0))" >/dev/null 2>&1 && echo OK || echo BROKEN')
+      [ "$RETRY" = "OK" ] && echo "✓ bark 已恢复解析" \
+        || { echo "✗ 重建之后仍然解析不了 bark——Bark 渠道现在是坏的，别当部署成功"; exit 1; }
+    fi
+
     echo "✓ 部署完成"
     ;;
   *)
