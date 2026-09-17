@@ -437,13 +437,13 @@ route('POST', '/api/auth/login', async ({ user, req, res, body, deps, ip }) => {
   // 「保持登录」是用户自己做的取舍：会话从 30 分钟变 30 天，且不再绑定 IP 段。
   // 不给这个选项的话，摩擦会大到让人想把凭证塞进通知链接里——那才是真正危险的。
   /**
-   * 「保持登录 30 天」只给绑了两步验证的账号。
+   * 「保持登录 30 天」：勾了就给，不看有没有绑两步验证。
    *
-   * 那个豁免的正当性本来就来自「TOTP 让登录很麻烦」——取消了 TOTP 还留着
-   * 30 天免验，是把代价拿走、把补偿留下，两头占。而且信任会话**不校验 IP 段**，
-   * 单因素 + 30 天 + 不绑网段 = 一个躺在 localStorage 里的长期令牌。
+   * 这是用户自己做的取舍，而且他随时能在设置里退出当前设备、或者全端下线。
+   * 代价要知道：信任会话**不校验 IP 段**（换 WiFi、换基站都不掉线），
+   * 所以它是一个躺在浏览器里的长期令牌——公用设备上别勾。
    */
-  const trusted = (body as { trust?: boolean })?.trust === true && hasTotp
+  const trusted = (body as { trust?: boolean })?.trust === true
   const ttl = trusted ? TRUSTED_SESSION_TTL_MS : SESSION_TTL_MS
 
   const token = generateSessionToken()
@@ -678,14 +678,12 @@ route('POST', '/api/users/:id/reset', async ({ user, res, params, deps, ip }) =>
  * 放宽是**知情的选择**，不是默认关掉：注册与向导都引导绑定，跳过要点一下，
  * 并且看得到后果。管理员也可以不绑——这台机器是他的，风险自负。
  *
- * 口令规则对所有人一样（8 位两类）——按运营者的判断，这台机器上的信息
- * 没有重要到值得为「没有第二因素」再加一层长度摩擦。
+ * 绑不绑两步验证，差别只在登录时多不多一道动态码。其余一视同仁：
+ * 口令规则一样（8 位两类）、一样能勾「保持登录 30 天」、一样能自助找回口令
+ * （找回默认走推送渠道，绑了的也可以用动态码，两条都行）。
  *
- * 两条与第二因素直接相关的差别保留着，因为它们不是摩擦而是语义：
- *  - 没绑的账号不给 30 天免验会话。那个豁免的正当性本来就来自 TOTP 带来的
- *    摩擦；而信任会话**不校验 IP 段**，单因素 + 30 天 + 不绑网段
- *    等于一个长期令牌躺在 localStorage 里。界面上会写明「开启后可用」。
- *  - 没绑的账号**没有自助找回**——这正是「没设两步验证就无法找回口令」的落地。
+ * 这是运营者的判断：这台机器上的信息没有重要到值得为「没有第二因素」
+ * 再加几层摩擦，而每个跳过的地方都会把后果讲清楚。
  */
 
 /** 绑定前先拿密钥与二维码。此刻还没写进账号，验证通过才算数 */
@@ -753,20 +751,18 @@ route('POST', '/api/auth/totp/disable', async ({ user, res, body, deps, ip }) =>
  * 自己按「我要能自己找回」做出的选择。
  */
 /**
- * 找回口令有两条路，按你自己选的安全级别走，不会互相削弱。
+ * 找回口令：**默认走推送渠道，绑了两步验证的也可以用动态码**，两条都行。
  *
- *  1. **绑了两步验证** → 用动态码直接换新口令（下面那条路由）。
- *  2. **没绑，但配过推送渠道** → 往你自己的渠道发一个一次性找回码。
- *  3. 两样都没有 → 只能请管理员重置。
+ *  1. 点「找回口令」→ 往你自己配好的渠道发一个一次性找回码
+ *  2. 或者直接填两步验证的动态码（绑过才有）
+ *  3. 两样都没有 → 只能请管理员重置
  *
- * 第 2 条为什么算数：你的推送渠道**本来就在接收你的银行验证码**。
+ * 渠道为什么算得上一个验证因素：它**本来就在接收你的银行验证码**。
  * 能打开那个 Telegram 或那台装着 Bark 的手机的人，早就看得到你全部的短信了——
- * 往那里发一个找回码，没有新增任何暴露面。而它同时又是一个真实的
+ * 往那里发一个找回码没有新增任何暴露面，而它同时是一个真实的
  * 「你持有某个东西」的证明，因为渠道是你自己配的、还按过测试按钮。
  *
- * 反过来，**绑了两步验证的账号不走这条路**：他选择了更强的认证，
- * 如果渠道也能重置口令，就等于把他的安全级别悄悄拉回到「控制渠道即可接管」。
- * 每个人的账号按他自己选的那一级来。
+ * 界面上两种码填同一个框：用户不需要知道自己填的是哪一种。
  */
 const RECOVERY_TTL_MS = 10 * 60 * 1000
 const RECOVERY_MAX_TRIES = 5
@@ -789,14 +785,13 @@ route('POST', '/api/auth/recover/start', async ({ res, body, deps, ip }) => {
 
   const uniform = {
     ok: true,
-    message: '如果这个账号存在、没有开启两步验证、并且配好了推送渠道，'
-      + '找回码已经发到那个渠道了（10 分钟内有效）。'
-      + '开了两步验证的账号请直接用动态码找回；两样都没有的只能请管理员重置。',
+    message: '如果这个账号存在并且配好了推送渠道，找回码已经发过去了（10 分钟内有效）。'
+      + '开了两步验证的话，也可以直接填认证器上的 6 位动态码。'
+      + '两样都没有的只能请管理员重置。',
   }
 
   const acct = await deps.store.getUserByName(String((body as { name?: string })?.name ?? '').trim())
-  // 绑了两步验证的不走这条路：那会把他的安全级别拉回到「控制渠道即可接管」
-  if (!acct || !userActive(acct, now()) || acct.totp_secret) return json(res, 200, uniform)
+  if (!acct || !userActive(acct, now())) return json(res, 200, uniform)
 
   const code = generateRecoveryCode()
   await deps.store.setUserSetting(acct.id, S_RECOVERY, JSON.stringify({
@@ -810,7 +805,12 @@ route('POST', '/api/auth/recover/start', async ({ res, body, deps, ip }) => {
   json(res, 200, uniform)
 }, false)
 
-/** 第二步：用收到的找回码换新口令。 */
+/**
+ * 第二步：用验证码换新口令。
+ *
+ * **同一个框认两种码**：渠道发来的一次性找回码，或者认证器上的 6 位动态码。
+ * 用户不需要知道自己填的是哪一种，界面上也就不用解释两条路。
+ */
 route('POST', '/api/auth/recover/finish', async ({ res, body, deps, ip }) => {
   if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
 
@@ -818,28 +818,36 @@ route('POST', '/api/auth/recover/finish', async ({ res, body, deps, ip }) => {
   const pwCheck = validatePassword(b?.password ?? '')
   if (!pwCheck.ok) return json(res, 400, { error: pwCheck.error })
 
-  const fail = { error: '找回码不正确或已失效。它只有 10 分钟有效期，请重新获取一个' }
+  const fail = { error: '验证码不正确或已失效。渠道发的找回码只有 10 分钟有效期，可以重新获取一个' }
   const acct = await deps.store.getUserByName((b?.name ?? '').trim())
-  if (!acct || !userActive(acct, now()) || acct.totp_secret) return json(res, 401, fail)
+  if (!acct || !userActive(acct, now())) return json(res, 401, fail)
 
-  const raw = await deps.store.getUserSetting(acct.id, S_RECOVERY)
-  if (!raw) return json(res, 401, fail)
-  let pending: { hash: string; expires_at: number; tries: number }
-  try {
-    pending = JSON.parse(raw) as typeof pending
-  } catch {
-    return json(res, 401, fail)
-  }
-  if (pending.expires_at < now() || pending.tries >= RECOVERY_MAX_TRIES) {
-    await deps.store.setUserSetting(acct.id, S_RECOVERY, '')
-    return json(res, 401, fail)
-  }
+  const input = (b?.code ?? '').trim()
+  if (!input) return json(res, 401, fail)
 
-  if (!timingSafeEqual(await hashToken((b?.code ?? '').trim().toUpperCase()), pending.hash)) {
-    // 记次数：不记的话 10 分钟内可以无限猜
-    await deps.store.setUserSetting(acct.id, S_RECOVERY, JSON.stringify({ ...pending, tries: pending.tries + 1 }))
-    return json(res, 401, fail)
+  // 先试认证器的动态码：它无状态，试错不消耗渠道码的次数
+  let ok = acct.totp_secret !== '' && (await verifyTotp(acct.totp_secret, input))
+
+  const raw = ok ? null : await deps.store.getUserSetting(acct.id, S_RECOVERY)
+  if (!ok && raw) {
+    type Pending = { hash: string; expires_at: number; tries: number }
+    let pending: Pending | null = null
+    try {
+      pending = JSON.parse(raw) as Pending
+    } catch { /* 存坏了就当没有 */ }
+
+    if (pending) {
+      if (pending.expires_at < now() || pending.tries >= RECOVERY_MAX_TRIES) {
+        await deps.store.setUserSetting(acct.id, S_RECOVERY, '')
+      } else if (timingSafeEqual(await hashToken(input.toUpperCase()), pending.hash)) {
+        ok = true
+      } else {
+        // 记次数：不记的话 10 分钟内可以无限猜
+        await deps.store.setUserSetting(acct.id, S_RECOVERY, JSON.stringify({ ...pending, tries: pending.tries + 1 }))
+      }
+    }
   }
+  if (!ok) return json(res, 401, fail)
 
   await deps.store.setUserSetting(acct.id, S_RECOVERY, '')
   await deps.store.upsertUser({
@@ -847,35 +855,9 @@ route('POST', '/api/auth/recover/finish', async ({ res, body, deps, ip }) => {
     password_hash: await withPasswordSlot(() => hashPassword(b!.password!)),
   })
   await deps.store.revokeAllSessions(acct.id)
-  await deps.store.audit({ user_id: acct.id, actor: acct.name, action: 'auth.recover', detail: '渠道找回码', ip, created_at: now() })
-  log.warn('口令已通过渠道找回码重置', { name: acct.name, ip })
+  await deps.store.audit({ user_id: acct.id, actor: acct.name, action: 'auth.recover', detail: null, ip, created_at: now() })
+  log.warn('口令已通过找回码重置', { name: acct.name, ip })
   void deps.onPasswordRecovered?.(acct.id, ip)
-  json(res, 200, { ok: true })
-}, false)
-
-route('POST', '/api/auth/recover', async ({ res, body, deps, ip }) => {
-  if (regLimited(ip)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' })
-
-  const b = body as { name?: string; code?: string; password?: string }
-  const acct = await deps.store.getUserByName((b?.name ?? '').trim())
-  const pwCheck = validatePassword(b?.password ?? '')
-  if (!pwCheck.ok) return json(res, 400, { error: pwCheck.error })
-
-  // 没绑两步验证 = 没有自助找回。不区分「账号不存在」与「没绑」，
-  // 否则这里就成了一个「谁开了两步验证」的探测器
-  const ok = !!acct && userActive(acct, now()) && acct.totp_secret !== ''
-    && (await verifyTotp(acct.totp_secret, b?.code ?? ''))
-  if (!ok) return json(res, 401, { error: '无法找回。没有开启两步验证的账号只能请管理员重置' })
-
-  await deps.store.upsertUser({
-    ...acct!,
-    password_hash: await withPasswordSlot(() => hashPassword(b!.password!)),
-  })
-  await deps.store.revokeAllSessions(acct!.id)
-  await deps.store.audit({ user_id: acct!.id, actor: acct!.name, action: 'auth.recover', detail: null, ip, created_at: now() })
-  log.warn('口令已通过两步验证找回', { name: acct!.name, ip })
-  // 告警走用户自己的渠道：没有第二因素时，这是唯一的事后检测手段
-  void deps.onPasswordRecovered?.(acct!.id, ip)
   json(res, 200, { ok: true })
 }, false)
 
