@@ -920,11 +920,18 @@ export class SqliteStore implements Store {
     ).run(r.device_id, r.user_id, r.level, r.event, r.detail, r.created_at)
   }
 
-  async listDeviceLogs(deviceId: string, userId: string, limit: number): Promise<DeviceLogRecord[]> {
+  async listDeviceLogs(deviceId: string, userId: string, limit: number, offset: number): Promise<DeviceLogRecord[]> {
     return this.db.prepare(
       'SELECT device_id, user_id, level, event, detail, created_at FROM device_logs'
-      + ' WHERE device_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
-    ).all(deviceId, userId, limit) as unknown as DeviceLogRecord[]
+      + ' WHERE device_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?',
+    ).all(deviceId, userId, limit, offset) as unknown as DeviceLogRecord[]
+  }
+
+  async countDeviceLogs(deviceId: string, userId: string): Promise<number> {
+    const r = this.db
+      .prepare('SELECT COUNT(*) AS n FROM device_logs WHERE device_id = ? AND user_id = ?')
+      .get(deviceId, userId) as { n: number }
+    return Number(r.n)
   }
 
   async cleanupDeviceLogs(before: number): Promise<void> {

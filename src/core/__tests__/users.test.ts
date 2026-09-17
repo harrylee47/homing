@@ -228,7 +228,7 @@ describe('连接日志记下了被拒的原因', () => {
   it('上线记一条，带版本与电量，且不含任何凭证', async () => {
     const { store, session } = await fresh()
     await session.handle(hello())
-    const logs = await store.listDeviceLogs('dev_1', 'u1', 10)
+    const logs = await store.listDeviceLogs('dev_1', 'u1', 10, 0)
     expect(logs).toHaveLength(1)
     expect(logs[0]).toMatchObject({ level: 'info', event: 'online' })
     expect(logs[0]!.detail).toContain('1.2.3')
@@ -242,7 +242,7 @@ describe('连接日志记下了被拒的原因', () => {
       device_id: 'dev_1', token: 'W'.repeat(32), app_version: '1', android_sdk: 34,
       battery: 50, pending_count: 0,
     }, NOW)))
-    const logs = await store.listDeviceLogs('dev_1', 'u1', 10)
+    const logs = await store.listDeviceLogs('dev_1', 'u1', 10, 0)
     expect(logs[0]).toMatchObject({ level: 'error', event: 'auth_failed' })
     expect(logs[0]!.detail).toContain('重新配对')
   })
@@ -251,25 +251,25 @@ describe('连接日志记下了被拒的原因', () => {
     const a = await fresh()
     await a.store.revokeDevice('dev_1', 'u1')
     await a.session.handle(hello())
-    expect((await a.store.listDeviceLogs('dev_1', 'u1', 10))[0]).toMatchObject({ event: 'auth_revoked' })
+    expect((await a.store.listDeviceLogs('dev_1', 'u1', 10, 0))[0]).toMatchObject({ event: 'auth_revoked' })
 
     const b = await fresh()
     b.store.users.set('u1', user({ expires_at: NOW - 1 }))
     await b.session.handle(hello())
-    expect((await b.store.listDeviceLogs('dev_1', 'u1', 10))[0]).toMatchObject({ event: 'account_inactive' })
+    expect((await b.store.listDeviceLogs('dev_1', 'u1', 10, 0))[0]).toMatchObject({ event: 'account_inactive' })
   })
 
   it('断开记一条 offline', async () => {
     const { store, session } = await fresh()
     await session.handle(hello())
     await session.onDisconnect()
-    const logs = await store.listDeviceLogs('dev_1', 'u1', 10)
+    const logs = await store.listDeviceLogs('dev_1', 'u1', 10, 0)
     expect(logs.map((l) => l.event)).toEqual(['offline', 'online'])
   })
 
   it('别人查不到这台设备的日志', async () => {
     const { store, session } = await fresh()
     await session.handle(hello())
-    expect(await store.listDeviceLogs('dev_1', '别的用户', 10)).toEqual([])
+    expect(await store.listDeviceLogs('dev_1', '别的用户', 10, 0)).toEqual([])
   })
 })

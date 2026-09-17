@@ -1581,7 +1581,12 @@ route('GET', '/api/devices/:id/logs', async ({ user, res, params, url, deps }) =
   const d = await ownedDevice(deps, user.id, params.id!)
   if (!d) return json(res, 404, { error: '设备不存在' })
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 100), 1), 500)
-  json(res, 200, { logs: await deps.store.listDeviceLogs(d.id, user.id, limit) })
+  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0)
+  const [logs, total] = await Promise.all([
+    deps.store.listDeviceLogs(d.id, user.id, limit, offset),
+    deps.store.countDeviceLogs(d.id, user.id),
+  ])
+  json(res, 200, { logs, total, offset, limit })
 }, true, false, 'bot')
 
 /**

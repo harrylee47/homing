@@ -286,7 +286,7 @@ export class MemoryStore implements Store {
   async setSetting(k: string, v: string) { this.settings.set(k, v) }
   deviceLogs: DeviceLogRecord[] = []
   async appendDeviceLog(r: DeviceLogRecord) { this.deviceLogs.push(r) }
-  async listDeviceLogs(deviceId: string, userId: string, limit: number) {
+  async listDeviceLogs(deviceId: string, userId: string, limit: number, offset: number) {
     // 真实现排的是 created_at DESC, id DESC。同一毫秒多条并不罕见
     // （握手成功紧接着断开就是），所以这里要用插入顺序当次序补充，
     // 否则假 store 的顺序和线上不一致，测出来的东西不作数
@@ -294,8 +294,11 @@ export class MemoryStore implements Store {
       .map((r, i) => ({ r, i }))
       .filter((x) => x.r.device_id === deviceId && x.r.user_id === userId)
       .sort((a, b) => (b.r.created_at - a.r.created_at) || (b.i - a.i))
-      .slice(0, limit)
+      .slice(offset, offset + limit)
       .map((x) => x.r)
+  }
+  async countDeviceLogs(deviceId: string, userId: string) {
+    return this.deviceLogs.filter((l) => l.device_id === deviceId && l.user_id === userId).length
   }
   async cleanupDeviceLogs(before: number) {
     this.deviceLogs = this.deviceLogs.filter((r) => r.created_at >= before)

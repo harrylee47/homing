@@ -487,6 +487,20 @@ async function route(restore = false) {
     return login()
   }
 
+  /*
+   * 反过来那一半：**手里有会话的人点「登录」，不该再看到登录框。**
+   * 落地页顶栏那颗「登录」是写死的 /login，已登录的人点进来会看到一张空表单，
+   * 像是被登出了。用 replace 不用 push：这一跳不该留在历史里，
+   * 否则按返回又弹回登录页。
+   *
+   * 会话如果已经过期也不怕：跳到总览后第一个 api() 就会 401 → 清 token →
+   * 回 /login，这时 token 已空，走上面那条分支。只弹一次，不会循环。
+   */
+  if (token && (path === '/login' || path === '/register' || path === '/recover')) {
+    history.replaceState(null, '', '/')
+    return route()
+  }
+
   for (const [re, view] of routes) {
     const m = path.match(re)
     if (m) {
@@ -3163,13 +3177,18 @@ function barkKeyFrom(text) {
  * 这些全是服务端这一侧看得见的事，不需要设备配合——所以**设备离线时照样能看**，
  * 而那正是最需要看的时候。
  */
+let devLogOffset = 0
+/** 换了设备就从第一页开始：停在上一台的第 7 页是错的 */
+let devLogFor = ''
 async function deviceLogs(id) {
+  if (devLogFor !== id) { devLogFor = id; devLogOffset = 0 }
   render('<div class="loading">加载中…</div>')
   try {
-    const [{ logs }, { devices: ds }] = await Promise.all([
-      api(`/devices/${encodeURIComponent(id)}/logs?limit=200`),
+    const [lg, { devices: ds }] = await Promise.all([
+      api(`/devices/${encodeURIComponent(id)}/logs?limit=${logPageSize()}&offset=${devLogOffset}`),
       api('/devices').catch(() => ({ devices: [] })),
     ])
+    const { logs, total } = lg
     const dev = ds.find((d) => d.id === id)
     const LABEL = {
       online: '上线', offline: '掉线',
@@ -3190,7 +3209,9 @@ async function deviceLogs(id) {
             <span class="muted mono" style="font-size:12px;flex:none">${fmtFull(l.created_at)}</span>
           </div>
           ${l.detail ? `<div class="muted" style="margin-top:4px">${esc(l.detail)}</div>` : ''}
-        </div>`).join('')}</div>` : '<div class="card muted">还没有记录。设备连上来之后这里就会有东西。</div>'}
+        </div>`).join('')}</div>`
+        + pageSizeBar('dl', total, devLogOffset)
+        : '<div class="card muted">还没有记录。设备连上来之后这里就会有东西。</div>'}
       <h2>手机里的日志</h2>
       <div class="card">
         <p class="muted" style="margin:0">上面那些是<b>服务端看到的</b>。手机内部发生了什么
@@ -3210,6 +3231,8 @@ async function deviceLogs(id) {
         <div id="ag_out" style="margin-top:10px"></div>
       </div>`)
 
+    bindPageSize('dl', devLogOffset, (o) => { devLogOffset = o; deviceLogs(id) })
+
     const get = $('#ag_get')
     if (get) get.onclick = async () => {
       get.disabled = true
@@ -3220,9 +3243,39 @@ async function deviceLogs(id) {
           method: 'POST', body: { limit: 200, min_level: $('#ag_level').value },
         })
         const LV = { debug: 'plain', info: 'ok', warn: 'plain', error: 'err' }
-        $('#ag_out').innerHTML = r.lines.length
-          ? (r.dropped ? `<div class="muted" style="margin-bottom:8px">缓冲满了，更早的 ${r.dropped} 行已经被挤掉。</div>` : '')
-            + `<div class="card list">${r.lines.slice().reverse().map((l) => `
+        agLines = r.lines.slice().reverse()
+        agDropped = r.dropped
+        agOffset = 0
+        paintAgentLogs(LV)
+      } catch (e) {
+        $('#ag_out').innerHTML = ''
+        $('#ag_err').textContent = e.message
+      }
+      get.disabled = false
+    }
+  } catch (e) {
+    render(`<div class="card err-text">${esc(e.message)}</div>`)
+  }
+}
+
+/**
+ * 手机里那份日志的分页。
+ *
+ * 它是**一次性拉回来的**（设备内存里的环形缓冲，最多 200 行），不是每页问一次——
+ * 每翻一页就唤醒手机要一次日志，既慢又费电，而且两次之间缓冲已经变了，
+ * 翻回上一页看到的东西会跟刚才不一样。所以整份拿回来、在本地切。
+ */
+let agLines = []
+let agDropped = 0
+let agOffset = 0
+function paintAgentLogs(LV) {
+  const box = $('#ag_out')
+  if (!box) return
+  const limit = logPageSize()
+  const page = agLines.slice(agOffset, agOffset + limit)
+  box.innerHTML = agLines.length
+    ? (agDropped ? `<div class="muted" style="margin-bottom:8px">缓冲满了，更早的 ${agDropped} 行已经被挤掉。</div>` : '')
+      + `<div class="card list">${page.map((l) => `
               <div class="item">
                 <div class="row">
                   <span class="badge ${LV[l.level] ?? 'plain'}">${esc(l.level)}</span>
@@ -3230,16 +3283,11 @@ async function deviceLogs(id) {
                 </div>
                 <div class="mono wrap" style="font-size:12px;margin-top:4px">${esc(l.msg)}</div>
               </div>`).join('')}</div>`
-            + '<div class="muted" style="margin-top:8px;font-size:12px">日志在内存里，'
-            + '<b>App 被系统杀掉重启后就清空了</b>。正文与验证码在写进日志时已经擦掉。</div>'
-          : '<div class="muted">设备上暂时没有日志。</div>'
-      } catch (e) {
-        $('#ag_out').innerHTML = ''
-        $('#ag_err').textContent = e.message
-      }
-      get.disabled = false
-    }
-  } catch (e) { fail(e) }
+      + pageSizeBar('ag', agLines.length, agOffset)
+      + '<div class="muted" style="margin-top:8px;font-size:12px">日志在内存里，'
+      + '<b>App 被系统杀掉重启后就清空了</b>。正文与验证码在写进日志时已经擦掉。</div>'
+    : '<div class="muted">设备上暂时没有日志。</div>'
+  bindPageSize('ag', agOffset, (o) => { agOffset = o; paintAgentLogs(LV) })
 }
 
 async function devices() {
@@ -4155,6 +4203,42 @@ async function paintInvites() {
   } catch (e) {
     box.innerHTML = `<div class="err-text">${esc(e.message)}</div>`
   }
+}
+
+/**
+ * 日志类列表的「每页几条 + 翻页」。
+ *
+ * 连接日志能攒到几百条（保留 30 天），一页摊完的页面长到滚不动。
+ * 条数选过就记住——每次进来都要再选一次是很烦的，和消息列表那条一个道理。
+ */
+const LOGSIZE_KEY = 'gw_log_page'
+const LOG_SIZES = [30, 50, 100]
+function logPageSize() {
+  const n = Number(localStorage.getItem(LOGSIZE_KEY))
+  return LOG_SIZES.includes(n) ? n : 50
+}
+
+function pageSizeBar(id, total, offset) {
+  const limit = logPageSize()
+  return `<div class="card tight row" style="margin-top:10px;gap:10px">
+    <select id="${id}_size" style="width:auto;flex:none;padding:6px 26px 6px 10px">
+      ${LOG_SIZES.map((n) => `<option value="${n}"${n === limit ? ' selected' : ''}>每页 ${n} 条</option>`).join('')}
+    </select>
+    <span class="muted grow" style="text-align:center">${
+      total > limit ? `${Math.floor(offset / limit) + 1} / ${Math.ceil(total / limit)} · ` : ''}共 ${total} 条</span>
+    <button class="ghost sm" id="${id}_prev" style="width:auto;flex:none" ${offset === 0 ? 'disabled' : ''}>上一页</button>
+    <button class="ghost sm" id="${id}_next" style="width:auto;flex:none" ${offset + limit >= total ? 'disabled' : ''}>下一页</button>
+  </div>`
+}
+
+/** 绑定 pageSizeBar。换每页条数时回到第一页——留在第 7 页会落到空页上 */
+function bindPageSize(id, offset, go) {
+  const sel = $(`#${id}_size`)
+  if (sel) sel.onchange = () => {
+    try { localStorage.setItem(LOGSIZE_KEY, sel.value) } catch { /* 隐私模式 */ }
+    go(0)
+  }
+  bindPager(id, offset, logPageSize(), go)
 }
 
 /**

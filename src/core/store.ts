@@ -557,7 +557,8 @@ export interface Store {
    */
   appendDeviceLog(r: DeviceLogRecord): Promise<void>
   /** 某台设备的日志，新的在前。userId 必填——不属于自己的设备一个字都不该看到 */
-  listDeviceLogs(deviceId: string, userId: string, limit: number): Promise<DeviceLogRecord[]>
+  listDeviceLogs(deviceId: string, userId: string, limit: number, offset: number): Promise<DeviceLogRecord[]>
+  countDeviceLogs(deviceId: string, userId: string): Promise<number>
   /** 清掉过老的连接日志。它是诊断数据，不是档案 */
   cleanupDeviceLogs(before: number): Promise<void>
 
