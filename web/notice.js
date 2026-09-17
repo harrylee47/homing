@@ -11,6 +11,9 @@
  * 服务端那边也不做 HTML 转义，因为转义意味着「打算当 HTML 用」。
  */
 ;(function () {
+
+  // 英文时先把页面藏起来，翻完 DOM 再放出来（见 i18n.js 的 static）
+  if (window.I18N) I18N.static()
   /*
    * 这个文件在 <head> 里同步加载（和落地页同一个理由：不要先绘制再改）。
    * 所以**元素要等 DOM 解析完才拿得到**——直接在顶层 getElementById

@@ -459,6 +459,20 @@ select.sm, input.sm { padding: 6px 9px; font-size: 13px; width: auto; }
   border-right: var(--bw) solid color-mix(in srgb, var(--line) 25%, transparent);
 }
 #nav a:last-child { border-right: none; }
+
+/*
+ * 英文下这七格要收字号。「Channels」在 12px 粗体下约 60px 宽，
+ * 而 402 宽的手机上每格只有 57px——中文两个字 24px 绰绰有余，
+ * 英文直接挤成一团、字贴着字。10px 加一点负字距正好排得下，
+ * 再窄的机器（360）靠 nowrap + 收缩内边距兜住。
+ */
+html[lang="en"] #nav a {
+  font-size: 10px;
+  letter-spacing: -0.02em;
+  padding-left: 2px;
+  padding-right: 2px;
+  white-space: nowrap;
+}
 #nav a.active {
   color: var(--on-bright);
   background: var(--yellow);

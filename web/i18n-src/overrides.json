@@ -1,0 +1,74 @@
+{
+ "exact": {
+  "总览": "Home",
+  "消息": "Messages",
+  "发送": "Send",
+  "规则": "Rules",
+  "渠道": "Channels",
+  "设备": "Devices",
+  "设置": "Settings",
+  "来电": "Incoming call",
+  "去电": "Outgoing call",
+  "通知": "Notices",
+  "验证码": "Verification code",
+  "复制正文": "Copy message",
+  "收到的": "Received",
+  "发出的": "Sent",
+  "关闭": "off",
+  "关闭这张图": "Close",
+  "管理员": "Admin",
+  "普通用户": "Member",
+  "已开两步验证": "2FA on",
+  "未开两步验证": "2FA off",
+  "永久": "never expires",
+  "下载 App": "Get app",
+  "登录": "Log in",
+  "注册": "Sign up"
+ },
+ "rules": [
+  {
+   "pattern": "^(管理员|普通用户) · (\\d+) 台设备 · (已开两步验证|未开两步验证) · 永久$",
+   "to": "$1 · $2 devices · $3 · never expires"
+  },
+  {
+   "pattern": "^(管理员|普通用户) · (\\d+) 台设备 · (已开两步验证|未开两步验证) · 还有 (\\d+) 天到期$",
+   "to": "$1 · $2 devices · $3 · $4 days left"
+  },
+  {
+   "pattern": "^(管理员|普通用户) · (\\d+) 台设备 · (已开两步验证|未开两步验证) · 已于 (.+?) 到期$",
+   "to": "$1 · $2 devices · $3 · expired $4"
+  },
+  {
+   "pattern": "^(管理员|普通用户) · (\\d+) 台设备 · (已开两步验证|未开两步验证) · (.+?) 到期$",
+   "to": "$1 · $2 devices · $3 · expires $4"
+  },
+  {
+   "pattern": "^(\\d+) 秒前$",
+   "to": "$1s ago"
+  },
+  {
+   "pattern": "^(\\d+) 分钟前$",
+   "to": "$1 min ago"
+  },
+  {
+   "pattern": "^(\\d+) 小时前$",
+   "to": "$1 h ago"
+  },
+  {
+   "pattern": "^(\\d+) 天前$",
+   "to": "$1 d ago"
+  },
+  {
+   "pattern": "^(\\d+) 条规则 · (\\d+) 个渠道$",
+   "to": "Rules: $1 · Channels: $2"
+  },
+  {
+   "pattern": "^(\\d+) 个渠道$",
+   "to": "Channels: $1"
+  },
+  {
+   "pattern": "^(\\d+) 条规则$",
+   "to": "Rules: $1"
+  }
+ ]
+}

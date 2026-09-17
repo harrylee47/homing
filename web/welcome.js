@@ -19,6 +19,9 @@
 ;(function () {
   var root = document.documentElement
 
+  // 英文时先把页面藏起来，翻完 DOM 再放出来（见 i18n.js 的 static）
+  if (window.I18N) I18N.static()
+
   // 系统设置里要求减少动画的人，直接不开——不是「动得慢一点」，是根本不动。
   // 这时候 --p 保持未设置，于是那张图就是一张画完的静态链路图。
   var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -343,8 +346,20 @@
     document.documentElement.style.setProperty('--landy', Math.round(y) + 'px')
   }
 
+  /** 顶栏那颗语言开关：上面写的是**另一种**语言，点它就切过去（整页重载）。 */
+  function langSwitch() {
+    var btn = document.getElementById('lang_go')
+    if (!btn) return
+    var cur = (window.I18N && I18N.lang) || 'zh'
+    var to = cur === 'zh' ? 'en' : 'zh'
+    btn.textContent = to === 'en' ? 'EN' : '中'
+    btn.setAttribute('lang', to)
+    btn.setAttribute('aria-label', to === 'en' ? 'Switch to English' : '切换到中文')
+    btn.addEventListener('click', function () { if (window.I18N) I18N.set(to) })
+  }
+
   function boot() {
-    start(); nudge(); stage2(); copy(); clock(); landing()
+    start(); nudge(); stage2(); copy(); clock(); landing(); langSwitch()
     // 字体回来、图片解码完都会改变高度，量早了就偏
     setTimeout(landing, 300)
     var t = 0

@@ -1,0 +1,292 @@
+{
+  "exact": {
+    "编辑渠道": "Edit channel",
+    "名称": "Name",
+    "类型": "Type",
+    "状态": "Status",
+    "启用": "Enabled",
+    "停用": "Disabled",
+    "配置": "Configuration",
+    "留空表示不修改。密钥不会回显。": "Leave blank to keep the current value. Secrets are never shown again.",
+    "留空则不变": "Leave blank to keep it unchanged",
+    "清空这一项": "Clear this field",
+    "推送地址（一般不用改）": "Push URL (you rarely need to change this)",
+    "保存": "Save",
+    "测试": "Test",
+    "删除": "Delete",
+    "返回": "Back",
+    "发送中…": "Sending…",
+    "已保存": "Saved",
+    "已删除": "Deleted",
+    "未知错误": "Unknown error",
+    "测试消息已发出": "Test message sent",
+    "发给了": "Sent to",
+    "不是你？那就是接收地址填错了，改掉它——否则你的短信会一直发到那里。": "Not you? Then the recipient address is wrong. Fix it — otherwise your messages will keep going there.",
+    "恢复默认": "Restore default",
+    "加载中…": "Loading…",
+    "上线": "Connected",
+    "掉线": "Disconnected",
+    "凭证不匹配": "Credential mismatch",
+    "凭证已吊销": "Credential revoked",
+    "账号停用或到期": "Account disabled or expired",
+    "← 返回": "← Back",
+    "服务端这一侧看到的事，": "What the server side sees — ",
+    "设备离线时照样能看": "readable even when the device is offline",
+    "。保留 30 天。": ". Kept for 30 days.",
+    "还没有记录。设备连上来之后这里就会有东西。": "No records yet. Once the device connects, entries show up here.",
+    "手机里的日志": "Logs on the phone",
+    "上面那些是": "Those above are ",
+    "服务端看到的": "what the server saw",
+    "。手机内部发生了什么\n        （哪条采集链路没起来、为什么反复重连）要问设备本身，": ". What happens inside the phone (which capture path failed to start, why it keeps reconnecting) has to be asked of the device itself, so ",
+    "需要它在线": "it has to be online",
+    "取最近 200 行": "Fetch the last 200 lines",
+    "info 以上": "info and above",
+    "全部（含 debug）": "Everything (including debug)",
+    "只看 warn 与 error": "Only warn and error",
+    "设备当前不在线，取不到。\n             这时候用": "The device is offline right now, so nothing can be fetched. This is when you use ",
+    "短信指令": "SMS commands",
+    "问它——那条路不经过服务器，正是为这种情况设计的。": " to ask it — that path does not go through the server, which is exactly what it is for.",
+    "向设备要日志中…": "Asking the device for its logs…",
+    "日志在内存里，": "The log lives in memory — ",
+    "App 被系统杀掉重启后就清空了": "it is cleared once the system kills and restarts the App",
+    "。正文与验证码在写进日志时已经擦掉。": ". Message bodies and verification codes are already redacted as they are written to the log.",
+    "设备上暂时没有日志。": "No logs on the device right now.",
+    "设备": "Devices",
+    "连接日志": "Connection log",
+    "刷新状态": "Refresh status",
+    "刷新中…": "Refreshing…",
+    "定位": "Locate",
+    "定位中…（GPS 冷启动可能要十几秒）": "Locating… (a cold GPS start can take ten seconds or more)",
+    "精度未知": "accuracy unknown",
+    "缓存位置": "cached location",
+    "在地图中打开": "Open in Maps",
+    "吊销": "Revoke",
+    "已吊销": "Revoked",
+    "删除记录": "Delete record",
+    "查看": "View",
+    "还没有设备。": "No devices yet.",
+    "同步手机里已有的短信和通话": "Import the SMS and calls already on the phone",
+    "网关只能捕获": "The gateway only captures what happens ",
+    "启用之后": "after it is switched on",
+    "发生的事。装网关之前手机里就存着的短信、\n        通话记录（收发都算），可以从这里一次性同步进来。": ". SMS and call records (incoming and outgoing alike) that were already on the phone before you installed the gateway can be imported here in one go.",
+    "没有在线设备": "No device online",
+    "同步要现读手机本地的数据库，设备必须在线。\n          等它连上再回来。": "Importing reads the phone's local database right then, so the device has to be online. Come back once it connects.",
+    "导入多久以内的": "How far back to import",
+    "最近 30 天": "Last 30 days",
+    "最近 90 天": "Last 90 days",
+    "最近一年": "Last year",
+    "全部（可能很多）": "Everything (can be a lot)",
+    "每类最多导入": "Max per category",
+    "500 条": "500 records",
+    "1000 条": "1000 records",
+    "5000 条": "5000 records",
+    "同步进来的记录": "Imported records ",
+    "只进历史，不会推送": "go into history only and are never pushed",
+    "——否则几千条旧短信会一次性\n          砸到你手机上。重复同步不会产生重复记录，放心多点几次。": " — otherwise thousands of old messages would land on your phone at once. Importing again never creates duplicates, so run it as often as you like.",
+    "同步（只增不删）": "Import (adds only, never deletes)",
+    "与手机对齐": "Reconcile with the phone",
+    "对齐": "Reconciling",
+    "会双向：手机上有网关没有的补进来，": " goes both ways: what the phone has and the gateway does not gets added, and ",
+    "手机上已经删掉的，网关里也删掉": "what has already been deleted on the phone is deleted in the gateway too",
+    "。\n          删之前会先让你看一眼要删什么。": ". You get to see exactly what would be deleted before anything goes.",
+    "添加设备": "Add a device",
+    "设备名称": "Device name",
+    "生成配对码": "Generate pairing code",
+    "正在读取手机里的记录，可能要一会儿…": "Reading the records on the phone; this can take a moment…",
+    "短信": "SMS",
+    "通话记录": "Call log",
+    "应用通知": "App notification",
+    "已取消。到「设置 → 消息保留上限」调整后再来。": "Cancelled. Adjust it under Settings → Message retention limit, then come back.",
+    "已从手机读取短信": "Read",
+    "条、通话": "SMS and",
+    "条，正在陆续上传。": "calls from the phone, uploading now.",
+    "其中已经在库里的会自动跳过，所以「消息」页增加的条数通常比这个少。": "Records already in the database are skipped, so the Messages page usually grows by less than this.",
+    "正在比对手机上的记录…": "Comparing against the records on the phone…",
+    "条（重复的自动跳过）。": "calls from the phone (duplicates skipped automatically).",
+    "没有需要删除的": "nothing needs deleting",
+    "，两边是一致的。": " — the two sides match.",
+    "条。删除已取消。": "calls from the phone. Deletion cancelled.",
+    "对齐完成：从手机读取": "Reconcile done: read",
+    "条（重复的自动跳过），删除手机上已不存在的": "records from the phone (duplicates skipped), and deleted",
+    "条。": "records that are gone from the phone.",
+    "用 Agent 里的「扫码配对」对准这个二维码，地址和配对码都不用手打。": "Point \"Scan to pair\" in the Agent at this QR code — you don't have to type the address or the pairing code.",
+    "扫不了就手动填：": "Can't scan it? Enter it by hand:",
+    "服务器地址": "Server address",
+    "吊销后该设备立即断开且无法重连，需要重新配对。继续？": "Revoking disconnects the device at once and it cannot reconnect; it has to be paired again. Continue?",
+    "（你）": "(you)",
+    "已停用": "Disabled",
+    "管理员": "Admin",
+    "普通用户": "User",
+    "已开两步验证": "2FA on",
+    "未开两步验证": "2FA off",
+    "改有效期": "Change validity",
+    "重置口令": "Reset password",
+    "已更新": "Updated",
+    "已设为永久": "Set to never expire",
+    "无数据": "no data",
+    "重置后对方要用新口令和新的二维码重新登录，旧的立刻作废。继续？": "After a reset they have to sign in again with a new password and a new QR code; the old ones stop working immediately. Continue?",
+    "导出规则、计划任务、渠道设置。": "Exports rules, scheduled tasks, and channel settings.",
+    "渠道密钥不在里面": "Channel secrets are not in it",
+    "（Bot Token、Bark Key、ntfy 主题、Webhook 地址），\n    恢复后要重新填一次。": " (bot token, Bark key, ntfy topic, Webhook URL), so you have to enter them again after restoring.",
+    "导出配置": "Export config",
+    "从文件恢复": "Restore from file",
+    "导出的是": "What you get is ",
+    "明文文件": "a plain-text file",
+    "：没有密钥，\n    但规则、号码、任务正文都能直接读。别放进会自动同步的目录。": ": no secrets in it, but the rules, phone numbers, and task bodies are all readable. Don't put it in a folder that syncs automatically.",
+    "导出消息": "Export messages",
+    "全部短信、通话、通知的正文，NDJSON 一行一条。\n    这个文件": "The full body of every SMS, call, and notification, one per line as NDJSON. This file ",
+    "是你全部短信的明文": "is the plaintext of all your messages",
+    "通话": "Calls",
+    "全部": "All",
+    "真正的整机备份": "A real full backup",
+    "是服务器上的": " is the server's",
+    "目录加上": "directory plus",
+    "，两者": ", and the two ",
+    "要分开存": "must be kept apart",
+    "——放在一起等于没加密。\n      那是运维动作，控制台里做不了，也不该做。": " — keeping them together is the same as not encrypting at all. That is an ops job; the console can't do it, and shouldn't.",
+    "恢复中…": "Restoring…",
+    "恢复出来的": "The restored ",
+    "渠道和任务都是停用的": "channels and tasks are disabled",
+    "：渠道缺密钥，任务缺设备，填好之后再自己打开。": ": channels are missing their secrets and tasks are missing their device. Fill those in, then switch them on yourself.",
+    "导出中，消息多的话要等一会儿…": "Exporting; with a lot of messages this takes a while…",
+    "。": "."
+  },
+  "rules": [
+    {
+      "pattern": "^(.+)（不可更改，需要换类型请新建）$",
+      "to": "$1 (cannot be changed — create a new channel to switch type)"
+    },
+    {
+      "pattern": "^(.+)（一般不用改）$",
+      "to": "$1 (you rarely need to change this)"
+    },
+    {
+      "pattern": "^失败：(.+)$",
+      "to": "Failed: $1"
+    },
+    {
+      "pattern": "^(.+) · 连接日志$",
+      "to": "$1 · Connection log"
+    },
+    {
+      "pattern": "^缓冲满了，更早的 (\\d+) 行已经被挤掉。$",
+      "to": "The buffer filled up; $1 earlier lines were pushed out."
+    },
+    {
+      "pattern": "^心跳 ([\\s\\S]+)$",
+      "to": "Last heartbeat $1"
+    },
+    {
+      "pattern": "^上次定位 (.+) ·$",
+      "to": "Last located $1 ·"
+    },
+    {
+      "pattern": "^(.+) · ±(\\d+) 米 · ([\\s\\S]+)$",
+      "to": "$1 · ±$2 m · $3"
+    },
+    {
+      "pattern": "^(.+) · 精度未知 · ([\\s\\S]+)$",
+      "to": "$1 · accuracy unknown · $2"
+    },
+    {
+      "pattern": "^(\\d+) 分钟内有效，只能用一次。$",
+      "to": "Valid for $1 minutes, and can be used only once."
+    },
+    {
+      "pattern": "^有 1 类因缺权限被跳过$",
+      "to": "1 category skipped for missing permissions"
+    },
+    {
+      "pattern": "^有 (\\d+) 类因缺权限被跳过$",
+      "to": "$1 categories skipped for missing permissions"
+    },
+    {
+      "pattern": "^比对范围 (.+) 到 (.+)，$",
+      "to": "Range compared: $1 to $2, "
+    },
+    {
+      "pattern": "^比对范围 （无），$",
+      "to": "Range compared: none, "
+    },
+    {
+      "pattern": "^比对范围 (.+)，$",
+      "to": "Range compared: $1, "
+    },
+    {
+      "pattern": "^管理员 · 1 台设备 · 已开两步验证 · ([\\s\\S]+)$",
+      "to": "Admin · 1 device · 2FA on · $1"
+    },
+    {
+      "pattern": "^管理员 · 1 台设备 · 未开两步验证 · ([\\s\\S]+)$",
+      "to": "Admin · 1 device · 2FA off · $1"
+    },
+    {
+      "pattern": "^普通用户 · 1 台设备 · 已开两步验证 · ([\\s\\S]+)$",
+      "to": "User · 1 device · 2FA on · $1"
+    },
+    {
+      "pattern": "^普通用户 · 1 台设备 · 未开两步验证 · ([\\s\\S]+)$",
+      "to": "User · 1 device · 2FA off · $1"
+    },
+    {
+      "pattern": "^管理员 · (\\d+) 台设备 · 已开两步验证 · ([\\s\\S]+)$",
+      "to": "Admin · $1 devices · 2FA on · $2"
+    },
+    {
+      "pattern": "^管理员 · (\\d+) 台设备 · 未开两步验证 · ([\\s\\S]+)$",
+      "to": "Admin · $1 devices · 2FA off · $2"
+    },
+    {
+      "pattern": "^普通用户 · (\\d+) 台设备 · 已开两步验证 · ([\\s\\S]+)$",
+      "to": "User · $1 devices · 2FA on · $2"
+    },
+    {
+      "pattern": "^普通用户 · (\\d+) 台设备 · 未开两步验证 · ([\\s\\S]+)$",
+      "to": "User · $1 devices · 2FA off · $2"
+    },
+    {
+      "pattern": "^到期时间：([\\s\\S]+)$",
+      "to": "Expires: $1"
+    },
+    {
+      "pattern": "^已删除：([\\s\\S]+)$",
+      "to": "Deleted: $1"
+    },
+    {
+      "pattern": "^已导出：规则 (\\d+)、任务 (\\d+)、渠道 (\\d+)。渠道密钥没有导出，恢复后要重填。$",
+      "to": "Exported: $1 rules, $2 tasks, $3 channels. Channel secrets were not exported — you have to enter them again after restoring."
+    },
+    {
+      "pattern": "^已导出：规则 (\\d+)、任务 (\\d+)、渠道 (\\d+)$",
+      "to": "Exported: $1 rules, $2 tasks, $3 channels"
+    },
+    {
+      "pattern": "^已恢复：规则 \\+(\\d+)、任务 \\+(\\d+)、渠道 \\+(\\d+)、设置 \\+(\\d+)，同名的跳过 (\\d+) 条$",
+      "to": "Restored: +$1 rules, +$2 tasks, +$3 channels, +$4 settings; $5 skipped because the name was already taken"
+    },
+    {
+      "pattern": "^已恢复：规则 \\+(\\d+)、任务 \\+(\\d+)、渠道 \\+(\\d+)、设置 \\+(\\d+)$",
+      "to": "Restored: +$1 rules, +$2 tasks, +$3 channels, +$4 settings"
+    },
+    {
+      "pattern": "^(\\d+) 条没导进来$",
+      "to": "$1 could not be imported"
+    },
+    {
+      "pattern": "^导出失败（(\\d+)）$",
+      "to": "Export failed ($1)"
+    },
+    {
+      "pattern": "^已导出短信，(\\d+) KB$",
+      "to": "Exported SMS, $1 KB"
+    },
+    {
+      "pattern": "^已导出通话，(\\d+) KB$",
+      "to": "Exported calls, $1 KB"
+    },
+    {
+      "pattern": "^已导出全部，(\\d+) KB$",
+      "to": "Exported everything, $1 KB"
+    }
+  ]
+}

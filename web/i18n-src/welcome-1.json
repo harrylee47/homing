@@ -1,0 +1,11 @@
+{
+  "exact": {
+    "Homing — 卡留在家，号跟着你走": "Homing — the SIM stays home, the number follows you",
+    "新手机只有 eSIM，国内实体卡插不进去。把那张卡留在家里一台旧安卓机上，收到的短信、来电、App 通知几秒内响在你身边的手机上。开源、自托管。": "New phones are eSIM-only, so a physical SIM from back home won't fit. Leave that card in an old Android phone at home, and the SMS, calls and app notifications it receives reach the phone in your hand within seconds. Open source, self-hosted.",
+    "下载 App": "Download app",
+    "通知": "Notices",
+    "注册": "Sign up",
+    "登录": "Log in"
+  },
+  "rules": []
+}

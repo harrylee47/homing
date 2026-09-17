@@ -5224,6 +5224,21 @@ async function settings() {
     </div>
 
     <div data-pane="general">
+    <!--
+      语言开关。两颗按钮上的字**不进词表**：它们要在两种语言下长得一样，
+      否则英文界面上出现一颗写着「中文」的按钮、中文界面上出现「EN」，
+      人得先看懂当前语言才知道该点哪一颗。
+    -->
+    <div class="card tight row">
+      <div class="col grow">
+        <span>Language / 语言</span>
+        <span class="muted" id="lang_note"></span>
+      </div>
+      <div style="display:flex;gap:6px;flex:none">
+        <button class="ghost sm" id="lang_zh" type="button" style="width:auto;min-width:38px">中</button>
+        <button class="ghost sm" id="lang_en" type="button" style="width:auto;min-width:38px">EN</button>
+      </div>
+    </div>
     <div class="card tight row">
       <span>通知渠道</span>
       <a href="/channels"><button class="ghost sm">管理</button></a>
@@ -5373,6 +5388,25 @@ async function settings() {
         toast('已保存')
       } catch (e) { toast(e.message) }
     }
+    /*
+     * 语言开关。切换要整页重载——i18n 的补丁装在 Element.prototype 上，
+     * 已经渲染出来的东西改不回去（见 web/i18n.js）。
+     */
+    {
+      const cur = window.I18N?.lang ?? 'zh'
+      const note = $('#lang_note')
+      if (note) note.textContent = cur === 'en' ? 'Switching reloads the page.' : '切换会重新载入页面。'
+      for (const [code, el] of [['zh', $('#lang_zh')], ['en', $('#lang_en')]]) {
+        if (!el) continue
+        if (code === cur) {
+          el.classList.remove('ghost')
+          el.disabled = true
+        } else {
+          el.onclick = () => window.I18N?.set(code)
+        }
+      }
+    }
+
     const resetInviteForm = () => {
       $('#inv_edit').value = ''
       $('#inv_note').value = ''
@@ -6226,5 +6260,12 @@ if (location.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(locati
   b.textContent = '当前连接未加密，短信内容与验证码正在明文传输'
   document.body.prepend(b)
 }
+
+/*
+ * 静态那部分（index.html 里的底部导航、加载中占位、给爬虫留的那条链接）
+ * 不经过 innerHTML，原型补丁碰不到，得手动走一遍 DOM。
+ * 只需要一次：导航的文字之后再也不会被重写。
+ */
+window.I18N?.tDom(document.body)
 
 route()

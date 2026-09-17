@@ -21,6 +21,8 @@
   :target 做弹窗。唯一的脚本 welcome.js 只负责下滑进场动效，而且是渐进增强——
   它不跑，页面就是一张普通静态页，一个字都不少（见那个文件开头的说明）。
 -->
+<script src="/i18n-en.js"></script>
+<script src="/i18n.js"></script>
 <script src="/welcome.js"></script>
 <style>
   /*
@@ -44,6 +46,20 @@
   .top .wrap { display: flex; align-items: center; gap: 8px; }
   /* 品牌区整块可点，去落地页——站内除此之外没有别的入口 */
   .brandlink { display: flex; align-items: center; gap: 8px; text-decoration: none; color: inherit }
+  /* 语言开关：当前那一颗实心，另一颗是 ghost。两颗都很小，别跟主按钮抢 */
+  .lang { width: auto; padding: 6px 9px; font-size: 12px; min-width: 34px }
+  /*
+    顶栏在英文下要收紧。中文「下载 App / 通知 / 登录」六七个字就排完了，
+    英文同样几颗按钮要宽一倍——402 的手机上会把品牌名挤成三行。
+    品牌名任何语言下都不许换行：它断开之后那一坨字母谁也认不出是 Homing。
+  */
+  .top .name { white-space: nowrap }
+  html[lang="en"] .top .wrap { gap: 5px }
+  html[lang="en"] .top .name { font-size: 17px }
+  html[lang="en"] .top .btnlink button { padding: 7px 8px; font-size: 12px; white-space: nowrap }
+  html[lang="en"] .lang { padding: 6px 7px; min-width: 30px }
+  /* 再窄就把品牌名收掉，只留 logo——它本身就是回首页的入口 */
+  @media (max-width: 430px) { html[lang="en"] .top .name { display: none } }
   .top img { width: 38px; height: 38px; flex: none; }
   .top .name { font-weight: 800; font-size: 20px; letter-spacing: .02em; }
   .top .sp { flex: 1 }
@@ -876,6 +892,13 @@
     <span class="name">Homing</span>
   </a>
   <span class="sp"></span>
+  <!--
+    语言开关只有一颗，上面写的是**另一种语言**——点它就切过去。
+    两颗并排的话顶栏在英文下排不下（英文词比中文长得多），而且「当前是哪种」
+    本来就看页面本身最直接，不需要再用一颗高亮按钮说一遍。
+    按钮上的字写死不进词表：它必须在两种语言下都认得出。
+  -->
+  <button class="ghost sm lang" id="lang_go" type="button"></button>
   <a class="btnlink" href="#get-app"><button class="sm">下载 App</button></a>
   <a class="btnlink" href="/notice"><button class="ghost sm">通知</button></a>
   <a class="btnlink reg" href="/register"><button class="ghost sm">注册</button></a>
@@ -1579,11 +1602,11 @@
 
 <!-- 下载弹窗：:target，页面后退即关闭，链接可直接分享到弹窗 -->
 <div class="modal" id="get-app">
-  <a class="modal-bg" href="#" aria-label="关闭"></a>
+  <a class="modal-bg" href="#" aria-label="关闭这张图"></a>
   <div class="modal-card">
     <div class="modal-head">
       <b>下载 Homing App</b>
-      <a class="modal-x" href="#" aria-label="关闭">×</a>
+      <a class="modal-x" href="#" aria-label="关闭这张图">×</a>
     </div>
     <div class="qrwrap" style="width:132px;height:132px;padding:7px;background:#fff;border:var(--bw) solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)">
       <img src="/qr/apk.svg" alt="扫码下载 Homing 安卓 App" width="118" height="118" style="display:block;width:100%;height:100%">
