@@ -191,6 +191,28 @@ h2::before {
 .segs a:last-child { border-right-width: var(--bw); border-radius: 0 8px 8px 0; }
 .segs a.on { background: var(--yellow); color: var(--on-bright); box-shadow: var(--shadow); }
 
+/* 详情页的吸顶标题栏。
+   内容长的时候，为了点一下「返回」而把整页翻回最上面是最烦的一件事 */
+.pagehead {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--bg);
+  padding: 10px 0 8px; margin-bottom: 10px;
+  border-bottom: var(--bw) solid var(--line);
+}
+.pagehead h1 { font-size: 22px; }
+.pagehead a { white-space: nowrap; padding: 4px 2px; }
+
+/* 看法切换：会话 / 列表。比分段控件小一号——它是次一级的选择 */
+.viewtoggle { display: flex; justify-content: flex-end; gap: 0; margin: -6px 0 12px; }
+.viewtoggle a {
+  padding: 5px 12px; font-size: 12px; font-weight: 700; text-decoration: none;
+  background: var(--card); color: var(--muted);
+  border: var(--bw) solid var(--line); border-right-width: 0;
+}
+.viewtoggle a:first-child { border-radius: 7px 0 0 7px; }
+.viewtoggle a:last-child { border-right-width: var(--bw); border-radius: 0 7px 7px 0; }
+.viewtoggle a.on { background: var(--cyan); color: var(--on-bright); }
+
 /* ── 会话视图 ────────────────────────────────────────────── */
 
 /* 气泡对话。目的很直接：和手机上短信 App 里看到的是同一个东西，

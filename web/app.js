@@ -371,27 +371,66 @@ function toast(msg) {
   setTimeout(() => el.remove(), 2600)
 }
 
+/**
+ * 每一页离开时的滚动位置。
+ *
+ * 不记的话，从一条消息返回列表就回到最顶上，刚才翻了半天的位置全丢了——
+ * 而「点进去看一眼再回来接着翻」正是这个列表最常见的用法。
+ */
+const scrollMem = new Map()
+/** 当前这一页的地址。popstate 时 location 已经变了，得自己记着上一页是谁 */
+let curPath = location.pathname + location.search
+/** 本次会话里有没有跳转过。决定「返回」是走浏览器后退还是跳到指定的上级 */
+let navDepth = 0
+/** 视图自己滚过了（会话要停在最新一条），路由就别再把它拉回顶部 */
+let viewScrolled = false
+
+const rememberScroll = () => scrollMem.set(curPath, window.scrollY)
+
 const go = (path) => {
+  rememberScroll()
+  navDepth++
   history.pushState({}, '', path)
+  curPath = path
   route()
+}
+
+/**
+ * 返回上一层。
+ *
+ * 优先走浏览器后退：只有这条路能带回滚动位置，而「回到列表还得重新往下翻」
+ * 是详情页最烦人的地方。直接打开详情页（Bark 深链就是这样）时没有上一页，
+ * 才退到给定的地址。
+ */
+const goBack = (fallback) => {
+  if (navDepth > 0) { navDepth--; history.back() } else go(fallback)
 }
 
 // 事件委托：视图重绘后不需要重新绑定
 document.addEventListener('click', (e) => {
+  const back = e.target.closest('[data-back]')
+  if (back) {
+    e.preventDefault()
+    return goBack(back.dataset.back)
+  }
   const a = e.target.closest('a[href^="/"]')
   if (a && !a.target) {
     e.preventDefault()
     go(a.getAttribute('href'))
   }
 })
-window.addEventListener('popstate', () => route())
+window.addEventListener('popstate', () => {
+  rememberScroll()
+  curPath = location.pathname + location.search
+  route(true)
+})
 
 // ── 路由 ────────────────────────────────────────────────────
 
 const routes = [
   [/^\/$/, overview],
   [/^\/threads\/(.+)$/, thread],
-  [/^\/threads$/, threads],
+  [/^\/threads$/, () => { history.replaceState({}, '', THREAD_HOME); return threads() }],
   [/^\/events\/(.+)$/, eventDetail],
   [/^\/events$/, events],
   [/^\/compose$/, compose],
@@ -406,9 +445,11 @@ const routes = [
   [/^\/setup$/, setup],
 ]
 
-async function route() {
+async function route(restore = false) {
   const path = location.pathname
+  curPath = path + location.search
   nav.hidden = true
+  viewScrolled = false
 
   try {
     // 未初始化时一切导向向导——不存在「启动即裸奔」的窗口
@@ -432,7 +473,15 @@ async function route() {
           : path.startsWith('/sent') ? '/compose' : path
         a.classList.toggle('active', a.dataset.nav === group)
       }
-      return view(m[1])
+      await view(m[1])
+      // 视图是异步的，等它画完才有高度可滚
+      requestAnimationFrame(() => {
+        // 后退回来接着刚才的位置看；进新页面从头看，
+        // 除非视图自己有主张（会话要停在最新一条）
+        if (restore && scrollMem.has(curPath)) window.scrollTo(0, scrollMem.get(curPath))
+        else if (!viewScrolled) window.scrollTo(0, 0)
+      })
+      return
     }
   }
   overview()
@@ -607,20 +656,39 @@ async function overview() {
  * 筛选条件放在 URL 查询串里：刷新、前进后退、把链接发给自己都能还原当前视图，
  * 而不是刷新一下筛选就没了。
  */
-/**
- * 消息页的分段控件。
- *
- * 「会话」是一种**看法**而不是一种类型，但它和「我要看通话记录」一样是个独立意图，
- * 所以和类型并排放在最外层，而不是埋进一个视图切换里。
- */
+/** 短信的两种看法，选过就记住——每次进来都要再点一次是很烦的 */
+const VIEW_KEY = 'gw_sms_view'
+/** 会话列表的规范地址。详情页的返回、深链都指这里 */
+const THREAD_HOME = '/events?kind=sms&view=thread'
+
+/** 消息页的分段控件。类型是类型，看法是看法，不混在一起。 */
 function msgSegs(current, segLink) {
   const segs = [['', '全部'], ['sms', '短信'], ['call', '通话'], ['notification', '通知']]
   return `<div class="segs">
-    <a href="/threads" class="${current === 'thread' ? 'on' : ''}" data-seg="thread">会话</a>
     ${segs.map(([k, t]) =>
       `<a href="${segLink ? segLink(k) : `/events${k ? `?kind=${k}` : ''}`}" class="${current === k ? 'on' : ''}" data-seg="${k}">${t}</a>`,
     ).join('')}
   </div>`
+}
+
+/**
+ * 会话 / 列表 的切换。
+ *
+ * 只在「短信」下出现：会话是同一批数据的另一种排法，不是另一种类型——
+ * 通话和应用通知没有「对话」可言，给它们一个切换只会让人去点然后发现没用。
+ */
+function viewToggle(view) {
+  const link = (v, t) => `<a href="/events?kind=sms&view=${v}" class="${view === v ? 'on' : ''}">${t}</a>`
+  return `<div class="viewtoggle">${link('thread', '💬 会话')}${link('list', '☰ 列表')}</div>`
+}
+
+/** 短信默认按会话看：和手机上一致。选过就以选的为准。 */
+function smsView(param) {
+  if (param === 'thread' || param === 'list') {
+    try { localStorage.setItem(VIEW_KEY, param) } catch { /* 隐私模式下存不了，不影响这一次 */ }
+    return param
+  }
+  try { return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'thread' } catch { return 'thread' }
 }
 
 async function events() {
@@ -628,6 +696,11 @@ async function events() {
   const get = (k, d = '') => p.get(k) ?? d
   const limit = Number(get('limit', '30'))
   const offset = Number(get('offset', '0'))
+
+  // 短信有两种看法，会话是默认的那种。其余类别没有「对话」可言，只有列表
+  if (get('kind') === 'sms' && !p.get('q') && !p.get('from') && smsView(p.get('view')) === 'thread') {
+    return threads()
+  }
 
   const devs = await api('/devices').catch(() => ({ devices: [] }))
   const activeDevs = devs.devices.filter((d) => d.status !== 'revoked')
@@ -652,6 +725,7 @@ async function events() {
   render(`
     <h1>${kindNow === 'call' ? '通话记录' : kindNow === 'notification' ? '应用通知' : '消息'}</h1>
     ${msgSegs(kindNow, segLink)}
+    ${kindNow === 'sms' ? viewToggle('list') : ''}
     <div class="card">
       <input id="f_q" placeholder="${kindNow === 'call' ? '搜索号码' : '搜索发件人或正文'}" value="${esc(get('q'))}">
       <details id="adv" ${['from', 'device', 'direction', 'since', 'until'].some((k) => get(k)) ? 'open' : ''}>
@@ -833,9 +907,9 @@ async function eventDetail(id) {
     catch { return render('<div class="card muted">消息不存在或已删除。</div>') }
 
     render(`
-      <div class="row" style="align-items:flex-start">
-        <h1 class="wrap" style="margin-bottom:8px">${esc(e.from)}</h1>
-        <a href="/events" class="muted">返回</a>
+      <div class="pagehead row" style="align-items:flex-start">
+        <h1 class="wrap" style="margin:0">${esc(e.from)}</h1>
+        <a href="/events" data-back="/events" class="muted" style="flex:none">← 返回</a>
       </div>
       <div class="row" style="justify-content:flex-start;gap:6px;margin-bottom:12px">
         ${kindBadge(e.kind, e.direction)}
@@ -959,12 +1033,10 @@ async function compose() {
  */
 async function threads() {
   render(`
-    <h1>会话</h1>
-    ${msgSegs('thread')}
+    <h1>短信</h1>
+    ${msgSegs('sms')}
+    ${viewToggle('thread')}
     <div id="list"><div class="loading">加载中…</div></div>`)
-  for (const a of app.querySelectorAll('[data-seg]')) {
-    a.onclick = (e) => { e.preventDefault(); go(a.getAttribute('href')) }
-  }
 
   try {
     const r = await api('/threads')
@@ -1034,9 +1106,9 @@ async function thread(key) {
     }).join('')
 
     render(`
-      <div class="row" style="align-items:flex-start">
-        <h1 class="wrap" style="margin-bottom:8px">${esc(r.number)}</h1>
-        <a href="/threads" class="muted">返回</a>
+      <div class="pagehead row" style="align-items:flex-start">
+        <h1 class="wrap" style="margin:0">${esc(r.number)}</h1>
+        <a href="${esc(THREAD_HOME)}" data-back="${esc(THREAD_HOME)}" class="muted" style="flex:none">← 返回</a>
       </div>
       ${r.truncated ? '<div class="card tight muted">只列出了最近的往来。</div>' : ''}
       <div class="card"><div class="thread">${bubbles}</div></div>
@@ -1056,9 +1128,9 @@ async function thread(key) {
     for (const el of app.querySelectorAll('.bub')) {
       el.onclick = () => go(`${el.dataset.src === 'outbound' ? '/sent/' : '/events/'}${encodeURIComponent(el.dataset.id)}`)
     }
-    // 打开就滚到最新一条：对话是从下往上看的
+    // 打开就停在最新一条：对话是从下往上看的
     const last = app.querySelector('.bub:last-of-type')
-    if (last) last.scrollIntoView({ block: 'center' })
+    if (last) { last.scrollIntoView({ block: 'center' }); viewScrolled = true }
 
     if (!online.length) return
 
@@ -1226,9 +1298,9 @@ async function sentDetail(id) {
     const failed = o.status === 'failed'
 
     render(`
-      <div class="row" style="align-items:flex-start">
-        <h1 class="wrap" style="margin-bottom:8px">→ ${esc(o.to)}</h1>
-        <a href="/sent" class="muted">返回</a>
+      <div class="pagehead row" style="align-items:flex-start">
+        <h1 class="wrap" style="margin:0">→ ${esc(o.to)}</h1>
+        <a href="/sent" data-back="/sent" class="muted" style="flex:none">← 返回</a>
       </div>
       <div class="row" style="justify-content:flex-start;gap:6px;margin-bottom:12px">
         ${statusBadge(o.status)}
