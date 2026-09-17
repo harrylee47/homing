@@ -31,5 +31,7 @@ agent/local.properties
 release.properties
 *.apk
 # 落地页要发的那一个 APK 例外：GitHub release 现在匿名 404，
-# 而落地页的读者都是匿名的。2.7MB，随仓库和镜像一起走，装完就能下
-!web/app/homing.apk
+# 而落地页的读者都是匿名的。2.7MB，随仓库和镜像一起走，装完就能下。
+# 放 download/ 而不是 app/：app 这个前缀以后 SPA 可能要用，
+# 目录占住之后 /app 会命中目录再回落 index.html，能跑但排查时极易误判
+!web/download/homing.apk

@@ -35,7 +35,16 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
     return true
   }
 
-  const file = existsSync(abs) && statSync(abs).isFile() ? abs : join(rootAbs, 'index.html')
+  /**
+   * 找不到文件时，先试一次 `<path>.html`，再回落到 SPA 的 index.html。
+   *
+   * 这样落地页能以 `/welcome` 访问而不用带 .html 后缀，同时不影响
+   * 深链回落——那条路径是 Bark 通知点进来的硬要求。
+   */
+  const htmlAlt = `${abs}.html`
+  const file = existsSync(abs) && statSync(abs).isFile() ? abs
+    : existsSync(htmlAlt) && statSync(htmlAlt).isFile() ? htmlAlt
+    : join(rootAbs, 'index.html')
   if (!existsSync(file)) return false
 
   const ext = extname(file)

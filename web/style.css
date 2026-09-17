@@ -235,6 +235,14 @@ h2::before {
   font-size: 13px; line-height: 1.6;
 }
 
+/* 长文（隐私声明这类）。行距放大、段间留白，让人真的读得下去 */
+.prose { line-height: 1.75; }
+.prose h2 { margin: 22px 0 8px; font-size: 12px; }
+.prose h2:first-child { margin-top: 4px; }
+.prose p { margin: 0 0 10px; font-size: 14px; }
+.prose .pitem { margin: 0 0 6px; padding-left: 12px; }
+.prose a { color: var(--fg); }
+
 /* ── 会话视图 ────────────────────────────────────────────── */
 
 /* 气泡对话。目的很直接：和手机上短信 App 里看到的是同一个东西，

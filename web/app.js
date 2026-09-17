@@ -17,7 +17,7 @@ const LAST_USER_KEY = 'gw_user'
  * 原来两处各写各的硬编码字符串，加一个新公开页时只改一处的后果是
  * 「页面能打开但底下挂着整条导航栏」或者「导航藏对了但一进去就跳登录」。
  */
-const PUBLIC_PAGES = new Set(['/login', '/setup', '/recover', '/register'])
+const PUBLIC_PAGES = new Set(['/login', '/setup', '/recover', '/register', '/privacy'])
 /** 当前登录的人。用于显示「你是谁」与判断要不要显示用户管理 */
 let me = null
 let token = localStorage.getItem(TOKEN_KEY) || ''
@@ -54,7 +54,14 @@ async function api(path, opts = {}) {
     go('/login')
     throw new Error('会话已失效，请重新登录')
   }
-  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+  if (!res.ok) {
+    // 把整个响应体挂上去：到期、需要重新验证这类情况，界面要的不只是一句话，
+    // 还有 reason 之类的字段才能决定下一步给什么按钮
+    const err = new Error(data?.error || `HTTP ${res.status}`)
+    err.data = data
+    err.status = res.status
+    throw err
+  }
   return data
 }
 
@@ -456,6 +463,8 @@ const routes = [
   [/^\/settings$/, settings],
   [/^\/login$/, login],
   [/^\/recover$/, recover],
+  [/^\/privacy$/, privacy],
+  [/^\/register$/, register],
   [/^\/setup$/, setup],
 ]
 
@@ -548,7 +557,8 @@ function setupTotp(r) {
     <h1>绑定两步验证</h1>
     <div class="steps"><div class="on"></div><div class="on"></div></div>
     <div class="card">
-      <p class="muted">用 Google Authenticator、1Password、iOS 自带密码 App 等扫码。两步验证是强制的，不可关闭。</p>
+      <p class="muted">用 Google Authenticator、1Password、iOS 自带密码 App 等扫码。
+      这个网页上能看到你所有的短信，建议开着——开了之后只是登录时多输 6 位数字。</p>
       ${r.qr ? `<div class="qr">${r.qr}</div>` : ''}
       <details>
         <summary class="muted">扫不了？手动添加</summary>
@@ -558,20 +568,32 @@ function setupTotp(r) {
       </details>
       <label>输入认证器显示的 6 位验证码</label>
       <input id="code" inputmode="numeric" maxlength="6" class="mono" style="font-size:20px;letter-spacing:4px">
-      <div class="btnrow"><button id="done">完成</button></div>
+      <div class="btnrow">
+        <button id="done">完成</button>
+        <button class="ghost sm" id="skip">暂不开启</button>
+      </div>
       <div id="err" class="err-text"></div>
+      <div class="muted" style="margin-top:8px">不开也能用，之后随时可以在「设置 → 两步验证」打开。
+      不开的话，登录只要用户名和口令。</div>
     </div>`)
 
-  $('#done').onclick = async () => {
+  const finish = async (body) => {
     $('#done').disabled = true
+    $('#skip').disabled = true
     try {
-      await api('/setup/verify', { method: 'POST', body: { code: $('#code').value }, allow404: true })
+      await api('/setup/verify', { method: 'POST', body, allow404: true })
       toast('初始化完成')
       go('/login')
     } catch (e) {
       $('#err').textContent = e.message
       $('#done').disabled = false
+      $('#skip').disabled = false
     }
+  }
+  $('#done').onclick = () => finish({ code: $('#code').value })
+  $('#skip').onclick = () => {
+    if (!confirm('暂不开启两步验证？\n\n登录将只需要用户名和口令。这个控制台上能看到你所有的短信，包括银行验证码。\n\n之后随时可以在「设置 → 两步验证」打开。')) return
+    finish({ skip: true })
   }
 }
 
@@ -604,8 +626,17 @@ function login() {
       <div id="err" class="err-text"></div>
       <div class="row" style="margin-top:10px">
         <a href="/recover" class="muted">忘记口令？</a>
-        <a href="/register" class="muted" id="toreg" hidden>没有账号？</a>
+        <a href="/register" class="muted" id="toreg" hidden>用邀请码注册 →</a>
       </div>
+    </div>
+    <div class="card" id="expired" hidden>
+      <div class="notice">账号到期了，但<b>数据都还在</b>。有新的邀请码就能自己续上，续完立刻恢复。</div>
+      <input id="exp_name" type="hidden">
+      <label>邀请码</label>
+      <input id="exp_code" class="mono" style="letter-spacing:3px;text-transform:uppercase">
+      <div class="muted">用上面填的口令${'' /* 与登录同一套凭证 */}（和两步验证码，如果开了的话）一起验证身份。</div>
+      <div class="btnrow"><button id="exp_go" class="sm">续期并登录</button></div>
+      <div id="exp_err" class="err-text"></div>
     </div>`)
 
   const submit = async () => {
@@ -630,10 +661,228 @@ function login() {
     } catch (e) {
       $('#err').textContent = e.message
       $('#go').disabled = false
+      // 到期不是「登录失败」，是「账号停在那儿等续期」——给他下一步，不要只丢一句红字
+      if (e.data?.reason === 'expired') {
+        $('#expired').hidden = false
+        $('#exp_name').value = $('#user').value.trim()
+      }
     }
   }
   $('#go').onclick = submit
   $('#code').onkeydown = (e) => { if (e.key === 'Enter') submit() }
+
+  $('#exp_go').onclick = async () => {
+    $('#exp_go').disabled = true
+    $('#exp_err').textContent = ''
+    try {
+      const r = await api('/account/renew', {
+        method: 'POST', allow404: true,
+        body: {
+          name: $('#exp_name').value.trim(),
+          password: $('#pw').value,
+          code: $('#code').value.trim(),
+          invite: $('#exp_code').value.trim(),
+        },
+      })
+      toast(r.expires_at ? `已续期到 ${new Date(r.expires_at).toLocaleDateString('zh-CN')}` : '已设为永久')
+      $('#expired').hidden = true
+      submit()
+    } catch (e) {
+      $('#exp_err').textContent = e.message
+      $('#exp_go').disabled = false
+    }
+  }
+
+  // 开了邀请制才显示注册入口。没开的话摆个进不去的链接只会让人白跑一趟
+  void api('/register/status', { allow404: true })
+    .then((r) => { if (r?.open) $('#toreg').hidden = false })
+    .catch(() => { /* 取不到就不显示 */ })
+}
+
+/**
+ * 隐私与风险声明。
+ *
+ * 写在前端而不是从接口取：它是**注册前**要读的东西，那时还没有会话；
+ * 而且它必须和代码同版本走——改了实现却忘了改声明，比没有声明更糟。
+ *
+ * 一条底线：这里面不许出现任何做不到的承诺。这个项目做不到端到端加密，
+ * 服务端必须解开正文才能跑规则和转发；说「我们看不到你的短信」是假话。
+ * 能说的只有真的：加密挡得住谁、挡不住谁，以及不放心就自己部署一份。
+ */
+const PRIVACY_SUMMARY = [
+  '这台服务器会存下你手机收到的全部短信，包括银行验证码。',
+  '数据加密入库，但密钥在同一台服务器上——运营者在技术上能读到。',
+  '想要谁都读不到，唯一的办法是自己部署一份（项目开源）。',
+]
+
+const PRIVACY_TEXT = [
+  ['先说最重要的三句', [
+    '这台服务器会收到并**长期保存**你手机上的短信正文、来电记录，以及你勾选的 App 通知。',
+    '数据在数据库里是加密的，但**密钥就在同一台服务器上**。能登上这台服务器的人，技术上能读到你的短信正文。运营者就是这样的人。',
+    '做不到「运营者看不见」。任何这类工具声称自己看不见，要么是在骗你，要么它根本没在帮你转发内容。',
+    '如果这三句让你犹豫，正确的反应不是关掉页面，而是**自己部署一份**——本项目开源（AGPL-3.0）。',
+  ]],
+  ['这个服务会拿到什么', [
+    '来自你自己配对的那台安卓手机（你给手机 App 什么权限，它就采集什么）：',
+    '· **短信**：完整正文与发件人号码，包含银行、支付、政务的验证码',
+    '· **通话**：来电 / 去电 / 未接的号码、时间、通话时长',
+    '· **App 通知**：你勾选的那些应用的通知标题与正文',
+    '· **你在手机上自己发出的短信**',
+    '· **设备状态**：电量、是否在充电、WiFi 开关与名称、运营商、信号格数、App 版本',
+    '· **位置**：只在你主动点「定位」或用短信指令查询时取一次。不做持续定位，每一次定位与每一次查看历史位置都记审计',
+    '· 用了「历史导入」的话，还包括装 App **之前**手机里就存着的旧短信与通话',
+    '来自你在控制台的操作：推送渠道的凭证（Telegram Bot Token、Bark Key、Webhook 地址），以及登录与操作记录（时间、IP、浏览器标识、做过什么）。',
+    '**不会**拿到：通讯录、相册、录音、麦克风、持续的位置轨迹、其他 App 的账号密码。',
+  ]],
+  ['存在哪儿、存多久', [
+    '存在这台服务器上的一个数据库文件里。短信正文、号码、位置坐标、渠道凭证都经 AES-256-GCM 加密后入库。',
+    '**消息默认永久保留，没有任何自动清理。** 半年前的验证码大概率还在库里——这是有意的，「翻出几个月前那条」正是这类工具最主要的用途之一。',
+    '你可以随时自己删：按时间或类型清空历史、删设备时连历史一起删、删掉渠道和规则。注销账号会把你的设备、消息、规则、任务一并删除。',
+    '**已经推送出去的内容删不掉。** Telegram 里的聊天记录、手机上已经弹出的 Bark 通知、你自己的 Webhook 收到的数据，都不在这台服务器的控制范围内。',
+    '运营者可能为防故障而备份数据库。你删掉的东西不一定同时从备份里消失。',
+  ]],
+  ['加密挡得住谁，挡不住谁', [
+    '**挡得住**：拿到数据库文件副本的人。硬盘被拷走、备份泄漏、文件误传到公开的地方——这些情况下拿到的是一堆密文。',
+    '**挡不住**：能登上这台服务器的人。密钥必须和程序待在一起，程序才跑得起来。',
+    '而且服务端**必须把正文解开**，才能判断这是不是验证码、匹配你写的规则、把内容拼进推送消息。这是这类工具的物理限制，不是偷懒——所以它**做不到端到端加密**。',
+    '所以这句话必须说清楚：**运营者在技术上能读到你的每一条短信，包括验证码本身。他承诺不看，但拦住他的是承诺，不是密码学。** 同样地，任何攻破这台服务器的人也能读到。',
+  ]],
+  ['用户之间的隔离是真的，但它是软件层面的', [
+    '每个账号有一套独立的设备、渠道、规则和消息。管理员在控制台里**读不到**别人的消息——这不是靠自觉，是写在代码里的：任何一次消息查询都必须带上用户身份，类型检查不允许漏掉，并有测试盯着。',
+    '但有两件事你得知道：',
+    '1. 管理员可以**重置你的口令**（这是为了帮忘记口令的人找回账号）。重置之后，他就能用新口令登录你的账号。这会写进审计日志，而且系统会往**你自己的渠道**推一条通知——你会知道，但那是事后。',
+    '2. 更直接的路径在上一节：他本来就能在服务器上直接解开整个数据库。',
+    '所以隔离防的是**误操作、程序串数据、和顺手看一眼**，它不防一个下定决心要看的运营者。**这是软件层面的保证，不是密码学层面的保证。你最终信任的是运营这台机器的这个人。**',
+  ]],
+  ['你选哪个推送渠道，就等于再给谁一份', [
+    '不配渠道，内容只待在这台服务器上。配了渠道，内容就会离开这台服务器：',
+    '· **Telegram**：正文包在「点一下才显示」的遮罩里，但那是为了避免 Bot 被封，不是为了防人偷看。内容完整经过 Telegram 的服务器，并长期留在聊天记录里，能被转发、能被截图。',
+    '· **Bark**：内容经推送服务器与苹果的推送服务送到你的 iPhone。**验证码会明文显示在锁屏上**——能拿到你手机的人就能看到。这正是它好用的原因，也是它的代价。',
+    '· **Webhook**：内容原样发到你填的那个地址。那个地址是谁的、对方记不记日志，由你自己负责。',
+  ]],
+  ['它不只是「读」，还能操作那台手机', [
+    '你可以从控制台让那台手机**发短信**（保号任务、回复验证码），也可以**查一次它的位置**。',
+    '短信指令是可选功能：开启后，用一条带口令的短信就能查那台手机的状态和位置。口令明文躺在短信里是这条链路的物理限制——人在外面算不了签名。所以它的能力被刻意做窄：**只有查状态、网络、电量、定位、重连，没有发短信**。请配号码白名单，不用时关掉。',
+  ]],
+  ['账号有效期与注销', [
+    '你的账号可能有有效期。到期后**服务全部停止**：登不进控制台、手机断开连接、不再转发任何消息、计划任务不再执行。',
+    '**到期不会删除你的数据。** 数据还在，续期后自动恢复。可以用一个新的邀请码自助续期，或者联系管理员。',
+    '你可以随时请管理员删除账号，那会连同设备、消息、规则、任务一起删掉，不可恢复。',
+  ]],
+  ['不保证什么', [
+    '**不保证不漏报。** 手机没电、断网、被系统杀掉、运营商延迟——任何一环都可能让一条短信迟到或收不到。请不要把它当成唯一的接收手段，尤其是涉及钱的操作。',
+    '**不保证可用性。** 这是一台个人运营的服务器，可能随时重启、迁移或停止服务。',
+    '运营者对因使用本服务造成的任何损失不承担责任。你自己评估风险。',
+  ]],
+]
+
+/** 声明的版本号。改了上面的正文就要动它，让已经同意过的人重新看一遍 */
+const PRIVACY_VERSION = '2026-09-17'
+
+/** 把正文里的 **粗体** 渲染出来。只支持这一种标记，够用且不会出意外 */
+const mdBold = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+
+function privacyHtml() {
+  return PRIVACY_TEXT.map(([title, paras], i) => `
+    <h2>${i + 1}. ${esc(title)}</h2>
+    ${paras.map((t) => `<p class="${t.startsWith('·') || /^\d\./.test(t) ? 'pitem' : ''}">${mdBold(t)}</p>`).join('')}
+  `).join('')
+}
+
+/**
+ * 自助注册。
+ *
+ * 邀请码从 **URL 的 fragment** 里取（`/register#CODE`）：fragment 不会发给
+ * 服务器，所以它不进反代日志、不进访问日志、也不出现在 Referer 里——
+ * 而这个码等于一个能看银行验证码的账号。
+ */
+async function register() {
+  nav.hidden = true
+  const fromLink = decodeURIComponent(location.hash.slice(1)).trim().toUpperCase()
+  const pub = await api('/register/status', { allow404: true }).catch(() => null)
+  const contact = pub?.admin_contact || ''
+
+  if (!pub?.open) {
+    render(`
+      ${brand('注册')}
+      <div class="card">
+        <div class="notice">这台服务器<b>没有开放注册</b>。</div>
+        <p class="muted">它是个人自建的服务，账号由管理员发放。
+        ${contact ? `想要一个账号，联系：<b>${esc(contact)}</b>` : '想要一个账号，请联系这台服务器的管理员。'}</p>
+        <p class="muted">也可以<b>自己搭一套</b>——本项目开源，装完这台机器就是你自己的。</p>
+        <div class="btnrow"><a href="/welcome"><button class="ghost sm">了解这是什么</button></a></div>
+      </div>
+      <div class="card tight row"><a href="/login" class="muted">← 回登录</a></div>`)
+    return
+  }
+
+  render(`
+    ${brand('创建账号')}
+    <div class="card">
+      <label>邀请码</label>
+      <input id="code" class="mono" style="letter-spacing:3px;text-transform:uppercase"
+             value="${esc(fromLink)}" placeholder="向邀请你的人要一个">
+      <label>用户名</label>
+      <input id="name" autocomplete="username" placeholder="字母、数字、- 和 _，2–24 位">
+      <label>口令（至少 8 位，字母 / 数字 / 符号里占两类）</label>
+      <input id="pw" type="password" autocomplete="new-password">
+      <label>再输一次</label>
+      <input id="pw2" type="password" autocomplete="new-password">
+      <div class="notice" style="margin-top:14px">
+        ${PRIVACY_SUMMARY.map((t) => `<div>${mdBold(t)}</div>`).join('')}
+      </div>
+      <label style="display:flex;gap:9px;align-items:flex-start;text-transform:none;letter-spacing:0;font-size:14px;line-height:1.6;margin-top:10px">
+        <input type="checkbox" id="agree" style="width:auto;margin-top:3px">
+        <span>我已读完<a href="/privacy">《隐私与风险声明》</a>并同意。我理解：这台服务器会保存我的短信正文与验证码，
+        运营者在技术上能够读到，本服务<b>做不到端到端加密</b>，也<b>不保证不漏报</b>。</span>
+      </label>
+      <div class="btnrow"><button id="go">创建账号</button></div>
+      <div id="err" class="err-text"></div>
+      ${contact ? `<div class="muted" style="margin-top:10px">这台服务器由 <b>${esc(contact)}</b> 运行。</div>` : ''}
+    </div>
+    <div class="card tight row"><a href="/login" class="muted">← 已经有账号了</a></div>`)
+
+  $('#go').onclick = async () => {
+    const name = $('#name').value.trim()
+    const pw = $('#pw').value
+    if (!$('#agree').checked) return ($('#err').textContent = '要先读完并同意隐私与风险声明')
+    if (pw !== $('#pw2').value) return ($('#err').textContent = '两次输入的口令不一致')
+    const bad = checkPassword(pw)
+    if (bad) return ($('#err').textContent = bad)
+
+    $('#go').disabled = true
+    $('#err').textContent = ''
+    try {
+      await api('/register', {
+        method: 'POST', allow404: true,
+        body: { code: $('#code').value.trim(), name, password: pw, agree: true },
+      })
+      try { localStorage.setItem(LAST_USER_KEY, name) } catch { /* 隐私模式 */ }
+      toast('账号创建好了，用它登录吧')
+      go('/login')
+    } catch (e) {
+      $('#err').textContent = e.message
+      $('#go').disabled = false
+    }
+  }
+}
+
+async function privacy() {
+  nav.hidden = true
+  const pub = await api('/register/status', { allow404: true }).catch(() => null)
+  render(`
+    ${brand('隐私与风险声明')}
+    <div class="card tight muted">版本 ${esc(PRIVACY_VERSION)}${
+      pub?.admin_contact ? ` · 这台服务器由 <b>${esc(pub.admin_contact)}</b> 运行` : ''}</div>
+    <div class="card prose">
+      <p>这不是法律模板，是一份大白话说明。注册前请读完——你正在把一部手机收到的全部短信，
+      交给另外一台电脑保管，其中包括银行验证码。</p>
+      ${privacyHtml()}
+    </div>
+    <div class="card tight row">
+      <a href="/register" class="muted">← 回注册</a>
+      <a href="/login" class="muted">去登录</a>
+    </div>`)
 }
 
 /**
@@ -2616,10 +2865,12 @@ async function paintUsers() {
           <b>${esc(u.name)}${u.is_me ? ' <span class="muted">（你）</span>' : ''}</b>
           ${u.disabled ? '<span class="badge err">已停用</span>' : ''}
         </div>
-        <span class="muted">${u.role === 'admin' ? '管理员' : '普通用户'} · ${u.devices} 台设备</span>
+        <span class="muted">${u.role === 'admin' ? '管理员' : '普通用户'} · ${u.devices} 台设备 · ${
+          u.totp ? '已开两步验证' : '未开两步验证'} · ${validityText(u)}</span>
         ${u.is_me ? '' : `
           <!-- 按钮横排在下面一行，不挤在名字旁边：窄屏上三个按钮竖着排会把行撑得很高 -->
           <div class="row" style="justify-content:flex-start;gap:6px;flex-wrap:wrap;margin-top:8px">
+            <button class="ghost sm" data-renew="${esc(u.id)}" data-name="${esc(u.name)}">改有效期</button>
             <button class="ghost sm" data-reset="${esc(u.id)}">重置口令</button>
             <button class="ghost sm" data-toggle="${esc(u.id)}" data-on="${u.disabled ? '0' : '1'}">${
               u.disabled ? '启用' : '停用'}</button>
@@ -2634,6 +2885,26 @@ async function paintUsers() {
             method: 'PUT', body: { disabled: b.dataset.on === '1' },
           })
           toast('已更新')
+          paintUsers()
+        } catch (e) { toast(e.message) }
+      }
+    }
+    for (const b of box.querySelectorAll('[data-renew]')) {
+      b.onclick = async () => {
+        const pick = prompt(
+          `给「${b.dataset.name}」续多久？\n\n`
+          + '输入天数：7 / 30 / 90 / 180 / 365\n输入 0 表示永久不过期\n\n'
+          + '（续期从原到期时刻往后接，还没用完的部分不会被抹掉）',
+          '30',
+        )
+        if (pick === null) return
+        const days = Number(pick)
+        try {
+          const r = await api(`/users/${encodeURIComponent(b.dataset.renew)}/renew`, {
+            method: 'POST',
+            body: days === 0 ? { permanent: true } : { days },
+          })
+          toast(r.expires_at ? `到期时间：${fmtDay(r.expires_at)}` : '已设为永久')
           paintUsers()
         } catch (e) { toast(e.message) }
       }
@@ -2662,6 +2933,157 @@ async function paintUsers() {
   } catch (e) {
     box.innerHTML = `<div class="err-text">${esc(e.message)}</div>`
   }
+}
+
+/**
+ * 两步验证的开关。
+ *
+ * 绑与不绑的差别只有一处：登录时多不多一道动态码。口令规则、会话时长、
+ * 找回能力都一样。所以这里不吓唬人，只把那一处差别说清楚。
+ */
+async function paintTotp() {
+  const box = $('#totpbox')
+  if (!box) return
+  const on = me?.totp === true
+
+  box.innerHTML = on ? `
+    <div class="row">
+      <div class="col grow">
+        <span><b>已开启</b></span>
+        <span class="muted">登录时要多输一次认证器上的 6 位动态码。</span>
+      </div>
+      <span class="badge ok">开</span>
+    </div>
+    <div class="btnrow"><button class="danger sm" id="t_off">关闭两步验证</button></div>
+    <div id="t_err" class="err-text"></div>`
+  : `
+    <div class="row">
+      <div class="col grow">
+        <span><b>没有开启</b></span>
+        <span class="muted">登录只要用户名和口令。这个网页上能看到你所有的短信，
+        建议开一下——只是登录时多输 6 位数字。</span>
+      </div>
+      <span class="badge plain">关</span>
+    </div>
+    <div class="btnrow"><button class="sm" id="t_on">开启两步验证</button></div>
+    <div id="t_setup"></div>
+    <div id="t_err" class="err-text"></div>`
+
+  const onBtn = $('#t_on')
+  if (onBtn) onBtn.onclick = async () => {
+    onBtn.disabled = true
+    try {
+      const r = await api('/auth/totp/setup', { method: 'POST' })
+      $('#t_setup').innerHTML = `
+        <div class="card" style="margin-top:12px">
+          <p class="muted">用 Google Authenticator、1Password、iOS 自带密码 App 等扫码。</p>
+          ${r.qr ? `<div class="qr">${r.qr}</div>` : ''}
+          <details>
+            <summary class="muted">扫不了？手动添加</summary>
+            <div class="mono wrap card tight" style="user-select:all">${esc(r.secret)}</div>
+          </details>
+          <label>输入认证器显示的 6 位验证码</label>
+          <input id="t_code" inputmode="numeric" maxlength="6" class="mono" style="font-size:20px;letter-spacing:4px">
+          <div class="btnrow"><button class="sm" id="t_done">完成绑定</button></div>
+        </div>`
+      $('#t_done').onclick = async () => {
+        try {
+          await api('/auth/totp/enable', { method: 'POST', body: { code: $('#t_code').value.trim() } })
+          me = (await api('/auth/me')).user
+          toast('两步验证已开启')
+          paintTotp()
+        } catch (e) { $('#t_err').textContent = e.message }
+      }
+    } catch (e) {
+      $('#t_err').textContent = e.message
+      onBtn.disabled = false
+    }
+  }
+
+  const offBtn = $('#t_off')
+  if (offBtn) offBtn.onclick = async () => {
+    const pw = prompt('关闭两步验证。\n\n关掉之后，口令就是这个账号唯一的钥匙。\n\n请输入当前口令：')
+    if (pw === null) return
+    const code = prompt('再输入认证器上当前显示的 6 位动态码：')
+    if (code === null) return
+    try {
+      await api('/auth/totp/disable', { method: 'POST', body: { password: pw, code: code.trim() } })
+      me = (await api('/auth/me')).user
+      toast('两步验证已关闭')
+      paintTotp()
+    } catch (e) { $('#t_err').textContent = e.message }
+  }
+}
+
+/** 账号有效期的人话。到期了要说出来，不能只显示一个日期让人自己算 */
+function validityText(u) {
+  if (u.expires_at == null) return '永久'
+  if (u.days_left <= 0) return `已于 ${fmtDay(u.expires_at)} 到期`
+  if (u.days_left <= 7) return `还有 ${u.days_left} 天到期`
+  return `${fmtDay(u.expires_at)} 到期`
+}
+
+const fmtDay = (ts) => new Date(ts).toLocaleDateString('zh-CN')
+
+/**
+ * 邀请码管理。
+ *
+ * 码只在生成那一次给出明文——之后库里只有哈希，列表里显示不出来。
+ * 所以备注是必需的人类把手：没有它，管理员不知道该撤销哪一条。
+ */
+async function paintInvites() {
+  const box = $('#invites')
+  if (!box) return
+  try {
+    const [{ invites }, reg] = await Promise.all([api('/invites'), api('/registration')])
+    $('#reg_mode').value = reg.mode
+    box.innerHTML = invites.length ? `<div class="list">${invites.map((i) => {
+      const state = i.used_at ? `已被 ${esc(i.used_by ?? '某人')} 使用`
+        : i.expired ? '已过期'
+        : `未使用 · ${fmtDay(i.expires_at)} 前有效`
+      return `<div class="item">
+        <div class="row">
+          <b class="truncate">${i.note ? esc(i.note) : '（没写备注）'}</b>
+          <span class="muted mono" style="font-size:12px;flex:none">${fmt(i.created_at)}</span>
+        </div>
+        <span class="muted">${state} · 开出的账号${i.valid_days ? ` ${i.valid_days} 天` : '永久'}有效</span>
+        ${i.used_at || i.expired ? '' : `<div class="btnrow" style="margin-top:6px">
+          <button class="danger sm" data-revoke="${esc(i.code_hash)}">撤销</button>
+        </div>`}
+      </div>`
+    }).join('')}</div>` : '<div class="muted">还没有发过邀请码。</div>'
+
+    for (const b of box.querySelectorAll('[data-revoke]')) {
+      b.onclick = async () => {
+        if (!confirm('撤销这个邀请码？还没用的话就作废了。')) return
+        try {
+          await api(`/invites/${encodeURIComponent(b.dataset.revoke)}`, { method: 'DELETE' })
+          toast('已撤销')
+          paintInvites()
+        } catch (e) { toast(e.message) }
+      }
+    }
+  } catch (e) {
+    box.innerHTML = `<div class="err-text">${esc(e.message)}</div>`
+  }
+}
+
+/** 生成之后把码、链接、二维码一次性摆出来——之后再也拿不到明文 */
+function showInvite(r) {
+  $('#inv_new').innerHTML = `
+    <div class="card" style="margin-top:12px">
+      <div style="font-weight:800;margin-bottom:6px">邀请码已生成</div>
+      <p class="muted">这串码<b>只显示这一次</b>。把它或下面的链接发给对方，
+      链接里的码放在 # 后面，不会进服务器日志。</p>
+      <label>邀请码</label>
+      <div class="mono wrap card tight" style="user-select:all;font-size:18px;letter-spacing:3px">${esc(r.code)}</div>
+      ${r.url ? `<label>注册链接</label>
+        <div class="mono wrap card tight" style="user-select:all;font-size:12px">${esc(r.url)}</div>` : `
+        <div class="muted">没配 GW_BASE_URL，给不出链接——让对方自己打开控制台的注册页填码。</div>`}
+      <div class="muted" style="margin-top:8px">码本身在 ${fmt(r.expires_at)} 前有效。</div>
+      <div class="btnrow"><button class="ghost sm" id="inv_hide">我记下了，隐藏</button></div>
+    </div>`
+  $('#inv_hide').onclick = () => { $('#inv_new').innerHTML = '' }
 }
 
 /** 新建或重置后，口令与二维码**只显示这一次**。 */
@@ -2715,7 +3137,58 @@ async function settings() {
         <div class="btnrow"><button id="u_add" class="sm">创建</button></div>
         <div id="u_err" class="err-text"></div>
         <div id="u_new"></div>
+      </div>
+
+      <h2>开放注册</h2>
+      <div class="card">
+        <p class="muted">开了之后，拿到邀请码的人可以自己注册。
+        <b>没有「完全开放」这一档</b>——这台服务器持有所有注册者短信的解密能力，
+        而邀请制本身就是最有效的一道风控：你知道码发给了谁。</p>
+        <label>注册方式</label>
+        <select id="reg_mode">
+          <option value="off">关闭（只有你能建号）</option>
+          <option value="invite">凭邀请码自助注册</option>
+        </select>
+        <label>你的联系方式</label>
+        <input id="admin_contact" placeholder="如 Telegram @yourname，或邮箱">
+        <div class="muted">界面上到处写着「联系管理员续期 / 重置」，得让对方知道找谁。
+        会显示在注册页、找回页和到期提示里。</div>
+        <div class="btnrow"><button id="reg_save" class="sm">保存</button></div>
+
+        <h2 style="margin-top:22px">邀请码</h2>
+        <div id="invites"><div class="loading">加载中…</div></div>
+        <label>备注（发给谁）</label>
+        <input id="inv_note" placeholder="如 给小鱼">
+        <div style="display:flex;gap:8px">
+          <div class="grow">
+            <label>账号能用多久</label>
+            <select id="inv_days">
+              <option value="">永久</option>
+              <option value="7">7 天</option>
+              <option value="30" selected>30 天</option>
+              <option value="90">90 天</option>
+              <option value="180">180 天</option>
+              <option value="365">1 年</option>
+            </select>
+          </div>
+          <div class="grow">
+            <label>码本身多久失效</label>
+            <select id="inv_ttl">
+              <option value="1">1 小时</option>
+              <option value="24">1 天</option>
+              <option value="72">3 天</option>
+              <option value="168" selected>7 天</option>
+              <option value="720">30 天</option>
+            </select>
+          </div>
+        </div>
+        <div class="btnrow"><button id="inv_add" class="sm">生成邀请码</button></div>
+        <div id="inv_err" class="err-text"></div>
+        <div id="inv_new"></div>
       </div>` : ''}
+
+      <h2>两步验证</h2>
+      <div class="card" id="totpbox"><div class="loading">加载中…</div></div>
     <div class="card tight row">
       <span>通知渠道</span>
       <a href="/channels"><button class="ghost sm">管理</button></a>
@@ -2767,8 +3240,40 @@ async function settings() {
       </div>
     </div>`)
 
+  void paintTotp()
+
   if (me?.role === 'admin') {
     void paintUsers()
+    void paintInvites()
+    void (async () => {
+      const r = await api('/admin-contact').catch(() => null)
+      if (r) $('#admin_contact').value = r.contact || ''
+    })()
+    $('#reg_save').onclick = async () => {
+      try {
+        await api('/registration', { method: 'POST', body: { mode: $('#reg_mode').value } })
+        await api('/admin-contact', { method: 'POST', body: { contact: $('#admin_contact').value.trim() } })
+        toast('已保存')
+      } catch (e) { toast(e.message) }
+    }
+    $('#inv_add').onclick = async () => {
+      $('#inv_add').disabled = true
+      $('#inv_err').textContent = ''
+      try {
+        const r = await api('/invites', {
+          method: 'POST',
+          body: {
+            note: $('#inv_note').value.trim(),
+            days: $('#inv_days').value ? Number($('#inv_days').value) : undefined,
+            ttl_hours: Number($('#inv_ttl').value),
+          },
+        })
+        $('#inv_note').value = ''
+        showInvite(r)
+        paintInvites()
+      } catch (e) { $('#inv_err').textContent = e.message }
+      $('#inv_add').disabled = false
+    }
     $('#u_add').onclick = async () => {
       const name = $('#u_name').value.trim()
       if (!name) return ($('#u_err').textContent = '请填用户名')

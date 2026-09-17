@@ -907,6 +907,20 @@ export async function registrationMode(store: Store): Promise<'off' | 'invite'> 
   return (await store.getSetting(S_REGISTRATION)) === 'invite' ? 'invite' : 'off'
 }
 
+/** 管理员的联系方式。免鉴权那份在 /api/register/status 里，这里是给管理员改的 */
+route('GET', '/api/admin-contact', async ({ user, res, deps }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能改' })
+  json(res, 200, { contact: (await deps.store.getSetting(S_ADMIN_CONTACT)) ?? '' })
+})
+
+route('POST', '/api/admin-contact', async ({ user, res, body, deps, ip }) => {
+  if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能改' })
+  const v = String((body as { contact?: string })?.contact ?? '').trim().slice(0, 120)
+  await deps.store.setSetting(S_ADMIN_CONTACT, v)
+  await deps.store.audit({ user_id: user.id, actor: user.name, action: 'admin_contact.set', detail: null, ip, created_at: now() })
+  json(res, 200, { contact: v })
+})
+
 route('GET', '/api/registration', async ({ user, res, deps }) => {
   if (user.role !== 'admin') return json(res, 403, { error: '只有管理员能改注册设置' })
   json(res, 200, {
