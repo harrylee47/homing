@@ -3,6 +3,7 @@
  */
 import { setDefaultResultOrder } from 'node:dns'
 import { createServer } from 'node:http'
+import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net'
 import { createCipher } from '../../core/crypto.js'
 import { log } from '../../core/logging.js'
 import { DEFAULT_AGENT_CONFIG, ErrorCode, type CmdAction } from '../../core/protocol.js'
@@ -37,6 +38,28 @@ import { userActive } from '../../core/users.js'
  * 这是部署形态决定的，属于适配层的事，不放进 core。
  */
 setDefaultResultOrder('ipv4first')
+
+/**
+ * 放宽 Happy Eyeballs 的「换一个地址族再试」等待：250ms → 3s。
+ *
+ * 上面那条只管**顺序**，管不住并行回退。Node 20 起 `autoSelectFamily` 默认开启：
+ * 按 RFC 8305 先连第一个地址，若 `autoSelectFamilyAttemptTimeout`
+ * （默认 **250 毫秒**）内还没连上，就再并发去连下一个——也就是那条 AAAA。
+ * 容器没有全局 IPv6 地址，这一发**立刻**失败，Node 随即判定「地址都试完了」
+ * 抛 ETIMEDOUT，**连同那条还在握手、再过几毫秒就要成功的 IPv4 连接一起掐掉**。
+ *
+ * 250ms 是 RFC 8305 给同城/CDN 场景的建议值。实测东京的网关到
+ * api.telegram.org（荷兰）建连 232–264ms，中位数正好压在 250 上：
+ * 40 次新建连接失败 16 次，每次都卡在 252ms；把 autoSelectFamily 关掉则 40/40 成功。
+ * 症状是「Telegram 时好时坏」——推送偶尔失败一条、Bot 每分钟掉一两次轮询，
+ * 而重试又常常能成，最像网络抖动，所以极难往客户端身上想。
+ * 同一台机器上跑的旧 Python 版 Bot 完全不受影响，更会把人往「是不是我们代码的锅」
+ * 之外的方向带——它确实是我们的锅，只是在 Node 的默认值里。
+ *
+ * 不直接关掉 autoSelectFamily：IPv4 真的不通的机器还要靠它回退到 IPv6。
+ * 3 秒足够覆盖任何一次跨洲建连，又不至于让那种机器等太久。
+ */
+setDefaultAutoSelectFamilyAttemptTimeout(3000)
 
 const cfg = loadConfig()
 const store = new SqliteStore(cfg.dbPath)
