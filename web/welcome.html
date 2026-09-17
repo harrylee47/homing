@@ -122,23 +122,6 @@
   .tabs > input:nth-of-type(2):checked ~ .panes > .pane:nth-of-type(2),
   .tabs > input:nth-of-type(3):checked ~ .panes > .pane:nth-of-type(3) { display: block }
 
-  /* 教程里的有序步骤。数字用 counter 而不是手写，插一步不用重排 */
-  .howto { list-style: none; counter-reset: s; margin: 0; padding: 0; }
-  .howto li {
-    counter-increment: s; position: relative; padding-left: 30px;
-    margin-bottom: 10px; font-size: 13px; line-height: 1.7; color: var(--muted);
-  }
-  .howto li::before {
-    content: counter(s); position: absolute; left: 0; top: 1px;
-    width: 21px; height: 21px; border-radius: 50%;
-    border: var(--bw) solid var(--line); background: var(--card); color: var(--fg);
-    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800;
-  }
-  .howto li b, .howto li code { color: var(--fg) }
-  .howto code {
-    font-family: var(--mono); font-size: 12px; background: var(--bg);
-    border: var(--bw) solid var(--line); border-radius: 5px; padding: 0 4px;
-  }
   .warn-line {
     border-left: 4px solid var(--pink); padding-left: 10px;
     font-size: 13px; line-height: 1.7; color: var(--muted); margin: 10px 0 0;

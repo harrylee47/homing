@@ -6,6 +6,25 @@
   <meta name="robots" content="noindex, nofollow">
   <title>Homing</title>
   <link rel="icon" type="image/svg+xml" href="/logo.svg">
+  <!--
+    装到主屏幕用的一组。iOS 不认 manifest 里的 icons，只认 apple-touch-icon，
+    而且不认 SVG、也不处理透明——透明区会被合成成黑色，而 logo 是黑描边的鸟，
+    压在黑底上就糊了。所以那张 PNG 是铺了米白底的。
+  -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Homing">
+  <!--
+    状态栏用 default（系统给一条不透明的），不用 black-translucent。
+    后者会让内容钻到刘海底下，而 style.css 只垫了 safe-area 的 bottom、没垫 top，
+    .pagehead 那条吸顶返回条会被盖住——它正是为「长会话点返回不用翻到顶」存在的。
+  -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <!-- 两条：只写亮色的话，深色模式下安卓的任务切换卡片会出现一条突兀的米色 -->
+  <meta name="theme-color" content="#f4f2ec" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0c0c0e" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>

@@ -614,8 +614,15 @@ function login() {
       <input id="user" autocomplete="username" value="${esc(localStorage.getItem(LAST_USER_KEY) || '')}" placeholder="留空则按管理员登录">
       <label>口令</label>
       <input id="pw" type="password" autocomplete="current-password">
-      <label>两步验证码</label>
-      <input id="code" inputmode="numeric" maxlength="6" class="mono" style="letter-spacing:4px">
+      <label>两步验证码（没开就留空）</label>
+      <input id="code" inputmode="numeric" maxlength="6" class="mono" style="letter-spacing:4px" placeholder="没绑认证器就空着">
+      <!--
+        这一栏对**所有人**都显示，哪怕这个账号没绑两步验证。
+        不能按账号决定显不显示：那等于做了一个「这个用户名有没有开两步验证」
+        的探针，而用户名是可以枚举的。所以只能靠文案说清楚。
+      -->
+      <div class="muted">两步验证是可选的。<b>没绑过认证器就把这一栏留空</b>，直接点登录；
+      绑过的话填认证器 App 上那个每 30 秒变一次的 6 位数字。</div>
       <label style="display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-size:14px">
         <input type="checkbox" id="trust" style="width:auto" checked>
         <span>在这台设备上保持登录 30 天</span>
@@ -3024,6 +3031,109 @@ async function paintUsers() {
  * 绑与不绑的差别只有一处：登录时多不多一道动态码。口令规则、会话时长、
  * 找回能力都一样。所以这里不吓唬人，只把那一处差别说清楚。
  */
+/**
+ * 「装到主屏幕」。
+ *
+ * 三条必须说实话的地方，不说的话装完会觉得被骗：
+ *
+ * ① **要重新登录一次。** 两个各自独立的原因，堵住任何搬 token 的偏方：
+ *    iOS 的主屏 App 与 Safari 存储完全隔离（localStorage 是空的）；
+ *    就算不隔离也过不了——standalone 模式的 UA 去掉了 Version/Safari 两段，
+ *    与登录时记下的 ua_hash 对不上，会话会被判无效。缓解办法只有
+ *    「保持登录 30 天」，所以这里要点它一句。
+ * ② **iOS 上通知点进去仍然开 Safari。** Apple 不给主屏 Web App 做 link
+ *    capturing，没有变通。而 Bark 深链恰恰是这个项目最主要的入口，
+ *    所以装完是两份登录状态：Safari 一份、主屏一份。安卓相反，
+ *    Chrome 装的是 WebAPK，有 link capturing。
+ * ③ **这一版不带推送。** iOS 16.4 起主屏 Web App 其实能收 Web Push，
+ *    但那要 Service Worker + VAPID，是另一摊；而且 Web Push 做不到
+ *    Bark 的长按复制，替代不了它。
+ */
+function paintA2HS() {
+  const box = $('#a2hs')
+  if (!box) return
+
+  const standalone = matchMedia('(display-mode: standalone)').matches
+    || matchMedia('(display-mode: fullscreen)').matches
+    || navigator.standalone === true
+  const ua = navigator.userAgent
+  const iOS = /iPhone|iPad|iPod/.test(ua)
+    // iPadOS 13+ 的 Safari 默认报 Mac 的 UA，靠触点数区分
+    || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+
+  if (standalone) {
+    box.innerHTML = `<div class="row">
+      <div class="col grow">
+        <span><b>已经是主屏 App</b></span>
+        <span class="muted">你正从主屏图标打开控制台。</span>
+      </div>
+      <span class="badge ok">已安装</span>
+    </div>
+    <p class="muted" style="margin:10px 0 0">这里和 Safari 里是<b>两份独立的登录状态</b>，
+    互不影响，各自都可以勾「保持登录 30 天」。</p>`
+    return
+  }
+
+  const caveats = `
+    <div class="notice" style="margin-top:10px">
+      <b>装上之后要再登录一次。</b>主屏 App 和浏览器是两个独立的存储空间，
+      浏览器里的登录状态带不过去。登录时记得勾「保持登录 30 天」，否则每次都要重输。
+    </div>
+    <p class="muted" style="margin:10px 0 0">
+      ${iOS
+        ? '另外：Bark 通知点进去仍然会在 Safari 里打开，<b>不会进主屏 App</b>——iOS 不给网页 App 做这件事，没有变通。主屏 App 解决的是「我主动想看一眼」：全屏、没有地址栏、独立的长会话。'
+        : '安卓装的是 WebAPK，通知或链接点进去会直接落在这个 App 里。'}
+      这一版<b>不带推送通知</b>，验证码仍然靠 Bark / Telegram 送到你手上。
+    </p>`
+
+  box.innerHTML = `
+    <p class="muted" style="margin:0">把控制台放到主屏幕，像 App 一样打开：全屏、没有地址栏、
+    不用每次在浏览器里找书签。</p>
+    <div id="a2hs_how"></div>
+    ${caveats}`
+
+  const how = $('#a2hs_how')
+  if (iOS) {
+    how.innerHTML = `<ol class="howto" style="margin-top:10px">
+      <li>点 Safari 底部中间的<b>分享</b>键（方框里一个向上的箭头）。</li>
+      <li>在列表里往下找<b>「添加到主屏幕」</b>。</li>
+      <li>右上角点<b>「添加」</b>。</li>
+    </ol>
+    <p class="muted" style="font-size:12px;margin:0">必须用 <b>Safari</b>——从微信、Chrome 等
+    App 内置的浏览器里打开是没有这个选项的。</p>`
+    return
+  }
+
+  // 安卓 Chrome 才有 beforeinstallprompt，而且它需要 Service Worker 才可靠触发，
+  // 这一版没有 SW，所以多半拿不到 prompt——按钮要能优雅退化成图文引导
+  how.innerHTML = `<div class="btnrow" style="margin-top:10px">
+      <button class="sm" id="a2hs_go">添加到主屏幕</button>
+    </div>
+    <div class="muted" id="a2hs_hint" style="margin-top:6px"></div>`
+  const hint = $('#a2hs_hint')
+  $('#a2hs_go').onclick = async () => {
+    if (deferredInstall) {
+      deferredInstall.prompt()
+      const r = await deferredInstall.userChoice.catch(() => null)
+      deferredInstall = null
+      hint.textContent = r?.outcome === 'accepted' ? '正在安装…' : '已取消。想装的话从浏览器菜单里也能装。'
+      return
+    }
+    hint.innerHTML = '浏览器没给出安装入口。点右上角的 <b>⋮</b> 菜单，'
+      + '找<b>「安装应用」</b>或<b>「添加到主屏幕」</b>。'
+  }
+}
+
+/**
+ * 安卓 Chrome 的安装事件。必须在事件发生的那一刻接住并阻止默认行为，
+ * 之后才能由我们自己的按钮触发——它不会重复发。
+ */
+let deferredInstall = null
+addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault()
+  deferredInstall = e
+})
+
 async function paintTotp() {
   const box = $('#totpbox')
   if (!box) return
@@ -3306,6 +3416,9 @@ async function settings() {
     <div id="battery"></div>
     <div id="smscmd"></div>
 
+    <h2>装到主屏幕</h2>
+    <div class="card" id="a2hs"></div>
+
     <h2>时区</h2>
     <div class="card">
       <p class="muted">计划任务的执行时间、规则的生效时段、推送模板里的 {time} 都按这个时区算。
@@ -3341,6 +3454,7 @@ async function settings() {
     </div>`)
 
   void paintTotp()
+  paintA2HS()
 
   if (me?.role === 'admin') {
     void paintUsers()
