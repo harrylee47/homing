@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { handleCallback, handleCommand, handleReply, resetPendingSends, type BotApi } from '../bot.js'
+import { handleCallback, handleCommand, handleReply, handleText, resetPendingSends, type BotApi } from '../bot.js'
 
 const EVENTS = [
   { id: 'evt_1', from: '95533', content: '【建设银行】您的验证码是 902431，请勿泄露', kind: 'sms', occurred_at: 1_700_000_000_000 },
@@ -22,14 +22,23 @@ const makeApi = (over: Partial<BotApi> = {}): BotApi => ({
     today: { events: 24, outbound: 2, outbound_failed: 0 },
     rules: 4, channels: 2,
   }),
-  events: async ({ q, from, kind }) => {
+  events: async ({ q, from, kind, limit = 10, offset = 0 }) => {
     let list = EVENTS
     if (q) list = list.filter((e) => e.content.includes(q))
     if (from) list = list.filter((e) => e.from.includes(from))
     if (kind) list = list.filter((e) => e.kind === kind)
-    return { events: list, total: list.length }
+    return { events: list.slice(offset, offset + limit), total: list.length }
   },
-  outbound: async ({ limit = 10 }) => ({ outbound: OUTBOUND.slice(0, limit), total: OUTBOUND.length }),
+  event: async (id) => {
+    const e = EVENTS.find((x) => x.id === id)
+    return e ? { ...e, device_id: 'dev_1', device_name: 'JP-Gateway-01', sim_slot: null } : null
+  },
+  thread: async (key) => ({
+    key, number: '95533',
+    items: EVENTS.map((e) => ({ id: e.id, direction: 'in' as const, text: e.content, at: e.occurred_at })),
+    reply_device: 'dev_1', reply_sim: null,
+  }),
+  outbound: async ({ limit = 10, offset = 0 }) => ({ outbound: OUTBOUND.slice(offset, offset + limit), total: OUTBOUND.length }),
   tasks: async () => ({ tasks: [{ name: '保号', enabled: true, schedule_text: '每 30 天', to: '138', next_run_at: 1_700_000_000_000, fail_count: 0 }] }),
   rules: async () => ({ rules: [{ name: '验证码', priority: 10, enabled: true }] }),
   sendSms: async () => ({ id: 'cmd_1', status: 'pending' }),
@@ -298,19 +307,47 @@ describe('查询命令', () => {
     expect(r!.text).toContain('只读')
   })
 
-  it('结果被截断时明确告知总数', async () => {
+  it('结果被截断时明确告知总数，并给出翻页按钮', async () => {
     const events = vi.fn(async () => ({ events: EVENTS, total: 99 }))
     const r = await handleCommand(makeApi({ events }), '/recent 2')
     expect(r!.text).toContain('共 99 条')
-    expect(r!.text).toContain('控制台')
+    expect(r!.text).toContain('第 1–2 条')
+    // 以前这里只能说一句「完整分页请用控制台」，现在直接翻
+    expect(r!.buttons!.flat().some((b) => b.text.includes('下一页'))).toBe(true)
+    expect(r!.buttons!.flat().some((b) => b.text.includes('上一页'))).toBe(false)
   })
 
   it('所有列表命令的正文都在 spoiler 内', async () => {
-    for (const cmd of ['/recent', '/search 验证码', '/from 95533', '/calls']) {
+    for (const cmd of ['/recent', '/search 验证码', '/from 95533', '/calls', '/thread 95533']) {
       const r = await handleCommand(makeApi(), cmd)
       if (!r || !r.text.includes('<tg-spoiler>')) continue
       const outside = r.text.split(/<tg-spoiler>.*?<\/tg-spoiler>/gs).join('')
       expect(outside).not.toContain('902431')
+    }
+  })
+
+  /**
+   * 新加的那几条出口同样要守住这条线。
+   *
+   * 详情页、会话视图、以及裸文本翻译出来的列表——每一个新的渲染出口
+   * 都是一次「这次忘了包 spoiler」的机会，而后果是 Bot 被封、所有通知全断。
+   */
+  it('详情页、会话、裸文本查询的正文也都在 spoiler 内', async () => {
+    const api = makeApi()
+    const outside = (t: string) => t.split(/<tg-spoiler>.*?<\/tg-spoiler>/gs).join('')
+
+    const d = await handleCallback(api, 'ev::evt_1')
+    expect(d!.text).toContain('<tg-spoiler>')
+    expect(outside(d!.text)).not.toContain('902431')
+
+    const th = await handleCallback(api, 'th:95533')
+    expect(th!.text).toContain('<tg-spoiler>')
+    expect(outside(th!.text)).not.toContain('902431')
+
+    for (const t of ['95533', '验证码']) {
+      const r = await handleText(api, t)
+      if (!r || !r.text.includes('<tg-spoiler>')) continue
+      expect(outside(r.text), t).not.toContain('902431')
     }
   })
 
@@ -463,7 +500,7 @@ describe('/sent 发送记录', () => {
   it('条数可指定且有上限', async () => {
     const spy = vi.fn(async () => ({ outbound: OUTBOUND, total: 2 }))
     await handleCommand(makeApi({ outbound: spy }), '/sent 99')
-    expect(spy).toHaveBeenCalledWith({ limit: 30 })
+    expect(spy).toHaveBeenCalledWith({ limit: 30, offset: 0 })
   })
 })
 
@@ -485,5 +522,179 @@ describe('搜索没覆盖全部历史时要说出来', () => {
     const api = makeApi({ events: async () => ({ events: EVENTS, total: 2, exhausted: true }) })
     const r = await handleCommand(api, '/search 验证码')
     expect(r?.text).not.toContain('只搜了最近一段')
+  })
+})
+
+/** 翻了 40 条的长列表，用来验分页而不是验渲染 */
+const MANY = Array.from({ length: 40 }, (_, i) => ({
+  id: `evt_${i}`, from: '95533', content: `第 ${i} 条 验证码 ${1000 + i}`,
+  kind: 'sms', occurred_at: 1_700_000_000_000 + i * 1000,
+}))
+const pagedApi = () => makeApi({
+  events: async ({ limit = 10, offset = 0 }) => ({ events: MANY.slice(offset, offset + limit), total: MANY.length }),
+  event: async (id) => {
+    const e = MANY.find((x) => x.id === id)
+    return e ? { ...e, device_id: 'dev_1', device_name: 'JP', sim_slot: null } : null
+  },
+})
+
+describe('翻页', () => {
+  beforeEach(() => resetPendingSends())
+
+  it('第一页只有「下一页」，中间页两个都有，最后一页只有「上一页」', async () => {
+    const api = pagedApi()
+    const p1 = await handleCommand(api, '/recent 10')
+    const nav = (m: { buttons?: { text: string; data: string }[][] }) => m.buttons!.flat().map((b) => b.text)
+    expect(nav(p1!)).toContain('下一页 ›')
+    expect(nav(p1!)).not.toContain('‹ 上一页')
+
+    const next = p1!.buttons!.flat().find((b) => b.text === '下一页 ›')!.data
+    const p2 = await handleCallback(api, next)
+    expect(p2!.text).toContain('第 11–20 条')
+    expect(nav(p2!)).toContain('‹ 上一页')
+    expect(nav(p2!)).toContain('下一页 ›')
+
+    // 一路翻到底
+    let cur = p2!
+    for (let i = 0; i < 2; i++) {
+      cur = (await handleCallback(api, cur.buttons!.flat().find((b) => b.text === '下一页 ›')!.data))!
+    }
+    expect(cur.text).toContain('第 31–40 条')
+    expect(nav(cur)).not.toContain('下一页 ›')
+  })
+
+  /** 翻页必须原地改写，否则聊天记录里会堆满同一个列表的十几个版本 */
+  it('翻页的结果标记为原地改写', async () => {
+    const api = pagedApi()
+    const p1 = await handleCommand(api, '/recent 10')
+    const r = await handleCallback(api, p1!.buttons!.flat().find((b) => b.text === '下一页 ›')!.data)
+    expect(r!.edit).toBe(true)
+  })
+
+  it('callback_data 全部在 Telegram 的 64 字节上限内', async () => {
+    const api = pagedApi()
+    const p1 = await handleCommand(api, '/search 建设银行发来的验证码短信')
+    for (const b of (p1!.buttons ?? []).flat()) {
+      expect(new TextEncoder().encode(b.data).length, b.text).toBeLessThanOrEqual(64)
+    }
+  })
+
+  /**
+   * 查询暂存是进程内状态，重启后就没了。那时按钮必须说一句人话——
+   * 一个点了没反应的按钮比没有按钮更糟。
+   */
+  it('暂存过期后点翻页会说清楚，而不是沉默', async () => {
+    const api = pagedApi()
+    const p1 = await handleCommand(api, '/recent 10')
+    const next = p1!.buttons!.flat().find((b) => b.text === '下一页 ›')!.data
+    resetPendingSends()
+    const r = await handleCallback(api, next)
+    expect(r!.text).toContain('失效')
+  })
+})
+
+describe('逐条打开与回复', () => {
+  beforeEach(() => resetPendingSends())
+
+  it('列表给每一条配一个数字按钮，编号和正文里的行号对得上', async () => {
+    const p1 = await handleCommand(pagedApi(), '/recent 10')
+    expect(p1!.text).toContain('1. 95533')
+    expect(p1!.text).toContain('10. 95533')
+    const nums = p1!.buttons!.flat().filter((b) => /^\d+$/.test(b.text)).map((b) => b.text)
+    expect(nums).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'])
+  })
+
+  it('第二页的数字按钮接着上一页编号，不是又从 1 开始', async () => {
+    const api = pagedApi()
+    const p1 = await handleCommand(api, '/recent 10')
+    const p2 = await handleCallback(api, p1!.buttons!.flat().find((b) => b.text === '下一页 ›')!.data)
+    const nums = p2!.buttons!.flat().filter((b) => /^\d+$/.test(b.text)).map((b) => b.text)
+    expect(nums[0]).toBe('11')
+  })
+
+  it('点开一条给全文、给「回复」，并且正文仍在 spoiler 里', async () => {
+    const api = pagedApi()
+    const p1 = await handleCommand(api, '/recent 10')
+    const open = p1!.buttons!.flat().find((b) => b.text === '3')!.data
+    const d = await handleCallback(api, open)
+    expect(d!.text).toContain('<tg-spoiler>')
+    expect(d!.buttons!.flat().some((b) => b.text.includes('回复'))).toBe(true)
+    expect(d!.buttons!.flat().some((b) => b.text.includes('返回列表'))).toBe(true)
+  })
+
+  it('详情页的「返回列表」回到刚才那一页，不是第一页', async () => {
+    const api = pagedApi()
+    const p1 = await handleCommand(api, '/recent 10')
+    const p2 = await handleCallback(api, p1!.buttons!.flat().find((b) => b.text === '下一页 ›')!.data)
+    const d = await handleCallback(api, p2!.buttons!.flat().find((b) => b.text === '12')!.data)
+    const back = d!.buttons!.flat().find((b) => b.text.includes('返回列表'))!.data
+    expect((await handleCallback(api, back))!.text).toContain('第 11–20 条')
+  })
+
+  /**
+   * 「回复」不能在服务端记「谁正在回复谁」——那是硬约束④之外的新状态。
+   * 它下发一条 forceReply 提示，并带上落 message_ref 所需的一切，
+   * 由适配层在拿到 message_id 之后落库。
+   */
+  it('「回复」给出 forceReply 提示，并带齐回复映射所需的字段', async () => {
+    const api = pagedApi()
+    const p1 = await handleCommand(api, '/recent 10')
+    const d = await handleCallback(api, p1!.buttons!.flat().find((b) => b.text === '1')!.data)
+    const r = await handleCallback(api, d!.buttons!.flat().find((b) => b.text.includes('回复'))!.data)
+    expect(r!.forceReply).toBe(true)
+    expect(r!.replyTo).toMatchObject({ eventId: 'evt_0', sender: '95533', deviceId: 'dev_1' })
+  })
+
+  it('打开一条已被删掉的消息不会炸，只是说它没了', async () => {
+    const r = await handleCallback(makeApi(), 'ev::evt_不存在')
+    expect(r!.text).toContain('不存在')
+  })
+})
+
+describe('不用记命令也能用', () => {
+  beforeEach(() => resetPendingSends())
+
+  it('裸号码当作按号码查，并把这个理解说出来', async () => {
+    const r = await handleText(makeApi(), '95533')
+    expect(r!.text).toContain('按号码查')
+    expect(r!.text).toContain('95533')
+  })
+
+  it('裸文字当作全文检索，并提示怎么改成按号码查', async () => {
+    const r = await handleText(makeApi(), '验证码')
+    expect(r!.text).toContain('按关键词搜')
+    expect(r!.text).toContain('/from')
+  })
+
+  it('常驻键盘那几个键能对上命令', async () => {
+    expect((await handleText(makeApi(), '📊 状态'))!.text).toContain('状态')
+    expect((await handleText(makeApi(), '📨 最近'))!.text).toContain('最近')
+  })
+
+  it('以 / 开头的交给 handleCommand，handleText 不插手', async () => {
+    expect(await handleText(makeApi(), '/status')).toBeNull()
+  })
+
+  it('/start 带 evt_ 深链直接打开那一条', async () => {
+    const r = await handleCommand(makeApi(), '/start evt_1')
+    expect(r!.text).toContain('<tg-spoiler>')
+    expect(r!.text).toContain('95533')
+  })
+
+  it('/start 不带参数给帮助和常驻键盘', async () => {
+    const r = await handleCommand(makeApi(), '/start')
+    expect(r!.keyboard).toBeDefined()
+    expect(r!.text).toContain('可用命令')
+  })
+
+  it('/thread 把号码归一化后查往来', async () => {
+    const thread = vi.fn(async (key: string) => ({
+      key, number: '+8613800138000',
+      items: [{ id: 'e1', direction: 'in' as const, text: '你好', at: 1_700_000_000_000 }],
+      reply_device: 'dev_1', reply_sim: null,
+    }))
+    await handleCommand(makeApi({ thread }), '/thread +86 138 0013 8000')
+    // 取后 9 位：同一个人在历史里会以三种写法出现
+    expect(thread).toHaveBeenCalledWith('800138000')
   })
 })

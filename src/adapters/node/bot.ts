@@ -6,7 +6,7 @@
  * （计划 §11.4）。Workers 版没有常驻进程，届时改为 webhook，但命令逻辑
  * 在 core/bot.ts 里不变。
  */
-import { COMMANDS, handleCallback, handleCommand, handleReply, type BotApi, type BotMessage } from '../../core/bot.js'
+import { COMMANDS, handleCallback, handleCommand, handleReply, handleText, type BotApi, type BotMessage } from '../../core/bot.js'
 import { log } from '../../core/logging.js'
 import { threadKey } from '../../core/thread.js'
 import type { Store } from '../../core/store.js'
@@ -17,6 +17,8 @@ export interface BotDeps {
   apiBase: string
   /** Bot 专用 service token */
   serviceToken: string
+  /** 渠道属主。「回复」提示落 message_ref 时要按它归属 */
+  userId: string
 }
 
 interface TgUpdate {
@@ -174,7 +176,9 @@ export class TelegramBot {
          * 「已经发过了」的兜底。
          */
         const orig = u.callback_query.message?.message_id
-        if (orig != null) await this.editMessage(chat, orig, r.text)
+        // edit=true 的是翻页/详情这类「换一屏内容」，原地改写；
+        // 其余（发送结果、回复提示）是新的一步，另发一条
+        if (r.edit && orig != null) await this.editMessage(chat, orig, r)
         else await this.send(chat, r)
       }
       return
@@ -189,10 +193,24 @@ export class TelegramBot {
     if (m.reply_to_message) {
       const r = await handleReply(api, String(m.reply_to_message.message_id), m.text)
       if (r) { await this.send(chat, r); return }
-      // 引用的不是短信推送，继续按命令处理
+      /**
+       * 引用的不是一条能回复的消息（比如 Bot 自己打印的列表）。
+       *
+       * 这里**不能**继续往下落到 handleText——那样一句「好的」会被当成
+       * 关键词去搜，用户以为自己回复出去了，其实什么都没发。
+       * 明确说一句，并给出正确的做法。
+       */
+      if (!m.text.startsWith('/')) {
+        await this.send(chat, {
+          text: '这条不是短信推送，没法据此回复。\n'
+            + '用 /from &lt;号码&gt; 或 /thread &lt;号码&gt; 找到原消息，点开后用「↩️ 回复」。',
+        })
+        return
+      }
+      // 引用着一条消息但打的是命令，那就按命令处理
     }
 
-    const r = await handleCommand(api, m.text)
+    const r = (await handleCommand(api, m.text)) ?? (await handleText(api, m.text))
     if (r) await this.send(chat, r)
   }
 
@@ -231,9 +249,7 @@ export class TelegramBot {
           chat_id: chatId,
           text,
           parse_mode: 'HTML',
-          reply_markup: last && msg.buttons
-            ? { inline_keyboard: msg.buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.data }))) }
-            : undefined,
+          reply_markup: last ? replyMarkup(msg) : undefined,
         }),
         signal: AbortSignal.timeout(15_000),
       }).catch((e: unknown) => {
@@ -241,6 +257,26 @@ export class TelegramBot {
         return null
       })
       if (!res) return
+      if (res.ok && last && msg.replyTo) {
+        /**
+         * 给这条 forceReply 提示落一条回复映射。
+         *
+         * 用户对着它打字发回来时，消息自带 reply_to_message，
+         * handleReply 按 message_id 就能查到「回给谁、用哪台设备哪张卡」——
+         * 和引用一条真实短信推送走的是完全相同的那条路，
+         * 服务端不需要记「谁正在回复谁」这种进程内状态。
+         */
+        const body = (await res.clone().json().catch(() => null)) as { result?: { message_id?: number } } | null
+        const mid = body?.result?.message_id
+        if (mid != null) {
+          await this.deps.store.putMessageRef({
+            channel_id: this.channelId, ref: String(mid), event_id: msg.replyTo.eventId,
+            user_id: this.deps.userId, sender: msg.replyTo.sender,
+            device_id: msg.replyTo.deviceId, sim_slot: msg.replyTo.simSlot,
+            created_at: Date.now(),
+          }).catch((e: unknown) => log.warn('记录回复映射失败', { error: String(e) }))
+        }
+      }
       if (!res.ok) {
         // 响应体里是 Telegram 给的原因（标签不闭合、消息过长、被拉黑…），
         // 不打出来就只能靠猜。它不含短信正文，可以安全落日志
@@ -253,18 +289,41 @@ export class TelegramBot {
     }
   }
 
-  /** 原地改写一条已发出的消息。用于按钮点完之后把它换成结果、并撤掉按钮 */
-  private async editMessage(chatId: string, messageId: number, text: string): Promise<void> {
-    await fetch(`https://api.telegram.org/bot${this.botToken}/editMessageText`, {
+  /**
+   * 原地改写一条已发出的消息。
+   *
+   * 两个用途：翻页（换一屏内容，不该在聊天记录里堆十几个版本），
+   * 以及按钮点完之后把它换成结果并撤掉按钮（不撤的话能再点一次，
+   * 而对 /send 来说那意味着同一条短信发两遍）。
+   *
+   * 改写后的内容可能超过单条上限，那时只能退回新发一条。
+   */
+  private async editMessage(chatId: string, messageId: number, msg: BotMessage): Promise<void> {
+    const parts = splitForTelegram(msg.text)
+    if (parts.length > 1) { await this.send(chatId, msg); return }
+    const res = await fetch(`https://api.telegram.org/bot${this.botToken}/editMessageText`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML',
-        // 显式给一个空键盘才能把按钮撤掉；不传这个字段是「保持原样」
-        reply_markup: { inline_keyboard: [] },
+        chat_id: chatId, message_id: messageId, text: msg.text, parse_mode: 'HTML',
+        // 显式给一个空的 inline_keyboard 才能把按钮撤掉；不传这个字段是「保持原样」
+        reply_markup: msg.buttons
+          ? { inline_keyboard: msg.buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.data }))) }
+          : { inline_keyboard: [] },
       }),
       signal: AbortSignal.timeout(15_000),
-    }).catch((e: unknown) => log.warn('Bot 改写消息失败', { error: String(e) }))
+    }).catch((e: unknown) => {
+      log.warn('Bot 改写消息失败', { error: String(e) })
+      return null
+    })
+    // 内容一字未变时 Telegram 回 400 message is not modified，那不是故障；
+    // 其余的照样要打出来，否则又是一次静默失败
+    if (res && !res.ok) {
+      const detail = await res.text().catch(() => '')
+      if (!detail.includes('message is not modified')) {
+        log.error('Bot 改写消息被拒绝', { status: res.status, detail: detail.slice(0, 300) })
+      }
+    }
   }
 
   private async answerCallback(id: string): Promise<void> {
@@ -304,19 +363,31 @@ export class TelegramBot {
       rules: () => call('/api/rules') as ReturnType<BotApi['rules']>,
       tasks: () => call('/api/tasks') as ReturnType<BotApi['tasks']>,
       outbound: (p) => {
-        const q = new URLSearchParams({ limit: String(p.limit ?? 10) })
+        const q = new URLSearchParams({ limit: String(p.limit ?? 10), offset: String(p.offset ?? 0) })
         if (p.to) q.set('to', p.to)
         if (p.status) q.set('status', p.status)
         return call(`/api/outbound?${q.toString()}`) as ReturnType<BotApi['outbound']>
       },
       events: (p) => {
-        const q = new URLSearchParams({ limit: String(p.limit ?? 10) })
+        const q = new URLSearchParams({ limit: String(p.limit ?? 10), offset: String(p.offset ?? 0) })
         if (p.q) q.set('q', p.q)
         if (p.from) q.set('from', p.from)
         if (p.device) q.set('device', p.device)
         if (p.kind) q.set('kind', p.kind)
         if (p.direction) q.set('direction', p.direction)
+        // deep=1 放宽扫描预算，对应控制台的「继续往更早搜」
+        if (p.deep) q.set('deep', '1')
         return call(`/api/events?${q.toString()}`) as ReturnType<BotApi['events']>
+      },
+      // 单条查不到时回 null 而不是抛：用户点开一条已被删掉的消息是正常情形，
+      // 不该让整个回调走进「这条命令没能执行完」
+      event: async (id) => {
+        try { return (await call(`/api/events/${encodeURIComponent(id)}`)) as Awaited<ReturnType<BotApi['event']>> }
+        catch { return null }
+      },
+      thread: async (key) => {
+        try { return (await call(`/api/threads/${encodeURIComponent(key)}`)) as Awaited<ReturnType<BotApi['thread']>> }
+        catch { return null }
       },
 
       sendSms: async (deviceId, to, text, simSlot) => {
@@ -395,4 +466,19 @@ export function splitForTelegram(text: string, limit = TG_LIMIT): string[] {
   }
   if (buf) out.push(buf)
   return out
+}
+
+/**
+ * 一条消息的 reply_markup。三种互斥形态：
+ * 内联按钮（列表、确认）、强制回复（让客户端自动带上引用）、常驻键盘。
+ */
+function replyMarkup(msg: BotMessage): unknown {
+  if (msg.buttons) {
+    return { inline_keyboard: msg.buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.data }))) }
+  }
+  if (msg.forceReply) return { force_reply: true, input_field_placeholder: '直接打字…' }
+  if (msg.keyboard) {
+    return { keyboard: msg.keyboard.map((row) => row.map((t) => ({ text: t }))), resize_keyboard: true, is_persistent: true }
+  }
+  return undefined
 }

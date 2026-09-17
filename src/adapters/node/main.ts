@@ -541,7 +541,7 @@ async function syncBotsInner(): Promise<void> {
     const serviceToken = await botTokenFor(store, w.owner)
     if (!serviceToken) { log.warn('Bot 渠道找不到归属用户，已跳过', { channel_id: id }); continue }
     const bot = new TelegramBot(
-      { store, apiBase: `http://127.0.0.1:${cfg.port}`, serviceToken },
+      { store, apiBase: `http://127.0.0.1:${cfg.port}`, serviceToken, userId: w.owner },
       w.token, new Set([w.chat]), id,
     )
     bot.start()
