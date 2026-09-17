@@ -510,7 +510,10 @@ export interface Store {
    * `batch` 是单轮上限。首次生效可能要删十几万行，一条 SQL 干完会把库
    * 锁住，而这期间正好有事件在写入。
    */
-  trimEvents(userId: string, kind: EventKind, keep: number, batch: number): Promise<number>
+  trimEvents(userId: string, kind: EventKind, keep: number, batch: number, before: number): Promise<number>
+
+  /** 这个账号这一类最早一条的 occurred_at。用来告诉人「只留到哪一天」。 */
+  oldestEventAt(userId: string, kind: EventKind): Promise<number | null>
 
   /** 这个账号这一类有多少条。用于界面上「会删掉多少条」的预览。 */
   countEventsByKind(userId: string, kind: EventKind): Promise<number>

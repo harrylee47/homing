@@ -478,12 +478,18 @@ export class SqliteStore implements Store {
    * 两个 NOT IN 子查询在 (user_id, kind, occurred_at) 索引上走，12 万行下实测
    * 毫秒级；没有这个索引的话它会退化成全表扫。
    */
-  async trimEvents(userId: string, kind: EventKind, keep: number, batch: number): Promise<number> {
+  async trimEvents(
+    userId: string, kind: EventKind, keep: number, batch: number, before: number,
+  ): Promise<number> {
     if (keep <= 0) return 0
     const r = this.db.prepare(
       `DELETE FROM events WHERE id IN (
          SELECT id FROM events
           WHERE user_id = ? AND kind = ?
+            -- 护栏：刚到手的一律不动，不管它的 occurred_at 多旧。
+            -- received_at 是落库时用服务端时钟写的，设备伪造不了。
+            -- 见 core/retention.ts 的 TRIM_GUARD_MS
+            AND received_at < ?
             AND id NOT IN (
               SELECT id FROM events WHERE user_id = ? AND kind = ?
                ORDER BY occurred_at DESC, id DESC LIMIT ?
@@ -491,8 +497,15 @@ export class SqliteStore implements Store {
           ORDER BY occurred_at ASC, id ASC
           LIMIT ?
        )`,
-    ).run(userId, kind, userId, kind, keep, batch)
+    ).run(userId, kind, before, userId, kind, keep, batch)
     return Number(r.changes)
+  }
+
+  async oldestEventAt(userId: string, kind: EventKind): Promise<number | null> {
+    const r = this.db.prepare(
+      'SELECT MIN(occurred_at) AS t FROM events WHERE user_id = ? AND kind = ?',
+    ).get(userId, kind) as { t: number | null } | undefined
+    return r?.t ?? null
   }
 
   async countEventsByKind(userId: string, kind: EventKind): Promise<number> {

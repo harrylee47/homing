@@ -100,11 +100,32 @@ export interface RetentionStore {
   listUsers(): Promise<{ id: string }[]>
   getUserSetting(userId: string, key: string): Promise<string | null>
   countEventsByKind(userId: string, kind: RetainableKind): Promise<number>
-  trimEvents(userId: string, kind: RetainableKind, keep: number, batch: number): Promise<number>
+  trimEvents(userId: string, kind: RetainableKind, keep: number, batch: number, before: number): Promise<number>
 }
 
 /** 单轮单类最多删多少条。见 overflow() 上面那段为什么要分批。 */
 export const TRIM_BATCH = 2000
+
+/**
+ * 护栏：**最近这段时间内到达的消息，一律不自动删**。
+ *
+ * 排序用的是 `occurred_at`，而它是**设备生成的**——协议里 `Timestamp` 只要求
+ * 非负整数，`CLOCK_SKEW_TOLERANCE_MS` 的注释还显式说明它只约束帧的 ts、
+ * 不约束 `event.occurred_at`（补传时它本来就可以是几天前）。
+ *
+ * 在「事件永不删除」的年代这个决定是对的：手机时钟错了，最多把列表排乱。
+ * 加了保留上限之后，同一个字段从「展示顺序」升级成了「谁生谁死的判据」，
+ * 而它是设备可控、且已知不可靠的。一台时钟跑偏的手机，新收到的验证码会
+ * 带着一个很旧的 occurred_at 进来，排在保留窗口之外，当轮就被删掉。
+ *
+ * 所以删除的条件里再加一道 `received_at`——那是落库时用**服务端**时钟写的
+ * （session.ts），设备伪造不了。代价是上限在这个窗口内是近似的；
+ * 换来的是「刚到手的消息，不管手机时钟多离谱，都不会被自动删掉」。
+ *
+ * 顺带它还兜住两件事：补传途中被清理（补传是按 occurred_at 升序上来的，
+ * 最老的先到，而清理删的正是最老的），以及刚导入的那一批被当轮清空。
+ */
+export const TRIM_GUARD_MS = 60 * 60 * 1000
 
 /**
  * 跑一轮清理，返回每个账号每一类实际删了多少。
@@ -118,6 +139,7 @@ export const TRIM_BATCH = 2000
 export async function runRetention(
   store: RetentionStore,
   batch = TRIM_BATCH,
+  now = Date.now(),
 ): Promise<{ user_id: string; kind: RetainableKind; deleted: number }[]> {
   const out: { user_id: string; kind: RetainableKind; deleted: number }[] = []
   for (const u of await store.listUsers()) {
@@ -127,7 +149,7 @@ export async function runRetention(
       if (limit <= 0) continue          // 不限制
       const total = await store.countEventsByKind(u.id, kind)
       if (overflow(total, limit, batch) === 0) continue
-      const deleted = await store.trimEvents(u.id, kind, limit, batch)
+      const deleted = await store.trimEvents(u.id, kind, limit, batch, now - TRIM_GUARD_MS)
       if (deleted > 0) out.push({ user_id: u.id, kind, deleted })
     }
   }
@@ -151,6 +173,7 @@ export async function trimUserNow(
   userId: string,
   batch = TRIM_BATCH,
   maxRounds = 10,
+  now = Date.now(),
 ): Promise<{ deleted: Record<RetainableKind, number>; done: boolean }> {
   const cfg = parseRetention(await store.getUserSetting(userId, RETENTION_SETTING))
   const deleted = { sms: 0, call: 0, notification: 0 } as Record<RetainableKind, number>
@@ -160,7 +183,7 @@ export async function trimUserNow(
     if (limit <= 0) continue
     for (let i = 0; ; i++) {
       if (i >= maxRounds) { done = false; break }
-      const n = await store.trimEvents(userId, kind, limit, batch)
+      const n = await store.trimEvents(userId, kind, limit, batch, now - TRIM_GUARD_MS)
       deleted[kind] += n
       if (n < batch) break      // 这一轮没删满，说明已经到位
     }

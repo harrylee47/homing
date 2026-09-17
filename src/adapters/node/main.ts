@@ -780,7 +780,7 @@ const cleanupTimer = setInterval(() => {
       listUsers: () => store.listUsers(),
       getUserSetting: (u, k) => store.getUserSetting(u, k),
       countEventsByKind: (u, k) => store.countEventsByKind(u, k),
-      trimEvents: (u, k, keep, batch) => store.trimEvents(u, k, keep, batch),
+      trimEvents: (u, k, keep, batch, before) => store.trimEvents(u, k, keep, batch, before),
     })
       .then((r) => {
         // 删数据要留痕。不打的话，用户某天发现历史少了一截，而日志里什么都没有

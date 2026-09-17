@@ -113,19 +113,29 @@ export class MemoryStore implements Store {
     const e = this.events.get(id)
     return e?.user_id === userId ? this.events.delete(id) : false
   }
-  async trimEvents(userId: string, kind: string, keep: number, batch: number): Promise<number> {
+  async trimEvents(userId: string, kind: string, keep: number, batch: number, before = Infinity): Promise<number> {
     if (keep <= 0) return 0
-    const mine = [...this.events.values()]
-      .filter((e) => e.user_id === userId && e.kind === kind)
+    const all = [...this.events.values()].filter((e) => e.user_id === userId && e.kind === kind)
+    // 护栏：刚到手的不动（和真实现一致）
+    const mine = all
+      .filter((e) => e.received_at < before)
       // 和真实现一样：同毫秒多条时靠 id 兜底，否则「最新 N 条」的边界是不稳的
       .sort((a, b) => b.occurred_at - a.occurred_at || (a.id < b.id ? 1 : -1))
-    const doomed = mine.slice(keep).reverse().slice(0, batch)
+    // keep 是按「全部」算的，护栏只决定哪些**可以删**
+    const rank = new Map([...all].sort((a, b) => b.occurred_at - a.occurred_at || (a.id < b.id ? 1 : -1)).map((e, i) => [e.id, i]))
+    const doomed = mine.filter((e) => (rank.get(e.id) ?? 0) >= keep).reverse().slice(0, batch)
     for (const e of doomed) this.events.delete(e.id)
     return doomed.length
   }
 
   async countEventsByKind(userId: string, kind: string): Promise<number> {
     return [...this.events.values()].filter((e) => e.user_id === userId && e.kind === kind).length
+  }
+
+  async oldestEventAt(userId: string, kind: string): Promise<number | null> {
+    const t = [...this.events.values()]
+      .filter((e) => e.user_id === userId && e.kind === kind).map((e) => e.occurred_at)
+    return t.length ? Math.min(...t) : null
   }
 
   async deleteEvents(f: EventFilter) {

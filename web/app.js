@@ -1389,6 +1389,18 @@ async function events() {
     const to = Math.min(offset + limit, r.total)
     const multi = activeDevs.length > 1
 
+    /**
+     * 「只留到哪一天」。
+     *
+     * `exhausted` 原来的含义是「扫到了全部历史的底」——因为在保留上限之前
+     * 事件永不删除。上限生效后库底就是保留边界，而这里照旧显示
+     * 「没有匹配的消息」的话，用户会得出「这条短信我根本没收到过」的结论，
+     * 而那正是**漏报**的表现，排查方向从第一步就错了。
+     */
+    const edge = r.retention
+      ? `该类型只保留最新 ${r.retention.limit} 条，目前最早一条是 ${fmtDay(r.retention.oldest_at)}，更早的已删除。`
+      : ''
+
     // 没搜完时不能假装 total 是总数：这里区分「共 N 条」和「已找到 N 条」
     const counter = r.total === 0
       ? (r.exhausted === false ? '这一段时间里没找到' : '没有匹配的消息')
@@ -1432,6 +1444,9 @@ async function events() {
             e.device_id, e.device_name, multi,
           )}
         </div>`).join('')}</div>` : ''}
+      ${edge && (r.total === 0 || (r.exhausted !== false && offset + limit >= r.total)) ? `
+        <div class="card tight muted">${edge}
+          <a href="/settings" style="white-space:nowrap">改上限 →</a></div>` : ''}
       ${r.total > limit ? `
         <div class="card tight row">
           <button class="ghost sm" id="p_prev" ${offset === 0 ? 'disabled' : ''}>上一页</button>
@@ -3251,11 +3266,34 @@ async function devices() {
     if (impGo) impGo.onclick = async () => {
       impGo.disabled = true
       $('#imp_out').textContent = '正在读取手机里的记录，可能要一会儿…'
+      const KIND_CN = { sms: '短信', call: '通话记录', notification: '应用通知' }
       try {
-        const r = await api(`/devices/${$('#imp_dev').value}/import-history`, {
-          method: 'POST',
-          body: { days: Number($('#imp_days').value), limit: Number($('#imp_limit').value) },
-        })
+        const body = { days: Number($('#imp_days').value), limit: Number($('#imp_limit').value) }
+        let r
+        try {
+          r = await api(`/devices/${$('#imp_dev').value}/import-history`, { method: 'POST', body })
+        } catch (e) {
+          /**
+           * 服务端算出「导进来也会被保留上限删掉」时回 409 带数字。
+           *
+           * 导入的记录 occurred_at 是短信原本的时间，在「保留最新 N 条」的
+           * 排序里必然排最末——第一批被删的就是它们。不拦这一道的话，
+           * 用户看到「导入成功 3000 条」，一两小时后列表里什么都没多。
+           */
+          const c = e.data?.retention_conflict
+          if (!c) throw e
+          const lines = Object.entries(c)
+            .map(([k, v]) => `${KIND_CN[k] || k}上限 ${v.limit} 条，现有 ${v.count} 条`).join('；')
+          if (!confirm(`你设了保留上限（${lines}），导进来的旧记录会在下一轮清理时被删掉。\n\n`
+            + `要保住它们，先到「设置 → 消息保留上限」调高或改成不限制。\n\n仍然继续导入吗？`)) {
+            $('#imp_out').innerHTML = '<span class="muted">已取消。到「设置 → 消息保留上限」调整后再来。</span>'
+            impGo.disabled = false
+            return
+          }
+          r = await api(`/devices/${$('#imp_dev').value}/import-history`, {
+            method: 'POST', body: { ...body, confirm: true },
+          })
+        }
         $('#imp_out').innerHTML = `已从手机读取短信 <b>${r.sms}</b> 条、通话 <b>${r.calls}</b> 条，正在陆续上传。` +
           (r.skipped ? ` <span class="badge warn">有 ${r.skipped} 类因缺权限被跳过</span>` : '') +
           '<br>其中已经在库里的会自动跳过，所以「消息」页增加的条数通常比这个少。'

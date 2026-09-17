@@ -28,6 +28,7 @@ import { createPairing, redeemPairing } from '../../core/pairing.js'
 import {
   RETAINABLE_KINDS, RETENTION_CHOICES, RETENTION_SETTING, newAccountRetention,
   parseRetention, sanitizeRetention, serializeRetention, trimUserNow,
+  type RetainableKind,
 } from '../../core/retention.js'
 import { describeFetchError } from '../../core/neterror.js'
 import { makeFrame, newCmdId } from '../../core/frames.js'
@@ -2389,6 +2390,34 @@ route('POST', '/api/devices/:id/import-history', async ({ user, res, params, bod
   const since = Number.isFinite(days) && days > 0 ? now() - days * 86_400_000 : null
   const limit = Math.min(Math.max(Number(b?.limit) || 1000, 1), 5000)
 
+  /**
+   * 导入的记录会不会一进来就被保留上限删掉？先算，再问。
+   *
+   * 导入的 `occurred_at` 是短信原本的时间，所以在「保留最新 N 条」的排序里
+   * 它们必然排在最末——**第一批被删的就是它们**。而整条链上没有任何一处
+   * 会告诉用户这件事：导入接口返回的是「手机读了多少条」，清理只写服务端
+   * 日志，导入的事件又只归档不推送。用户看到「导入成功 3000 条」，
+   * 一两小时后列表里什么都没多，他会认为是网关把他的历史弄丢了。
+   *
+   * 所以在**下发指令之前**拦一道，协议和保留上限那边保持一致：
+   * 有冲突就回 409 带上数字，界面问过人再带 confirm 来。
+   */
+  const cfg = parseRetention(await deps.store.getUserSetting(user.id, RETENTION_SETTING))
+  const conflicts: Record<string, { limit: number; count: number }> = {}
+  for (const kind of RETAINABLE_KINDS) {
+    if (kind === 'notification') continue     // 导入只涉及短信与通话
+    if (cfg[kind] <= 0) continue
+    const count = await deps.store.countEventsByKind(user.id, kind)
+    // 已经顶到上限，或者这一批导进来必然溢出
+    if (count + limit > cfg[kind]) conflicts[kind] = { limit: cfg[kind], count }
+  }
+  if (Object.keys(conflicts).length > 0 && (b as { confirm?: boolean })?.confirm !== true) {
+    return json(res, 409, {
+      error: '导入的历史记录会被保留上限删掉',
+      retention_conflict: conflicts,
+    })
+  }
+
   const r = await deps.importHistory(params.id!, since, limit)
   if (!r.ok) return json(res, 502, { error: r.error ?? '导入失败' })
   await deps.store.audit({
@@ -2610,7 +2639,7 @@ route('POST', '/api/retention', async ({ user, res, body, deps, ip }) => {
     listUsers: () => deps.store.listUsers(),
     getUserSetting: (u, k) => deps.store.getUserSetting(u, k),
     countEventsByKind: (u, k) => deps.store.countEventsByKind(u, k),
-    trimEvents: (u, k, keep, batch) => deps.store.trimEvents(u, k, keep, batch),
+    trimEvents: (u, k, keep, batch, before) => deps.store.trimEvents(u, k, keep, batch, before),
   }, user.id)
 
   const actually = RETAINABLE_KINDS.reduce((n, k) => n + trimmed.deleted[k], 0)
@@ -2943,6 +2972,32 @@ route('POST', '/api/events/bulk-delete', async ({ user, res, body, deps, ip }) =
   json(res, 200, { deleted })
 })
 
+
+/**
+ * 这一类被保留上限截到哪儿了。
+ *
+ * 加它的理由是一次很具体的误判：`exhausted`（扫完了）原来的含义是
+ * 「扫到了全部历史的底」——因为在保留上限之前事件永不删除。上限生效后
+ * 库底就是保留边界，而界面照旧显示「没有匹配的消息」，用户会得出
+ * 「这条短信我根本没收到过」的结论，而那正是**漏报**的表现，
+ * 于是整个排查方向从第一步就错了。
+ *
+ * 只在**确实已经在裁剪**时才返回（limit > 0 且条数已经顶到上限）。
+ * 刚装一周的人最早一条也很近，但一条都没被删——给他编一个删除故事更糟。
+ */
+async function retentionEdge(
+  deps: ApiDeps, userId: string, kind: RetainableKind | undefined,
+): Promise<{ limit: number; count: number; oldest_at: number } | null> {
+  if (!kind) return null
+  const cfg = parseRetention(await deps.store.getUserSetting(userId, RETENTION_SETTING))
+  const limit = cfg[kind] ?? 0
+  if (limit <= 0) return null
+  const count = await deps.store.countEventsByKind(userId, kind)
+  if (count < limit) return null
+  const oldest = await deps.store.oldestEventAt(userId, kind)
+  return oldest === null ? null : { limit, count, oldest_at: oldest }
+}
+
 route('GET', '/api/events', async ({ user, res, url, deps }) => {
   const p = url.searchParams
   const limit = Math.min(Math.max(Number(p.get('limit') ?? 30), 1), 200)
@@ -2993,6 +3048,7 @@ route('GET', '/api/events', async ({ user, res, url, deps }) => {
       events: await Promise.all(rows.map(decrypt)),
       total: await deps.store.countEvents(filter),
       limit, offset, truncated: false,
+      retention: await retentionEdge(deps, user.id, kind),
     })
     return
   }
@@ -3027,6 +3083,8 @@ route('GET', '/api/events', async ({ user, res, url, deps }) => {
     scanned_to: scannedTo,
     exhausted: r.exhausted,
     truncated: !r.exhausted,
+    // exhausted 现在只代表「扫到库底」，而库底可能就是保留边界
+    retention: await retentionEdge(deps, user.id, kind),
   })
 }, true, false, 'bot')
 
