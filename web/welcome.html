@@ -53,109 +53,137 @@
   /* ══ 第一屏：信鸽把验证码送过来 ══════════════════════════════
      整段由**一个**自定义属性 --p（0→1，滚动进度）驱动。
      交叉淡入用纯 calc：opacity 超出 0–1 会被自动夹住，所以
-     `calc((0.30 - var(--p)) / 0.08)` 就是一条从 0.22 到 0.30 的斜坡，
-     不需要逐帧 JS 去算透明度。JS 只负责把 --p 与 --fly 写进来。
+     `calc((0.28 - var(--p)) / 0.06)` 就是一条斜坡，不需要逐帧 JS 算透明度。
 
-     没有 JS / 系统要求减少动画时：整段塌成第一幕的静态画面（见下面
-     :not([data-motion="on"]) 那组），三幕不叠、不占额外滚动高度。 */
+     版式上三条是照着参考站改的（原来那版是「中间一小团 + 满屏空白」）：
+     ① **满幅**。线条与场景铺到视口两边，不收在 720px 的栏里。
+     ② **一个大字号的排版锚点**。每一幕先有一句大字，图是它的注脚，
+        而不是反过来——原来那版图小字也小，眼睛没有落点。
+     ③ **细线条、少填充**。陆块只留描边，主角只有鸽子与那条航线。 */
   .stage { position: relative; }
-  /* 额外的滚动高度只在动效开着时存在。三幕 + 两次过渡，3.2 屏读着不赶 */
-  html[data-motion="on"] .stage { height: 320svh }
+  html[data-motion="on"] .stage { height: 260svh }
   .stage-in {
-    position: sticky; top: 0; height: 100svh; min-height: 520px;
+    position: sticky; top: 0; height: 100svh; min-height: 540px;
     display: grid; place-items: center; overflow: hidden;
   }
-  .act { grid-area: 1 / 1; width: 100%; max-width: 720px; padding: 0 16px; text-align: center; }
+  .act { grid-area: 1 / 1; width: 100%; height: 100%; position: relative; }
   html[data-motion="on"] .act { will-change: opacity }
-  /* 三幕的斜坡。第二幕要一进一出，所以拆成外层淡入 + 内层淡出，两者相乘 */
-  html[data-motion="on"] .act1 { opacity: calc((0.30 - var(--p, 0)) / 0.08) }
-  html[data-motion="on"] .act2 { opacity: calc((var(--p, 0) - 0.22) / 0.08) }
-  html[data-motion="on"] .act2 > .inner { opacity: calc((0.80 - var(--p, 0)) / 0.08) }
-  html[data-motion="on"] .act3 { opacity: calc((var(--p, 0) - 0.72) / 0.08) }
-  /* 没轮到的幕不能吃掉点击 */
-  html[data-motion="on"] .act1 { pointer-events: none }
-  html[data-motion="on"] .act2, html[data-motion="on"] .act3 { pointer-events: none }
+  /* 斜坡收窄到 0.06：原来 0.08 的过渡拖得久，滑起来像「推不动」 */
+  html[data-motion="on"] .act1 { opacity: calc((0.28 - var(--p, 0)) / 0.06) }
+  html[data-motion="on"] .act2 { opacity: calc((var(--p, 0) - 0.22) / 0.06) }
+  html[data-motion="on"] .act2 > .inner { opacity: calc((0.82 - var(--p, 0)) / 0.06) }
+  html[data-motion="on"] .act3 { opacity: calc((var(--p, 0) - 0.76) / 0.06) }
+  html[data-motion="on"] .act { pointer-events: none }
 
-  /* 幕一：家里那台亮着的手机 + 蹲着看它的鸽子 */
-  .scene1 { display: flex; align-items: flex-end; justify-content: center; gap: 0; }
+  /* 每一幕的大字。左对齐、贴着左上，和参考站一样把版面撑开 */
+  .say {
+    position: absolute; left: 6vw; top: 16vh; max-width: 13em; z-index: 2;
+    font-size: clamp(26px, 5.2vw, 56px); font-weight: 800;
+    line-height: 1.18; letter-spacing: -.02em; margin: 0;
+  }
+  .say small {
+    display: block; font-size: 12px; font-weight: 700; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 12px;
+  }
+  .say em { font-style: normal; color: var(--muted) }
+
+  /* 幕一：手机 + 蹲在机身上的鸽子，放在右下，与左上的大字形成对角 */
+  .scene1 {
+    position: absolute; right: 6vw; bottom: 14vh; z-index: 1;
+    display: flex; align-items: flex-end;
+  }
   .phone {
-    width: 248px; flex: none; padding: 12px 10px 16px;
+    width: 250px; flex: none; padding: 14px 12px 18px;
     background: var(--card); border: var(--bw) solid var(--line);
-    border-radius: 18px; box-shadow: var(--shadow); text-align: left;
-    position: relative;
+    border-radius: 22px; box-shadow: var(--shadow); text-align: left; position: relative;
+    /* 随滚动轻微上浮：滑动时始终有东西在响应，不会「推半天没动静」 */
+    transform: translateY(calc(var(--p, 0) * -70px));
   }
   .phone::before {
-    content: ""; display: block; width: 54px; height: 5px; margin: 0 auto 10px;
+    content: ""; display: block; width: 60px; height: 5px; margin: 0 auto 12px;
     background: var(--line); border-radius: 3px;
   }
-  .phone .lock { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  .phone .lock { font-size: 12px; color: var(--muted); margin: 0 0 10px }
   .phone .sms {
-    border: var(--bw) solid var(--line); border-radius: 10px;
-    background: var(--cyan); color: var(--on-bright); padding: 9px 10px;
-  }
-  .phone .sms b { display: block; font-size: 12px; margin-bottom: 4px }
-  .phone .sms span { font-size: 15px; line-height: 1.55 }
-    /* 不要叫 .code —— style.css 里那是配对码用的大黄色块（28px、带边框投影），
-     用在这里会把验证码渲染成一个撑破气泡的徽章 */
-  .phone .num, .whisper .num { font-weight: 800; letter-spacing: .06em }
-  /* 屏幕「亮起来」：一圈呼吸的光晕，无模糊（新野兽派不用 blur），靠边框脉冲 */
-  @keyframes glow { 0%, 100% { box-shadow: var(--shadow) } 50% { box-shadow: 0 0 0 6px var(--cyan), var(--shadow) } }
-  html[data-motion="on"] .phone { animation: glow 2.4s var(--ease) infinite }
-  @media (prefers-reduced-motion: reduce) { .phone { animation: none !important } }
-  .bird-perch { width: 120px; height: 120px; flex: none; margin-left: -10px; margin-bottom: 4px; }
-
-  /* 幕二：地图与航线 */
-  .map { width: 100%; height: auto; display: block; }
-  .land { fill: var(--card); stroke: var(--line); stroke-width: 3; stroke-linejoin: round; }
-  .route { fill: none; stroke: var(--line); stroke-width: 6; stroke-linecap: round; stroke-dasharray: 14 16; opacity: .35 }
-  /* 已飞过的那段用实色描出来，靠 dashoffset 随 --fly 揭开 */
-  .route-done {
-    fill: none; stroke: var(--cyan); stroke-width: 9; stroke-linecap: round;
-    stroke-dasharray: 1400; stroke-dashoffset: calc(1400 - var(--fly, 0) * 1400);
-  }
-  .pin circle { fill: var(--yellow); stroke: var(--line); stroke-width: 4 }
-  .pin text { font-size: 34px; font-weight: 800; fill: var(--fg); text-anchor: middle }
-  .bird-fly {
-    offset-path: path("M 806 168 C 700 44 420 36 212 214");
-    offset-rotate: auto;
-    offset-distance: calc(var(--fly, 0) * 100%);
-    /*
-     * 缩放写在里层 <g> 的 transform 属性上，**不要**用 CSS 的 scale 写在这一层。
-     * 这一层挂着 offset-path，加个 scale 上去会把鸽子按回路径起点——
-     * 表现是航线照常揭开、鸽子却一直待在「家」那个点上不动。
-     */
-  }
-  .land { stroke-width: 4 }
-
-  /* 幕三：落在肩上，凑到耳边 */
-  .scene3 { display: flex; align-items: flex-end; justify-content: center; }
-  .whisper {
-    align-self: center; margin-left: -6px; text-align: left;
-    background: var(--mint); color: var(--on-bright);
     border: var(--bw) solid var(--line); border-radius: 12px;
-    box-shadow: var(--shadow); padding: 10px 14px; font-size: 15px;
+    background: var(--cyan); color: var(--on-bright); padding: 11px 12px;
   }
-  
+  .phone .sms b { display: block; font-size: 12px; margin-bottom: 5px }
+  .phone .sms span { font-size: 16px; line-height: 1.55 }
+  .phone .num, .whisper .num { font-weight: 800; letter-spacing: .06em }
+  @keyframes glow { 0%, 100% { box-shadow: var(--shadow) } 50% { box-shadow: 0 0 0 7px var(--cyan), var(--shadow) } }
+  html[data-motion="on"] .phone { animation: glow 2.6s var(--ease) infinite }
+  @media (prefers-reduced-motion: reduce) { .phone { animation: none !important } }
+  /* 鸽子蹲在机身上沿，压住边框——挨着而不接触会显得是两张贴纸 */
+  .bird-perch { width: 130px; height: 130px; flex: none; margin: 0 0 -14px -46px; position: relative; z-index: 1 }
+
+  /* 幕二：满幅的航线 */
+  .map { position: absolute; inset: 0; width: 100%; height: 100%; display: block }
+  .land { fill: none; stroke: var(--line); stroke-width: 2; stroke-linejoin: round; opacity: .2 }
+  .route { fill: none; stroke: var(--line); stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 3 14; opacity: .4 }
+  .route-done {
+    fill: none; stroke: var(--cyan); stroke-width: 5; stroke-linecap: round;
+    stroke-dasharray: 2000; stroke-dashoffset: calc(2000 - var(--fly, 0) * 2000);
+  }
+  .pin circle { fill: none; stroke: var(--line); stroke-width: 3 }
+  .pin .dot { fill: var(--yellow); stroke: var(--line); stroke-width: 2.5 }
+  .pin text { font-size: 15px; font-weight: 800; fill: var(--fg); text-anchor: middle; letter-spacing: .2em }
+  .bird-fly {
+    offset-path: path("M 1120 560 C 930 300 470 268 160 468");
+    /*
+     * **不要用 offset-rotate: auto。** 这条航线是从右往左的，切线方向约 180°，
+     * 而鸽子的画法是朝右的——auto 会把它整个转 180°，也就是肚皮朝天飞。
+     * 改成不跟随旋转、画法镜像成朝左，再按 --fly 给一个温和的俯仰：
+     * 起飞抬头、过顶平飞、降落低头。
+     */
+    offset-rotate: 0deg;
+    offset-distance: calc(var(--fly, 0) * 100%);
+  }
+    /* 缩放与俯仰都写在中间这层——它没有 offset-path，动它是安全的。
+     直接给外层加 scale 会把鸽子按回路径起点（踩过一次）。 */
+  .bird-fly > g { transform: rotate(calc((var(--fly, 0) - 0.5) * 22deg)) scale(var(--bs, 1)) }
+
+  /* 幕三：人在右，大字在左 */
+  .scene3 { position: absolute; right: 8vw; bottom: 12vh; display: flex; align-items: flex-end; z-index: 1 }
+  .whisper {
+    align-self: center; margin: 0 0 54px -22px; text-align: left;
+    background: var(--mint); color: var(--on-bright);
+    border: var(--bw) solid var(--line); border-radius: 14px;
+    box-shadow: var(--shadow); padding: 11px 15px; font-size: 16px;
+    transform: translateX(calc((1 - var(--p, 0)) * 26px));
+  }
 
   .stage-cue {
-    position: absolute; left: 0; right: 0; bottom: 18px;
+    position: absolute; left: 0; right: 0; bottom: 20px; z-index: 3;
     font-size: 12px; color: var(--muted); display: flex;
     align-items: center; justify-content: center; gap: 8px;
   }
   .stage-cue i { font-style: normal; animation: bob 1.8s var(--ease) infinite }
   @media (prefers-reduced-motion: reduce) { .stage-cue i { animation: none } }
 
-  /* 关掉动效时：只留第一幕，且不占额外滚动高度 */
   html:not([data-motion="on"]) .stage { height: auto !important }
-  html:not([data-motion="on"]) .stage-in { position: static; height: auto; padding: 40px 0 }
+  html:not([data-motion="on"]) .stage-in { position: static; height: auto; min-height: 0; padding: 40px 0 }
+  html:not([data-motion="on"]) .act { height: auto }
+  html:not([data-motion="on"]) .say { position: static; margin: 0 16px 24px }
+  html:not([data-motion="on"]) .scene1 { position: static; justify-content: center; padding: 0 16px 20px }
+  html:not([data-motion="on"]) .phone { transform: none }
   html:not([data-motion="on"]) .act2,
   html:not([data-motion="on"]) .act3 { display: none }
 
   @media (max-width: 860px) {
-    .stage-in { min-height: 460px }
-    .phone { width: 196px }
-    .bird-perch { width: 92px; height: 92px }
-    .whisper { font-size: 13px; padding: 8px 11px }
+    .stage-in { min-height: 500px }
+    .say { left: 20px; top: 13vh; font-size: clamp(24px, 7.6vw, 38px) }
+    .scene1 { right: 16px; bottom: 11vh }
+    .phone { width: 196px; padding: 11px 10px 14px }
+    .phone .sms span { font-size: 14px }
+    .bird-perch { width: 96px; height: 96px; margin-left: -34px; margin-bottom: -10px }
+    /* viewBox 1280 宽在 430px 屏上被压到 0.34 倍，不放大就只有 30 来像素 */
+    .bird-fly { --bs: 2.1 }
+    .pin text { font-size: 40px }
+    .route-done { stroke-width: 9 }
+    .route { stroke-width: 5; stroke-dasharray: 6 26 }
+    .scene3 { right: 16px; bottom: 10vh }
+    .whisper { font-size: 13px; padding: 8px 11px; margin: 0 0 40px -16px }
   }
 
   /* ── 第一屏 ────────────────────────────────────────────── */
@@ -481,18 +509,19 @@
 
     <!-- 幕一：家里那台亮了 -->
     <section class="act act1">
+      <p class="say"><small>20:23 · 家里</small>那条验证码，<br>发到了<em>八千公里外</em>的那张卡上。</p>
       <div class="scene1">
         <div class="phone">
-          <p class="lock">家里的备用机 · 20:23</p>
+          <p class="lock">家里的备用机</p>
           <div class="sms">
             <b>95588</b>
             <span>Your code is <span class="num">【1357】</span></span>
           </div>
         </div>
         <svg class="bird-perch" viewBox="0 0 64 64" aria-hidden="true">
-            <!-- 蹲着的姿态：翅膀收起、加两只脚。飞行版在 logo.svg，那只用在幕二 -->
+            <!-- 蹲着：翅膀收起 + 两只脚。飞行版在幕二，那只是镜像的 -->
             <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
-              <path d="M30 52 L30 58 M38 52 L38 58" />
+              <path d="M30 52 L30 58 M38 52 L38 58"/>
               <path fill="var(--cyan)" d="M20 52 C12 46 14 32 26 27 C36 23 46 26 49 34 C52 42 46 51 36 53 Z"/>
               <path fill="var(--yellow)" d="M26 36 C31 31 39 32 43 38 C38 45 30 45 26 36 Z"/>
               <circle cx="27" cy="21" r="9" fill="var(--cyan)"/>
@@ -501,51 +530,59 @@
             <circle cx="24" cy="18" r="2.5" fill="var(--line)"/>
           </svg>
       </div>
-      <p class="muted" style="margin-top:18px;font-size:14px">它在家里收到了。而你在八千公里外。</p>
     </section>
 
     <!-- 幕二：飞过来 -->
     <section class="act act2"><div class="inner">
-      <svg class="map" viewBox="0 0 1000 300" role="img" aria-label="信鸽从家飞到你身边">
-        <!-- 抽象的陆块，不是真实地图，只为让航线有个参照 -->
+      <svg class="map" viewBox="0 0 1280 700" preserveAspectRatio="xMidYMid meet" role="img" aria-label="信鸽从家飞到你身边">
+        <!-- 抽象陆块，只留细描边：它是背景，不该跟鸽子抢 -->
         <g class="land">
-          <path d="M60 150 L140 120 L170 170 L120 215 L55 195 Z"/>
-          <path d="M190 140 L300 110 L340 150 L300 190 L210 185 Z"/>
-          <path d="M300 200 L380 195 L395 260 L330 268 Z"/>
-          <path d="M380 120 L640 90 L840 120 L880 180 L700 215 L430 200 L370 165 Z"/>
-          <path d="M840 215 L920 205 L935 255 L860 262 Z"/>
+          <path d="M60 470 L170 430 L214 502 L142 566 L48 536 Z"/>
+          <path d="M236 452 L392 412 L450 470 L392 528 L262 518 Z"/>
+          <path d="M398 540 L512 532 L534 628 L438 640 Z"/>
+          <path d="M512 438 L884 394 L1168 438 L1226 526 L968 574 L580 550 L492 494 Z"/>
+          <path d="M1168 590 L1256 578 L1274 646 L1182 654 Z"/>
         </g>
-        <path class="route" d="M 806 168 C 700 44 420 36 212 214"/>
-        <path class="route-done" d="M 806 168 C 700 44 420 36 212 214"/>
-        <g class="pin"><circle cx="806" cy="168" r="16"/><text x="806" y="222">家</text></g>
-        <g class="pin"><circle cx="212" cy="214" r="16"/><text x="212" y="268">你</text></g>
+        <path class="route" d="M 1120 560 C 930 300 470 268 160 468"/>
+        <path class="route-done" d="M 1120 560 C 930 300 470 268 160 468"/>
+        <g class="pin">
+          <circle cx="1120" cy="560" r="17"/><circle class="dot" cx="1120" cy="560" r="6"/>
+          <text x="1120" y="604">家</text>
+        </g>
+        <g class="pin">
+          <circle cx="160" cy="468" r="17"/><circle class="dot" cx="160" cy="468" r="6"/>
+          <text x="160" y="512">你</text>
+        </g>
         <g class="bird-fly" aria-hidden="true">
-              <g transform="translate(-26,-26) scale(1.6)">
-                <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
-                  <path fill="var(--cyan)" d="M47 27 C53 32 52 42 43 47 C34 52 22 49 17 43 L4 47 L12 34 C15 26 25 21 33 21 C40 21 45 23 47 27 Z"/>
-                  <path fill="var(--yellow)" d="M17 39 C19 28 29 24 38 30 C33 39 25 43 17 39 Z"/>
-                  <circle cx="45" cy="21" r="10.5" fill="var(--cyan)"/>
-                  <path fill="var(--orange)" d="M54 18 L63 22 L54 26 Z"/>
-                </g>
-                <circle cx="48" cy="18" r="2.5" fill="var(--line)"/>
+          <g>
+            <g transform="scale(-1,1) translate(-32,-30) scale(1.45)">
+              <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+                <path fill="var(--cyan)" d="M47 27 C53 32 52 42 43 47 C34 52 22 49 17 43 L4 47 L12 34 C15 26 25 21 33 21 C40 21 45 23 47 27 Z"/>
+                <path fill="var(--yellow)" d="M17 39 C19 28 29 24 38 30 C33 39 25 43 17 39 Z"/>
+                <circle cx="45" cy="21" r="10.5" fill="var(--cyan)"/>
+                <path fill="var(--orange)" d="M54 18 L63 22 L54 26 Z"/>
               </g>
+              <circle cx="48" cy="18" r="2.5" fill="var(--line)"/>
             </g>
+          </g>
+        </g>
       </svg>
-      <p class="muted" style="margin-top:10px;font-size:14px">几秒，不是几小时。</p>
+      <p class="say"><small>几秒钟</small>它自己飞过来，<br>不用<em>谁转发</em>，也不用等。</p>
     </div></section>
 
     <!-- 幕三：落在肩上 -->
     <section class="act act3">
+      <p class="say"><small>到了</small>卡留在家，<br>号跟着<em>你</em>走。</p>
       <div class="scene3">
-        <svg width="150" height="170" viewBox="0 0 150 170" aria-hidden="true">
+        <svg width="176" height="200" viewBox="0 0 150 170" aria-hidden="true">
           <g stroke="var(--line)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
             <path fill="var(--violet)" d="M28 170 C28 126 46 108 75 108 C104 108 122 126 122 170 Z"/>
             <circle cx="75" cy="72" r="30" fill="var(--card)"/>
-            <path fill="var(--yellow)" d="M46 74 A30 30 0 0 1 104 74 C96 62 84 58 75 58 C66 58 54 62 46 74 Z"/>
-            <circle cx="64" cy="82" r="2.8" fill="var(--line)" stroke="none"/>
-            <path d="M68 95 C73 99 80 99 85 95"/>
+            <path fill="var(--yellow)" d="M45 74 A31 31 0 0 1 105 74 Z"/>
           </g>
-          <g transform="translate(96,86) scale(0.62)">
+          <circle cx="64" cy="86" r="3" fill="var(--line)"/>
+          <path d="M68 99 C73 103 80 103 85 99" stroke="var(--line)" stroke-width="3" fill="none" stroke-linecap="round"/>
+          <g transform="translate(98,84) scale(0.66)">
             <g stroke="var(--line)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
               <path fill="var(--cyan)" d="M20 52 C12 46 14 32 26 27 C36 23 46 26 49 34 C52 42 46 51 36 53 Z"/>
               <path fill="var(--yellow)" d="M26 36 C31 31 39 32 43 38 C38 45 30 45 26 36 Z"/>
@@ -557,7 +594,6 @@
         </svg>
         <div class="whisper">Your code is <span class="num">【1357】</span></div>
       </div>
-      <p class="muted" style="margin-top:18px;font-size:14px">卡留在家，号跟着你走。</p>
     </section>
 
     <p class="stage-cue"><i>↓</i> <span id="stage_cue_t">往下滑</span></p>
