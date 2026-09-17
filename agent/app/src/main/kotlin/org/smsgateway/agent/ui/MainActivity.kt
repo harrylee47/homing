@@ -25,7 +25,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import org.smsgateway.agent.net.PairPayload
 import org.smsgateway.agent.notification.NotificationCapture
+import android.app.KeyguardManager
+import androidx.core.view.isVisible
 import org.smsgateway.agent.App
+import org.smsgateway.agent.util.Autostart
 import org.smsgateway.agent.PairPhase
 import org.smsgateway.agent.BuildConfig
 import org.smsgateway.agent.R
@@ -116,6 +119,18 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         App.get().startObservers()
+        /*
+         * **回到前台必须重画一次。**
+         *
+         * 这一页上有四样东西是在**别处**被改变的：运行时权限、通知使用权、
+         * 电池优化白名单、以及锁屏凭证——用户都是跳去系统设置里改完再回来的，
+         * 一个回调都不会给我们。不在这里重画，他改完回来看到的还是旧状态，
+         * 会以为自己没改成功，然后再点一遍。
+         *
+         * 锁屏那条尤其要紧：它是「这台机器能不能无人值守」的答案，
+         * 而用户看到它之后第一件事多半就是去把锁屏关掉。
+         */
+        render(lastState, lastPending)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -157,6 +172,7 @@ class MainActivity : AppCompatActivity() {
             if (missingPermCount() == 0) requestBackgroundLocation() else requestPerms()
         }
         vb.batteryButton.setOnClickListener { requestBatteryWhitelist() }
+        vb.autostartButton.setOnClickListener { Autostart.open(this) }
         vb.notifyButton.setOnClickListener { requestNotificationAccess() }
 
         lifecycleScope.launch {
@@ -260,6 +276,24 @@ class MainActivity : AppCompatActivity() {
         val batteryOk = isIgnoringBattery()
         vb.batteryButton.setText(if (batteryOk) R.string.battery_ok else R.string.battery_missing)
         vb.batteryButton.isEnabled = !batteryOk
+
+        // 厂商自启动：系统不给查询接口，所以永远可点、永远不置灰。
+        // 提示按机型给，认不出的机型给通用那句。
+        vb.autostartTip.text = Autostart.tip(this)
+
+        /*
+         * **做不到的事要说出来。**
+         *
+         * 设了锁屏凭证的机器，重启后在有人解锁之前收不到任何短信——这不是我们的
+         * 实现问题：Android 把解锁前到达的 SMS_RECEIVED 整个押到解锁之后才派发
+         * （2026-09-18 在 Android 14 上实测过，directBootAware 也绕不开，
+         * 连直接查 content://sms 都因为它走 CE 路径而抛异常）。
+         *
+         * 所以这里只能如实讲代价和两条出路。每次 onResume 都重算：
+         * 用户可能刚在设置里把锁屏加上或去掉，而那正是这条提示该跟着变的时刻。
+         */
+        val km = getSystemService(KeyguardManager::class.java)
+        vb.rebootWarn.isVisible = km?.isDeviceSecure == true
     }
 
     private fun scan() {

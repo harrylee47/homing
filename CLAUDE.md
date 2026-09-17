@@ -262,6 +262,78 @@ OkHttp 在收到对端关闭帧时先调 `onClosing`，**客户端必须回应�
 **这个包没有任何原生库**（`unzip -l` 看 `lib/` 是空的），所以 armeabi-v7a /
 arm64-v8a / x86 / x86_64 全都装得上，不存在 ABI 不匹配那一类问题。
 
+## 重启连续性：三件事，其中一件我们做不到
+
+「停电之后它会不会自己回来」是这台机器的核心指标。2026-09-18 把这条链路拆成
+三段分别处理，其中第三段是**明确做不到、只能如实告诉用户**的。
+
+### ① 网络一回来就重连，不等退避（做到了）
+
+原来只有指数退避这一条路。断网期间每次尝试都立刻失败，`attempt` 很快爬到上限，
+于是退避钉在 60 秒上下；等网络真的回来时，**还要再睡最多 75 秒**才试第一次。
+家里那条网线抽一下、路由器重启一次，就是一分多钟的空窗。
+
+`WsClient` 现在 `registerDefaultNetworkCallback`，`onAvailable` 里把 `attempt`
+清零并往一个 CONFLATED 的 `wake` 通道丢一个信号；退避那一句从 `delay(waitMs)`
+改成 `withTimeoutOrNull(waitMs) { wake.receive() }`——**睡到时间到或被喊醒，
+哪个先来算哪个**。`restart()`（短信指令的「重连」）也走同一条唤醒路径，
+它本来的意思就是「别等了」。
+
+同机 A/B 实测（模拟器 + 本地网关，断网 150 秒让退避爬满，再恢复）：
+
+| | 重连用时 |
+|---|---|
+| 修复前 | **58.4 秒** |
+| 修复后 | **2.1 秒** |
+
+注册要包 `runCatching`：个别 ROM 上会抛，而没有这个回调只是退回纯退避，
+不该让 `start()` 整个失败。
+
+上游 SmsForwarder 没有这个问题，但不是因为它做得好——它的连通性交给 frpc
+那个独立进程，frpc 自己盯着 socket 重连。我们把 frpc 删了（连接方向是反的），
+就得自己补上这一环。**上游那个 201 行的 `NetworkChangeReceiver` 不是干这个的**，
+它设的是 `TaskUtils.networkState` 然后丢一个 Worker，服务于「按网络状态触发转发规则」。
+
+### ② 厂商自启动白名单（做到了，但检测不了）
+
+清单里声明 `RECEIVE_BOOT_COMPLETED` 没用：华为/小米/OPPO/vivo 默认禁止开机自启，
+这道闸独立于 Android 权限体系。`util/Autostart.kt` 按 `Build.MANUFACTURER` 跳到
+对应的设置页，逐级退让（厂商组件 → 厂商管家首页 → 电池优化列表 → 应用详情页）。
+
+**系统不提供任何查询接口**，所以这颗按钮永远可点、永远不置灰，文案只能写
+「去设置」——装成能检测的样子比不检测更糟。
+
+组件表 2026-09-18 逐条核过（16 条留 9 条）。三个不能照抄上游的地方：
+
+- **华为那个组件抛的是 `SecurityException` 不是 `ActivityNotFoundException`**
+  （`requires com.huawei.permission.external_app_settings.USE_COMPONENT`）。
+  只 catch 后者会让 App 当场崩在用户脸上，而他只是点了一下「去设置」。
+  一律 `catch (e: Exception)`。
+- **荣耀必须单列。** 独立后 `Build.MANUFACTURER` 是 `HONOR`、包名是
+  `com.hihonor.systemmanager`，而上游表里**根本没有这一项**——所有荣耀机走上游
+  的逻辑时一条候选都不会试。2021 年前的老荣耀报 HUAWEI，由华为那条覆盖。
+- **小米只留 `AutoStartManagementActivity`。** 上游还有一个
+  `PermissionsEditorActivity`，那是单应用权限编辑页、必须带 action 与 extra，
+  直接 setComponent 启动多半白屏——而它一旦「成功」启动就把真正该走的退路吃掉了。
+
+红米与 POCO 的 `MANUFACTURER` 都报 `Xiaomi`，不需要单列（上游单列了，
+而它的分发是 `equals` 匹配，那两行永远命中不了）。
+
+### ③ 设了锁屏密码就做不到无人值守（做不到，只能说出来）
+
+详见下一节的实测。结论是二选一：**解除锁屏凭证**，或者**每次重启后有人去
+解锁一次并打开一次 App**。没有第三种可能，direct boot 也不行。
+
+做不到的事要说在人看得见的地方：`MainActivity` 用 `KeyguardManager.isDeviceSecure`
+判断，真有锁屏时在状态下面、所有按钮上面出一块橙色提示（`warn_box`），
+把代价和两条出路都写出来。README 也单列一节。
+
+连带一条：**`render()` 必须挂在 `onResume` 上。** 这一页上有四样东西是在别处被
+改变的（运行时权限、通知使用权、电池优化、锁屏凭证），用户都是跳去系统设置改完
+再回来的，一个回调都不会给我们。不重画的话他改完回来看到的还是旧状态，
+会以为没改成功然后再点一遍。写这条提示时第一版就漏了，注释写着「每次 onResume
+都重算」而代码没做——又是一次「注释说了但代码没做」。
+
 ## 无声音乐与一像素：查完之后又开回去了
 
 2026-09-18 因为「这两招不是上游验证过的吗」这个质疑，把整件事重查了一遍

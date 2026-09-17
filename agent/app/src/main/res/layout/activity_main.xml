@@ -51,6 +51,22 @@
             android:textSize="13sp" android:paddingBottom="18dp"
             android:fontFamily="monospace" android:text="" />
 
+        <!--
+          锁屏密码会让「重启后自动恢复」彻底失效，而这件事**我们修不了**：
+          Android 把解锁前到达的短信广播整个押到解锁之后才派发（实测过），
+          所以哪怕做成 directBootAware 也只会得到「显示在线、一条验证码都不来」。
+
+          做不到就必须说出来，而且要说在人看得见的地方。放在状态下面、
+          所有按钮上面：它不是一件待办，是一个前提。
+          只在真的设了锁屏凭证时才出现——没设的机器上它是纯噪音。
+        -->
+        <TextView android:id="@+id/rebootWarn"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="13sp" android:textColor="@color/brand_ink"
+            android:background="@drawable/warn_box"
+            android:padding="12dp" android:layout_marginBottom="18dp"
+            android:visibility="gone" android:text="@string/reboot_warn" />
+
         <View android:layout_width="match_parent" android:layout_height="1dp"
             android:background="#33888888" android:layout_marginBottom="18dp" />
 
@@ -104,6 +120,23 @@
         <Button android:id="@+id/batteryButton"
             android:layout_width="match_parent" android:layout_height="wrap_content"
             android:layout_marginTop="8dp" android:text="@string/btn_battery_default" />
+
+        <!--
+          厂商自启动白名单。和上面三颗是同一类「不授予就静默失效」的东西，
+          而在华为/小米/OPPO 上它恰恰是决定「重启后还活不活着」的那一道。
+
+          它和另外三项有一点不同：**系统不给任何查询接口**，我们无从知道用户
+          到底开没开。所以这颗按钮永远可点、永远不置灰，文案也只能写成
+          「去设置」而不是「已开启」——装成能检测的样子比不检测更糟。
+        -->
+        <Button android:id="@+id/autostartButton"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:text="@string/btn_autostart" />
+
+        <TextView android:id="@+id/autostartTip"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:alpha="0.7"
+            android:paddingTop="6dp" android:text="" />
 
         <!--
           作者与版本。这台手机是常年放在角落里的，真出问题时找到它的人（可能是几年后

@@ -112,4 +112,33 @@
     <string name="conn_idle">Gateway not running</string>
     <string name="sms_battery">Battery %1$s%%%2$s</string>
     <string name="sms_battery_charging"> (charging)</string>
+
+    <!--
+      重启连续性那一组。
+
+      锁屏那条是**唯一一处我们告诉用户「这件事做不到」**的地方，所以措辞要把
+      代价和两条出路都写清楚：不解除锁屏就等于「每次重启后要有人去解一次锁」，
+      而在那之前一条验证码都收不到。含糊其辞比不说更糟——人会以为装好就完事了。
+    -->
+    <string name="reboot_warn">⚠ This phone has a screen lock. After a reboot, Android holds every incoming SMS until someone unlocks the phone — so the gateway receives nothing, no matter what this app does.
+
+For unattended operation, remove the screen lock (Settings › Security › Screen lock › None).
+
+If you want to keep the lock: after every reboot you must unlock the phone and open this app once, then send it to the background.</string>
+    <string name="btn_autostart">Auto-start permission (open settings)</string>
+    <string name="autostart_tip_generic">Many Android skins block apps from starting after a reboot, and there is no way for an app to check this. Open your phone\'s settings and allow this app to auto-start.</string>
+    <string name="autostart_unavailable">Could not open that page. Go to Settings › Apps › Homing and allow auto-start / background activity.</string>
+
+    <!--
+      每家 ROM 的自启动开关叫法都不一样，所以指路要写成能照着走的路径，
+      不能写「请开启自启动权限」——那句话在任何一台手机上都找不到对应的开关。
+      锁屏那条限制不在这里重复：它有自己的那块橙色提示，重复只会稀释掉。
+    -->
+    <string name="autostart_tip_xiaomi">Settings › Apps › Manage apps › “Background autostart” (top right) › switch Homing on.</string>
+    <string name="autostart_tip_huawei">Settings › Apps &amp; services › App launch › Homing › turn OFF “Manage automatically”, then switch ON all three: Auto-launch, Secondary launch, Run in background. (EMUI 9/10: Phone Manager › App launch › Manage manually.)</string>
+    <string name="autostart_tip_honor">Settings › Apps › App launch › Homing › turn OFF “Manage automatically”, then switch ON all three: Auto-launch, Secondary launch, Run in background.</string>
+    <string name="autostart_tip_oppo">Phone Manager › Privacy permissions › Startup manager › turn Homing on. Then Settings › Battery › App battery management › Homing › allow background activity.</string>
+    <string name="autostart_tip_vivo">i Manager › App manager › Permissions › Autostart › turn Homing on. Then Settings › Battery › Background power management › Homing › allow high background usage.</string>
+    <string name="autostart_tip_samsung">Samsung has no autostart manager — use Background usage limits: Settings › Battery › Background usage limits › Never sleeping apps › + › Homing. Make sure it is not under Sleeping / Deep sleeping apps, and set Settings › Apps › Homing › Battery › Unrestricted.</string>
+    <string name="autostart_tip_meizu">On Flyme the setting is Background management, not autostart: Phone Manager › Permissions › Background management › Homing › “Allow background running” (not “Smart background”, which still gets killed).</string>
 </resources>

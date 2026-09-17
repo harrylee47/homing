@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  「这件事我们做不到，你得知道」那一类提示的底。
+
+  和 status_chip 同一套语汇（硬边框 + 亮色底 + 深色字），但用橙色：
+  它不是失败（粉）、也不是正常（薄荷），而是「配置决定的固有限制」。
+  这一类东西最怕被做成灰色小字——那等于没说。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <corners android:radius="8dp" />
+    <stroke android:width="2dp" android:color="@color/brand_ink" />
+    <solid android:color="@color/brand_orange" />
+</shape>

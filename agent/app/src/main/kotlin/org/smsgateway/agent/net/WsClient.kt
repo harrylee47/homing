@@ -4,9 +4,12 @@ import android.Manifest
 import android.content.Context
 import org.smsgateway.agent.R
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.BatteryManager
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -120,6 +123,19 @@ class WsClient(
     private var running = false
 
     /**
+     * 「别等了，现在就重试」的信号。
+     *
+     * 退避是给「服务端暂时不可用」准备的：一次次去撞一台正在重启的机器没有意义。
+     * 但**网络刚刚恢复**是完全相反的情形——那一刻正是最该立刻试的时候，
+     * 而我们原来会让它继续睡完最长 60 秒（带 jitter 最多 75 秒）。
+     *
+     * CONFLATED：断网恢复时系统可能连着给好几个回调，攒下来没有意义，
+     * 只要「有人喊过」这一个比特。
+     */
+    private val wake = Channel<Unit>(Channel.CONFLATED)
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
      * 本条连接上已发出、还没收到 event_ack 的事件 id。
      *
      * 服务端对每条事件**单独**回一个 event_ack（session.ts 的 ackEvent），
@@ -135,17 +151,58 @@ class WsClient(
     fun start() {
         if (running) return
         running = true
+        registerNetworkCallback()
         loopJob = scope.launch { connectLoop() }
         scope.launch { refreshPending() }
     }
 
     fun stop() {
         running = false
+        unregisterNetworkCallback()
         loopJob?.cancel()
         heartbeatJob?.cancel()
         ws?.close(1000, "stopped")
         ws = null
         _state.value = ConnState.Idle
+    }
+
+    /**
+     * 网络一回来就立刻重连，不等退避睡完。
+     *
+     * 原来只有指数退避这一条路：断网期间每次尝试都立刻失败，`attempt` 很快爬到
+     * 上限，于是退避钉在 60 秒。等 WiFi 真的回来时，**我们还要再睡最多 75 秒**
+     * 才去试第一次——而那段时间里网关那头认为这台设备离线，验证码全压在本地队列上。
+     * 家里那条网线抽一下、路由器重启一次，就是一分多钟的空窗。
+     *
+     * 上游 SmsForwarder 没有这个问题，但不是因为它做得好：它的连通性交给 frpc
+     * 那个独立进程，frpc 自己盯着 socket 重连。我们把 frpc 删掉了（连接方向是反的），
+     * 就得自己补上这一环。
+     *
+     * `onAvailable` 会在每次默认网络就绪时回调（含 WiFi↔流量 切换），
+     * 所以这里既覆盖「断网恢复」也覆盖「换网」——换网之后旧 socket 多半已经废了，
+     * 立刻重连正是对的。
+     */
+    private fun registerNetworkCallback() {
+        if (netCallback != null) return
+        val cm = ctx.getSystemService(ConnectivityManager::class.java) ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.i("网络已恢复，立即重连（不等退避）")
+                attempt = 0
+                wake.trySend(Unit)
+            }
+        }
+        // 某些 ROM 上注册会抛（权限被收、服务不可用），不能让它把 start() 带崩——
+        // 没有这个回调只是退回到「纯退避」，功能不该整个失效
+        runCatching { cm.registerDefaultNetworkCallback(cb) }
+            .onSuccess { netCallback = cb }
+            .onFailure { Log.w("注册网络回调失败，退回纯退避重连: ${it.message}") }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cb = netCallback ?: return
+        netCallback = null
+        runCatching { ctx.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) }
     }
 
     /**
@@ -157,6 +214,8 @@ class WsClient(
         ws?.close(1000, "restart")
         ws = null
         attempt = 0
+        // 正躺在退避里时也要立刻醒过来：短信指令的「重连」本意就是「别等了」
+        wake.trySend(Unit)
         if (!running) start() else scope.launch { refreshPending() }
     }
 
@@ -225,7 +284,9 @@ class WsClient(
                 attempt++
                 _state.value = ConnState.Waiting((waitMs / 1000).toInt())
                 Log.i("第 $attempt 次重连等待 ${waitMs}ms")
-                delay(waitMs)
+                // 睡到时间到，或者被 onAvailable 喊醒——**哪个先来算哪个**。
+                // 直接 delay 的话，网络恢复的那一刻我们正躺在最长 75 秒的觉里。
+                withTimeoutOrNull(waitMs) { wake.receive() }
             }
         }
     }
