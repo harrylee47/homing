@@ -18,7 +18,8 @@ android {
         targetSdk = 33
         // 分发出去的那个包的内容变了，版本号就得跟着变——控制台设备页显示的是
         // 这个 versionName，同一个号对应两份不同的二进制，「他装的到底是哪一版」
-        // 就再也答不上来了。0.1.0 那个包缺了握手超时与 inflight 去重两处修复。
+        // 就再也答不上来了。换包时 web/download/homing.apk、agent/mapping/ 下的
+        // 混淆映射与 SHIPPED.txt 要一起换（见 CLAUDE.md「开源仓库」那节）。
         versionCode = 4
         versionName = "0.1.3"
     }
