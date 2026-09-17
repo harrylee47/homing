@@ -4225,6 +4225,30 @@ addEventListener('appinstalled', () => {
 
 const NUDGE_OFF_KEY = 'gw_a2hs_tip'
 const NUDGE_SNOOZE_KEY = 'gw_tip_snooze'
+const NUDGE_MIN_KEY = 'gw_tip_min'
+
+/**
+ * 缩起来了吗。
+ *
+ * 「缩小」和「今天先不提醒 / 不再提醒」是两件事：后两个是「走开」，
+ * 这个是「留着，但别挡路」。所以它记在 localStorage 里、跨刷新有效——
+ * 缩一次隔天又弹回一整张卡，那这颗按钮就白点了。
+ *
+ * 不需要在关掉时清它：缩起来的时候那两颗关闭按钮根本够不着，
+ * 想关就得先展开，而展开这一下已经把它置回 false 了。
+ */
+let nudgeMin = false
+try { nudgeMin = localStorage.getItem(NUDGE_MIN_KEY) === '1' } catch { /* 隐私模式 */ }
+
+function setNudgeMin(v) {
+  nudgeMin = v
+  try {
+    if (v) localStorage.setItem(NUDGE_MIN_KEY, '1')
+    else localStorage.removeItem(NUDGE_MIN_KEY)
+  } catch { /* 隐私模式下缩小只在这一页有效，无妨 */ }
+  nudgeSig = ''
+  void paintNudge()
+}
 
 /**
  * 「今天」按**本地日期**切。
@@ -4288,10 +4312,41 @@ async function paintNudge() {
   const needInstall = !isStandalone() && !installedNow && (isMobile() || !!deferredInstall)
   const ps = await pushState()
   const needPush = ps === 'off' || (ps === 'after-install' && needInstall)
-  if (!needInstall && !needPush) return hideNudge()
+  if (!needInstall && !needPush) {
+    // 两件都办完了。顺手清掉「缩起来」——万一哪天他退订了，
+    // 那时候该重新弹一整张卡，而不是右下角一个他早就不记得的小球
+    if (nudgeMin) { nudgeMin = false; try { localStorage.removeItem(NUDGE_MIN_KEY) } catch { /* 隐私模式 */ } }
+    return hideNudge()
+  }
 
-  const sig = `${needInstall}|${!!deferredInstall && !isIOS()}|${ps}`
+  const left = (needInstall ? 1 : 0) + (needPush ? 1 : 0)
+  const sig = `${needInstall}|${!!deferredInstall && !isIOS()}|${ps}|${nudgeMin ? 'min' : 'open'}`
   if (sig === nudgeSig) return
+
+  /*
+   * 缩起来的样子：右下角一颗小球 + 一个未读角标。
+   *
+   * 借的就是「未读消息」那套语汇——数字说明还剩几件事没办，点一下展开。
+   * 收进这个形态而不是直接关掉，是因为这两件事本来就该做；
+   * 「关掉」那条路另有两颗按钮，而且都在展开之后才够得着。
+   */
+  if (nudgeMin) {
+    hideNudge()
+    nudgeSig = sig
+    const ball = document.createElement('button')
+    ball.className = 'nudge nudge-ball'
+    ball.id = 'nudge'
+    ball.type = 'button'
+    ball.setAttribute('aria-label', `展开引导，还差 ${left} 步`)
+    ball.innerHTML = `<img src="/logo.svg" alt="" width="26" height="26">
+      <span class="nudge-dot">${left}</span>`
+    document.body.appendChild(ball)
+    document.body.classList.add('has-nudge')
+    document.documentElement.style.setProperty('--nudge-h', ball.offsetHeight + 'px')
+    requestAnimationFrame(() => ball.classList.add('in'))
+    ball.onclick = () => setNudgeMin(false)
+    return
+  }
 
   const both = needInstall && needPush
   const step = (i) => (both ? `<b class="nudge-n">${i}</b>` : '')
@@ -4338,7 +4393,10 @@ async function paintNudge() {
   el.className = 'nudge'
   el.id = 'nudge'
   el.innerHTML = `
-    ${both ? '<div class="nudge-head">还差两步，验证码就能自己找上你</div>' : ''}
+    <div class="nudge-top">
+      <b class="nudge-head">还差${both ? '两' : '一'}步，验证码就能自己找上你</b>
+      <button class="nudge-minbtn" id="nudge_min" type="button" aria-label="缩小" title="缩小">−</button>
+    </div>
     ${rows}
     <div class="err-text" id="nudge_err"></div>
     <div class="nudge-foot">
@@ -4356,6 +4414,8 @@ async function paintNudge() {
   document.documentElement.style.setProperty('--nudge-h', el.offsetHeight + 'px')
   // 先挂上再加 class，否则起始态和终止态在同一帧里，transition 不会跑
   requestAnimationFrame(() => el.classList.add('in'))
+
+  $('#nudge_min').onclick = () => setNudgeMin(true)
 
   $('#nudge_today').onclick = () => {
     try { localStorage.setItem(NUDGE_SNOOZE_KEY, todayKey()) } catch { /* 隐私模式 */ }

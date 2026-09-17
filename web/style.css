@@ -714,7 +714,55 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 3px; 
 /* 空的时候连那 8px 也不要：它就在脚注上面，平时是一条无缘无故的缝 */
 .nudge .err-text:empty { display: none; }
 
-.nudge-head { font-weight: 800; font-size: 14px; margin-bottom: 9px; }
+/* 标题和缩小键同一行：缩小键要是绝对定位在右上角，
+   只剩一步、没有标题那一档时，它会正好压在那一行右边的「开通」上 */
+.nudge-top {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 9px;
+}
+.nudge-head { font-weight: 800; font-size: 14px; min-width: 0; }
+.nudge-minbtn {
+  flex: none;
+  width: 26px; height: 26px; padding: 0;
+  display: grid; place-items: center;
+  background: none; border: none; box-shadow: none;
+  color: var(--muted); font-size: 20px; font-weight: 800; line-height: 1;
+}
+.nudge-minbtn:hover:not(:disabled),
+.nudge-minbtn:active:not(:disabled) { transform: none; box-shadow: none; color: var(--fg); }
+
+/*
+ * 缩起来的那颗球。借「未读消息」那套语汇：角标上的数字就是还剩几件事没办。
+ * 它和展开态是同一个 #nudge 元素、同一条进场动画，只是换一套尺寸——
+ * 两个元素各画一份的话，来回切会各演一次入场。
+ */
+.nudge-ball {
+  left: auto; right: 12px;
+  width: 52px; height: 52px;
+  max-width: none; margin: 0; padding: 0;
+  border-radius: 50%;
+  /* 底色用卡片色而不是青色：logo 那只鸟本身就是青的，压在青底上糊成一团。
+     招眼的活儿交给粉色角标——「未读」本来就该是角标在喊，不是底色在喊。 */
+  background: var(--card);
+  display: grid; place-items: center;
+  /* 球比卡片矮得多，卡片那个 +60px 会让它在屏幕外多停一截才冒头 */
+  transform: translateY(calc(100% + 24px));
+}
+.nudge-ball.in { transform: translateY(0); }
+/* button 的 :hover / :active 是 (0,2,1)，压得过 .nudge-ball——
+   不显式接管的话，按下去那一下会把入场的位移一起抹掉 */
+.nudge-ball:hover:not(:disabled) { transform: translate(1px, 1px); box-shadow: 2px 2px 0 var(--line); }
+.nudge-ball:active:not(:disabled) { transform: translate(var(--sx), var(--sx)); box-shadow: 0 0 0 var(--line); }
+.nudge-ball img { display: block; }
+.nudge-dot {
+  position: absolute; top: -6px; right: -6px;
+  min-width: 21px; height: 21px; padding: 0 5px;
+  display: grid; place-items: center;
+  border-radius: 999px;
+  background: var(--pink); color: var(--on-bright);
+  border: var(--bw) solid var(--line);
+  font-size: 11px; font-weight: 800; font-family: var(--mono);
+}
 
 .nudge-row {
   display: flex; align-items: center; gap: 9px;
