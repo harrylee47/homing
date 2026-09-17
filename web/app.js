@@ -1219,7 +1219,7 @@ function paintA2HSTip() {
         </div>
       </div>
       <div class="btnrow" style="margin-top:8px">
-        <a href="/settings"><button class="sm">怎么装</button></a>
+        <a href="/settings#a2hs"><button class="sm">怎么装</button></a>
         <button class="ghost sm" id="a2hs_no">不用了</button>
       </div>
     </div>`
@@ -1463,7 +1463,7 @@ async function events() {
         </div>`).join('')}</div>` : ''}
       ${edge && (r.total === 0 || (r.exhausted !== false && offset + limit >= r.total)) ? `
         <div class="card tight muted">${edge}
-          <a href="/settings" style="white-space:nowrap">改上限 →</a></div>` : ''}
+          <a href="/settings#retention" style="white-space:nowrap">改上限 →</a></div>` : ''}
       ${r.total > limit ? `
         <div class="card tight row">
           <button class="ghost sm" id="p_prev" ${offset === 0 ? 'disabled' : ''}>上一页</button>
@@ -4690,6 +4690,56 @@ async function settings() {
     a.onclick = (e) => { e.preventDefault(); showTab(a.dataset.tab) }
   }
   showTab(tab)
+
+  /*
+   * 深链：`/settings#xxx` 要把**含有那一段的 tab** 切出来，再滚过去。
+   *
+   * 不这么做的话，总览那条「怎么装」点进来落在**上次用过的 tab** 上
+   * （tab 记在 localStorage 里），而「装到主屏幕」在「一般」那一栏——
+   * 于是按钮看起来像跳错了地方：设置页开了，那一段却根本不在页面上。
+   *
+   * 滚动要设 viewScrolled：route() 画完视图后会把页面拉回顶部，
+   * 不声明「这个视图自己有主张」就白滚了。
+   */
+  const anchor = (location.hash || '').slice(1)
+  if (anchor) {
+    const el = document.getElementById(anchor)
+    const pane = el?.closest('[data-pane]')
+    if (pane && TABS.some(([k]) => k === pane.dataset.pane)) showTab(pane.dataset.pane)
+    if (el) {
+      // 滚到它上面那个 h2，不是卡片本身——否则标题正好卡在视口外
+      const head = el.previousElementSibling?.tagName === 'H2' ? el.previousElementSibling : el
+      const jump = () => head.scrollIntoView({ block: 'start' })
+      /*
+       * 设置页有好几段是**拉完接口才画出来**的（#retention、#notify、#backup、
+       * #webpush…）。第一次滚过去的时候它们高度还是 0，内容进来之后整页被撑高，
+       * 而 Chrome 的**滚动锚定**会跟着把视口往下挪——于是刚才那一跳白跳了，
+       * 实测能被推开一千五百像素。
+       *
+       * 所以隔几帧回头看一眼：目标还在不在顶上，不在就补一跳。
+       * 判据是**目标的位置**而不是「scrollY 变没变」——正是锚定把 scrollY
+       * 改掉的，拿它当「用户动过了」的信号会把补跳整个跳过。
+       * 用户真的动了就停手：wheel / touchstart / keydown 只会由人触发。
+       */
+      let stopped = false
+      const stop = () => { stopped = true }
+      for (const ev of ['wheel', 'touchstart', 'keydown']) {
+        addEventListener(ev, stop, { passive: true })
+      }
+      viewScrolled = true
+      requestAnimationFrame(() => {
+        jump()
+        for (const ms of [80, 260, 600]) {
+          setTimeout(() => {
+            if (!stopped && Math.abs(head.getBoundingClientRect().top) > 6) jump()
+          }, ms)
+        }
+        setTimeout(() => {
+          for (const ev of ['wheel', 'touchstart', 'keydown']) removeEventListener(ev, stop)
+        }, 700)
+      })
+    }
+  }
 
   void paintTotp()
   paintA2HS()
