@@ -358,26 +358,29 @@
   /* ── 场景三：边走边看的人 ──────────────────────────────── */
   /* 导线再往下探一截，末端就是包落下来的地方——不接这一截的话，
      镜头一进这一幕，上面那条线就凭空断在屏幕外 */
-  /* 落点是放大镜的圆周。圆心 (275,150)、半径 130，导线在 x=210，
-     两者相交于 y≈37.4，也就是插画高度的 10.4%——鸟正好蹲在圆的边上。
+  /* 落点是气泡的上边。气泡顶在 y=20，也就是插画高度的 5.56%；
+     导线在 x=210，而气泡的圆角到 x≈203 就走完了，所以鸟蹲在平的那一段上。
      这一截必须量**插画自己**而不是 .sc-c：.vsub 在 .sc-c 里居中，
      它离顶多远随视口高度变（720 高时 124px、820 高时 111px、900 高时 203px），
      按 .sc-c 的百分比算，换个视口高度鸟就掉到画面外去了。
      往上那 100vh 是把线接回上一幕：那一段和第二幕的导线同一个 x，叠上去看不出来。
-     z-index 要压过放大镜（2），否则鸟有一半落在圆里，被圆的底色盖掉。 */
+     z-index 要压过气泡（2），否则鸟有一半落在气泡里，被气泡的底色盖掉。 */
   .rail-tail {
     position: absolute; left: 50%; margin-left: -2px; z-index: 4; width: 4px;
-    top: -100vh; height: calc(100vh + 10.4% * var(--land, 1));
+    top: -100vh; height: calc(100vh + 5.56% * var(--land, 1));
     border-radius: 2px; background: var(--cyan);
   }
   /* 最后一段的那只鸟：和上面是同一只，交接处一个淡出一个淡入。
      .packet 在 --land 到 .14 时淡完，这一只从 .14 才开始出现——
      两个窗口不重叠，是因为它俩在屏幕上不在同一个位置，
      同时可见的话就是两只鸟。（上一版重叠了 0…14，改过一次。）
-     这一只落下之后**不再淡出**：它停在放大镜的圆边上，
-     那就是「送到了」这句话本身。 */
+     这一只落下之后**不再淡出**：它停在气泡的上边，那就是「送到了」这句话本身。
+     `margin-bottom` 这个数是量出来的，不是算出来的：按整只的一半（-26px）
+     算，鸟有半个身子沉进气泡里、正好压住状态栏的信号格；而鸟的 svg 在 64
+     的画布里只画到 y≈47，**盒子底下还空着 14px**，所以按盒子对齐它又会
+     悬在气泡上方一指高。-20px 是这两头之间，脚刚好踩在边上。 */
   .rail-tail .bird {
-    position: absolute; left: 50%; bottom: 0; width: 52px; height: 52px; margin: 0 0 -26px -26px;
+    position: absolute; left: 50%; bottom: 0; width: 52px; height: 52px; margin: 0 0 -20px -26px;
     opacity: calc((var(--land, 1) - .14) / .05);
   }
   /* ── 收到的那一眼：人 + 放大镜 ────────────────────────────
@@ -394,9 +397,7 @@
      四层，坐标系统一是 420×360：
        ① .vsub-bg  街景，压到很淡，只为了说明「他在外面」
        ② .vsub-mid 人（头、帽衫、背包带、举着手机的那只手）
-       ③ .vlens    放大镜，里面是活的 HTML
-     放大镜的圆周直接压在他手里那台手机上，所以不需要另画连接线——
-     试过在中间摆两颗小圆（放大镜的老办法），它们只会落在屏幕上像两个白点。 */
+       ③ .vbub + .vtail  联想气泡与引出的两颗小圆，气泡里是活的 HTML */
   .vsub {
     position: relative; align-self: stretch; margin: 0 -16px; aspect-ratio: 420 / 360;
   }
@@ -409,35 +410,78 @@
   .vsub-bg { z-index: 0 }
   .vsub-mid { z-index: 1 }
 
-  /* 放大镜：圆心 (275,150)、半径 130，换算成 .vsub 的百分比就是下面这几个数。
-     aspect-ratio: 1 是必须的——.vsub 本身不是方的，写 height: 100% 会压成椭圆。
-     里面的字号挂在 .vlens 自己身上、内部一律用 em：圆有多大随视口变，
+  /* 联想气泡：里面是**放大的那块手机屏幕**，不是几行排版好的字。
+     上一版画成了一个正圆、里面直接摆文字——两处都不对：正圆是「放大镜」
+     的语汇（在看一张静止的图），而这里要说的是「同一条短信出现在他手上
+     这台的屏幕上」，所以它该是一个从手机引出来的气泡，里面是一块屏幕：
+     状态栏、桌面底色、一张通知卡，一眼认得出是手机。
+
+     坐标系 420×360：气泡 x 180..398、y 20..304（竖长比例，像一块屏幕），
+     左边留出 32 个单位的空当给两颗引出的小圆（.vtail）。
+     右边故意不顶满：.vsub 是 margin: 0 -16px 的出血排版，画到 97% 就已经
+     在屏幕外了，状态栏的电池会被整个切掉——插画的边缘可以出血，内容不行。
+     圆角用 clamp 跟着视口走——写 50% 就又变回椭圆了。
+
+     字号挂在 .vbub 自己身上、内部一律用 em：气泡多大随视口变，
      写死 px 的话手机上塞不下、桌面上又小得可笑。 */
-  .vlens {
-    position: absolute; left: 34.52%; top: 5.56%; width: 61.9%; aspect-ratio: 1; z-index: 2;
-    border-radius: 50%; overflow: hidden; border: var(--bw) solid var(--line);
-    background: var(--card); box-shadow: var(--shadow);
-    display: grid; place-items: center; text-align: center;
-    font-size: clamp(11px, 3.1vw, 15px);
+  .vbub {
+    position: absolute; left: 42.86%; top: 5.56%; width: 51.9%; height: 78.89%; z-index: 2;
+    border-radius: clamp(16px, 4.6vw, 28px); overflow: hidden;
+    border: var(--bw) solid var(--line); background: var(--bg); box-shadow: var(--shadow);
+    display: flex; flex-direction: column;
+    font-size: clamp(10.5px, 2.9vw, 14px);
     opacity: calc((var(--land, 1) - .48) / .3);
     transform: scale(calc(.9 + min(var(--land, 1), 1) * .1));
   }
-  .lens-in { width: 76% }
-  .lens-top {
-    margin: 0; display: flex; align-items: center; justify-content: center; gap: .36em;
-    font-size: .74em; font-weight: 800;
+  /* 屏幕是亮着的。气泡内部和页面底色都是 --bg，只靠一圈描边区分的话，
+     它读起来像页面上挖了个洞，而不是一块屏幕。压一层很淡的青当屏幕光。
+     用 ::before 而不是半透明色值：调色板是 CSS 变量，套不进 rgba()。 */
+  .vbub::before {
+    content: ''; position: absolute; inset: 0; background: var(--cyan);
+    opacity: .1; pointer-events: none;
   }
-  .lens-top img { display: block; flex: none; width: 1.5em; height: 1.5em }
-  .lens-src { margin: .22em 0 .9em; font-size: .68em; font-weight: 700; color: var(--muted) }
-  .lens-txt { margin: 0; font-size: .82em; font-weight: 700; line-height: 1.45 }
-  .lens-code {
-    margin: .1em 0 0; font-size: 2.1em; font-weight: 800; letter-spacing: .16em; line-height: 1.15;
+  @media (prefers-color-scheme: dark) { .vbub::before { opacity: .07 } }
+  .vbub-bar, .vbub-scr { position: relative; z-index: 1 }
+  /* 引出来的两颗小圆。它们是「这块屏幕属于他手里那台」这句话的全部——
+     没有它们，右边那块就只是旁边另开的一张图 */
+  .vtail {
+    position: absolute; z-index: 2; border-radius: 50%;
+    background: var(--bg); border: var(--bw) solid var(--line);
+    opacity: calc((var(--land, 1) - .44) / .3);
   }
-  .lens-ok {
-    margin: .5em 0 0; font-size: .66em; font-weight: 700; color: var(--muted);
+  .vtail-a { left: 38.69%; top: 48.47%; width: 3.57%; aspect-ratio: 1 }
+  .vtail-b { left: 36.07%; top: 52.64%; width: 2.14%; aspect-ratio: 1 }
+
+  /* 状态栏。和第一幕那台共用 .sig / .wifi / .batt，但这里不挂运营商——
+     气泡只有 230 来像素宽，多一个「中国移动」就把时间挤没了 */
+  .vbub-bar {
+    display: flex; align-items: center; gap: .5em; padding: .75em .8em .3em;
+    font-size: .76em; font-weight: 800; color: var(--fg); white-space: nowrap; flex: none;
+  }
+  .vbub-bar b { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums }
+  .vbub-scr { flex: 1; display: grid; place-items: center; padding: 0 .7em 2.6em; min-height: 0 }
+  /* 通知卡：压在桌面底色（--bg）上的一张 --card，和控制台里那套一致 */
+  .nfcard {
+    width: 100%; box-sizing: border-box; text-align: center;
+    border: var(--bw) solid var(--line); border-radius: .9em;
+    background: var(--card); box-shadow: var(--shadow); padding: .8em .7em .9em;
+  }
+  .nf-top {
+    margin: 0; display: flex; align-items: center; gap: .36em;
+    font-size: .76em; font-weight: 800; text-align: left;
+  }
+  .nf-top img { display: block; flex: none; width: 1.5em; height: 1.5em }
+  .nf-top span { margin-left: auto; font-weight: 700; color: var(--muted) }
+  .nf-src { margin: .3em 0 .8em; font-size: .7em; font-weight: 700; color: var(--muted); text-align: left }
+  .nf-txt { margin: 0; font-size: .82em; font-weight: 700; line-height: 1.45 }
+  .nf-code {
+    margin: .12em 0 0; font-size: 2em; font-weight: 800; letter-spacing: .16em; line-height: 1.15;
+  }
+  .nf-ok {
+    margin: .5em 0 0; font-size: .68em; font-weight: 700; color: var(--muted);
     display: flex; align-items: center; justify-content: center; gap: .4em;
   }
-  .lens-ok i {
+  .nf-ok i {
     width: 1.25em; height: 1.25em; border-radius: 50%; background: var(--mint);
     border: 1.5px solid var(--line); display: grid; place-items: center;
     font-style: normal; font-size: .82em; line-height: 1; color: var(--on-bright); flex: none;
@@ -1149,15 +1193,31 @@
             </g>
           </svg>
 
-          <!-- ③ 放大镜：里面是活的 HTML，字是真的、能选中、复制按钮真能用 -->
-          <div class="vlens">
-            <div class="lens-in">
-              <p class="lens-top"><img src="/logo.svg" alt="" width="17" height="17">Homing 转发 · 刚刚</p>
-              <p class="lens-src">来自「家里 · 安卓备用机」</p>
-              <p class="lens-txt">【招商银行】您的验证码是</p>
-              <p class="lens-code" id="v2_code">1357</p>
-              <p class="lens-ok"><i>✓</i>已送到你手上这台</p>
-              <button type="button" class="bn-copy" id="v2_copy">复制验证码</button>
+          <!-- ③ 联想气泡：里面是放大的那块手机屏幕。
+               字是真的、能选中、复制按钮真能用 -->
+          <i class="vtail vtail-b"></i>
+          <i class="vtail vtail-a"></i>
+          <div class="vbub">
+            <div class="vbub-bar">
+              <span class="sig"><i></i><i></i><i></i><i></i></span>
+              <svg class="wifi" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                   stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+                <path d="M1.6 5.6C5.2 2.5 10.8 2.5 14.4 5.6"/>
+                <path d="M4.2 8.6C6.4 6.8 9.6 6.8 11.8 8.6"/>
+                <path d="M6.7 11.5C7.5 10.9 8.5 10.9 9.3 11.5"/>
+              </svg>
+              <b id="v2_clock2">22:16</b>
+              <span class="batt"><i></i></span>
+            </div>
+            <div class="vbub-scr">
+              <div class="nfcard">
+                <p class="nf-top"><img src="/logo.svg" alt="" width="17" height="17">Homing<span>刚刚</span></p>
+                <p class="nf-src">来自「家里 · 安卓备用机」</p>
+                <p class="nf-txt">【招商银行】您的验证码是</p>
+                <p class="nf-code" id="v2_code">1357</p>
+                <p class="nf-ok"><i>✓</i>已送到你手上这台</p>
+                <button type="button" class="bn-copy" id="v2_copy">复制验证码</button>
+              </div>
             </div>
           </div>
 

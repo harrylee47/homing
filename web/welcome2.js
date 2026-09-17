@@ -216,8 +216,12 @@
   function clock() {
     var d = new Date()
     var t = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
-    var a = document.getElementById('v2_clock')
-    if (a) a.textContent = t
+    // 两幕各有一条状态栏（家里那台、他手上那台），走同一个时间
+    var bars = ['v2_clock', 'v2_clock2']
+    for (var i = 0; i < bars.length; i++) {
+      var a = document.getElementById(bars[i])
+      if (a) a.textContent = t
+    }
     var big = document.getElementById('v2_big')
     if (big) big.textContent = t
     // 锁屏上的日期也取读者自己的。写死一个日期和写死一个时间是同一种不真
