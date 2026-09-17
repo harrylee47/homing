@@ -314,6 +314,30 @@
   }
   .bn-copy[data-done] { background: var(--mint) }
 
+  /* 可选：速度线流动。不加这段也成立——静止时就是三条实线。
+
+     方向和人走的方向一致：dashoffset 走负值 = 虚线图案往 +x 跑。
+     周期 14（dasharray 9+5），所以走到 -14 正好接回原样，循环无缝；
+     写成别的值就会在每一轮开头顿一下。
+
+     只在 html[data-motion="on"] 下生效，和落地页其余动效同一个开关：
+     脚本没跑 / 被 CSP 拦掉 / 出错时，这里是三条普通实线，不是空白。 */
+  @keyframes wsideprofile-streak { to { stroke-dashoffset: -14 } }
+
+  html[data-motion="on"] .wsideprofile-speed path {
+    stroke-dasharray: 9 5;
+    animation: wsideprofile-streak .6s linear infinite;
+  }
+
+  /* 减少动效时是根本不动，不是动得慢一点——顺手把虚线也去掉，
+     否则留下的是三条断线，看着像画错了 */
+  @media (prefers-reduced-motion: reduce) {
+    html[data-motion="on"] .wsideprofile-speed path {
+      stroke-dasharray: none;
+      animation: none;
+    }
+  }
+
   /* ── 常驻：下滑提示 ── */
   .stage-in::after {
     content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 160px; z-index: 3;
@@ -827,36 +851,133 @@
             </svg></span></i>
         <div class="walkset">
           <svg class="walker" viewBox="0 0 160 250" aria-hidden="true">
+            <path d="M2 232 L158 232" fill="none" stroke="var(--muted)" stroke-width="3"
+                  stroke-linecap="round" stroke-dasharray="3 12"/>
+
             <!-- 速度线：不画它，这个人就是站着的 -->
-            <g stroke="var(--line)" stroke-width="3" stroke-linecap="round" opacity=".3">
-              <path d="M10 104 L34 104"/><path d="M2 122 L26 122"/><path d="M14 140 L36 140"/>
+            <g class="wsideprofile-speed" fill="none" stroke="var(--muted)" stroke-width="3.2" stroke-linecap="round">
+              <path fill="none" d="M3 46 L27 46"/>
+              <path fill="none" d="M2 62 L22 62"/>
+              <path fill="none" d="M5 78 L25 78"/>
             </g>
-            <!-- 四肢：同一组路径描两遍，粗的那遍当轮廓、细的那遍当填色。
-                 直接用细线画的话是根火柴人，而这一版的其余部分都是「色块 + 硬描边」 -->
-            <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <g stroke="var(--line)" stroke-width="19">
-                <path d="M58 92 C51 104 47 116 46 126"/><path d="M62 146 C56 172 48 198 40 216"/>
-                <path d="M86 146 C96 170 106 192 114 208"/><path d="M88 90 C104 96 118 104 127 112"/>
-              </g>
-              <g stroke="var(--violet)" stroke-width="12">
-                <path d="M58 92 C51 104 47 116 46 126"/><path d="M62 146 C56 172 48 198 40 216"/>
-                <path d="M86 146 C96 170 106 192 114 208"/><path d="M88 90 C104 96 118 104 127 112"/>
-              </g>
-            </g>
-            <!-- 鞋。原来是两条从腿末端支出去的短线，读起来不像脚，像画错了两笔。
-                 填 var(--card) 描 var(--line)，和头一个做法，两种主题下都立得住 -->
+
             <g stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round">
-              <path fill="var(--card)" d="M31 209 C25 215 26 224 35 224 L57 224 C60 217 55 210 47 208 Z"/>
-              <path fill="var(--card)" d="M105 201 C99 207 100 216 109 216 L132 216 C135 209 130 202 122 200 Z"/>
+
+              <!-- 远端手臂：向后甩。两端都收进躯干轮廓里面，肩口才不会豁一个黑楔子 -->
+              <path fill="var(--violet)" d="
+                M58 77
+                C48 84, 39 90, 35 95.8
+                C31 101, 27 105, 23.1 109.8
+                C20 113.5, 28 120.5, 32.9 118.2
+                C37 112, 41 108, 44.9 104.2
+                C49 99, 57 92, 66 88 Z"/>
+              <path fill="var(--card)" d="
+                M32 111 C35.5 113.5, 36 120, 32.5 123.5
+                C29 127, 22.5 126, 20.5 121.5
+                C18.8 117.5, 21 112.5, 25 111 C27.8 110, 30 109.5, 32 111 Z"/>
+
+              <!-- 后腿：蹬地，脚跟抬起、脚尖点地 -->
+              <path fill="var(--card)" d="
+                M71 134 C67 152, 62 168, 57 182
+                C54 190, 51 196, 48 202
+                C45 208, 36 206, 36 199
+                C38 190, 40 182, 42 174
+                C45 160, 47 146, 48 134 Z"/>
+              <path fill="var(--yellow)" d="
+                M37 196 C32 200, 32 209, 38 212 L52 220
+                C58 223, 64 218, 60 212 L51 197
+                C47 191, 40 192, 37 196 Z"/>
+
+              <!-- 前腿：迈出去，整只脚落地 -->
+              <path fill="var(--card)" d="
+                M81 132 C87 148, 94 166, 100 184
+                C103 192, 105 198, 106 204
+                C108 211, 97 213, 94 206
+                C90 196, 84 183, 78 170
+                C72 157, 68 144, 66 132 Z"/>
+              <path fill="var(--yellow)" d="
+                M93 206 C89 211, 90 219, 96 221 L117 221
+                C124 221, 126 214, 121 210 L109 202
+                C103 198, 96 200, 93 206 Z"/>
+
+              <!-- 脖子：后缘要够宽，否则头发和衣领之间会漏出一条背景 -->
+              <path fill="var(--card)" d="M55 54 L75 54 C74 66, 73.5 73, 73 81 L52 81 C54 72, 55 63, 55 54 Z"/>
+
+              <!-- 外套 -->
+              <path fill="var(--violet)" d="
+                M52 79
+                C54 73, 60 70, 67 70.5
+                C73 71, 77 74, 78.5 79
+                C82 90, 84 103, 82 116
+                C80.5 126, 80 136, 81 146
+                C71 150, 57 150, 49 146
+                C47 133, 46 117, 46.5 101
+                C47 90, 49.5 84, 52 79 Z"/>
+
+              <!-- 挎包 + 背带：说明这人是在外面，不是在家里 -->
+              <path fill="none" stroke-width="4.2" d="M72 71 C68 92, 64 110, 61.5 126"/>
+              <path fill="var(--cyan)" d="
+                M39 124 L61 124 C64 124, 66 126, 66 129
+                L66 148 C66 151, 64 153, 61 153
+                L39 153 C36 153, 34 151, 34 148
+                L34 129 C34 126, 36 124, 39 124 Z"/>
+              <path fill="none" stroke-width="3" d="M34 133 L66 133"/>
+
+              <!-- 近端手臂：插肩缝从衣领下面走到腋下，腕在 (114,108)，手心正好压在 (127,112) -->
+              <path fill="var(--violet)" d="
+                M68 71.5
+                C82 72.5, 93 85, 99 99.5
+                C104 101, 109 101.2, 113.5 101.5
+                C117.5 102, 117.5 114, 112.6 114.5
+                C105 115, 97 114.5, 92 112.5
+                C87.5 111, 85 105.5, 83 98
+                C81 92, 76 80, 68 71.5 Z"/>
+
+              <!-- 手：拇指和四指之间留一道口子，卡片的左边缘正好卡进去 -->
+              <path fill="var(--card)" d="
+                M110 105
+                C110.5 99.5, 116 96.5, 122 98
+                C125.5 99, 127.5 100.5, 129.5 101
+                C134.5 100, 138.5 103.5, 136.5 108
+                C134.5 111.5, 129.5 111.5, 126.5 110
+                C128.5 115, 127.5 121.5, 122.5 123.5
+                C116.5 126, 109.5 123, 107.5 117
+                C106 113, 106.5 107.5, 110 105 Z"/>
+
+              <!-- 头：严格正侧面——额头 → 鼻梁 → 鼻尖 → 人中 → 下巴 → 下颌线是一条连续轮廓，
+                   耳朵和后脑的发块各自成形。微微低头 6°，是在看手里那条通知 -->
+              <g transform="translate(0 2) rotate(6 64 74)">
+                <path fill="var(--card)" d="
+                  M64 19
+                  C73 19, 79 26, 79.5 36
+                  C79.6 39, 78.5 41, 77 42.5
+                  C79.5 45, 83 47.5, 85.5 50
+                  C87 51.5, 86 53.5, 84 53.5
+                  L78.5 53.5
+                  C77.2 53.5, 76.9 54.5, 77.1 56
+                  C78.5 58, 78 62, 74.5 64.5
+                  C67 67, 56 65, 49 58
+                  C43 52, 41 45, 41.5 38
+                  C42 27, 54 19, 64 19 Z"/>
+                <path fill="var(--yellow)" d="
+                  M80 32
+                  C78.5 22, 70 15, 58 15.5
+                  C45 16, 33 26, 34 41
+                  C35 50, 38 60, 42 68
+                  C47 74, 55 77, 61 74
+                  C58 65, 54.5 57, 52 50
+                  C51 43, 51 37, 55 32.5
+                  C61 27, 73.5 27.5, 80 32 Z"/>
+                <path fill="var(--card)" d="
+                  M52 43.5 C57.5 41.5, 61 45.5, 59.5 50
+                  C58 54.5, 54 56, 52 54
+                  C50 52, 50 45, 52 43.5 Z"/>
+                <path fill="none" stroke-width="2.4" d="M54.6 47 C56.4 47.7, 56.3 51, 54.7 51.6"/>
+                <path fill="none" stroke-width="3" d="M67.5 38.8 C71 36.5, 74.5 36.6, 76.6 38.2"/>
+                <circle cx="73.4" cy="44" r="2.7" fill="var(--line)" stroke="none"/>
+                <path fill="none" stroke-width="2.8" d="M70.8 56 C72.9 57.6, 74.8 57.4, 75.8 56.4"/>
+              </g>
             </g>
-            <g stroke="var(--line)" stroke-width="3.4" stroke-linejoin="round">
-              <path fill="var(--violet)" d="M54 74 C46 96 46 124 52 150 L94 150 C100 124 98 96 88 74 Z"/>
-              <circle cx="70" cy="48" r="24" fill="var(--card)"/>
-              <path fill="var(--yellow)" d="M46 50 A24 24 0 0 1 94 50 Z"/>
-            </g>
-            <circle cx="82" cy="56" r="3.4" fill="var(--line)"/>
-            <path d="M4 232 L156 232" stroke="var(--line)" stroke-width="3" stroke-linecap="round"
-                  stroke-dasharray="2 12" opacity=".35"/>
           </svg>
           <div class="vdev handphone">
             <div class="vdev-bar">
