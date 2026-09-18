@@ -141,11 +141,75 @@
         if (d.open === false) {
           invNote.textContent = '· 这台网关当前关闭了自助注册，码暂时用不了'
         }
+        rescrollToHash()
       })
       .catch(function () {
         empty(annBox, '取不到公告。可能是这台网关正在重启，过一会儿刷新试试。')
         empty(invBox, '取不到邀请码。')
+        // 失败这条路也要补滚：那两句错误提示同样会改变页面高度
+        rescrollToHash()
       })
+  }
+
+  /**
+   * 带 #锚点 打开时，把目标**滚到位并盯住它**，直到位置稳定。
+   *
+   * 注册页那条「没有码？去看公开的 →」指向 /notice#invites。而这一页的公告和
+   * 邀请码都是**拉完接口才画出来**的：浏览器最初那一跳发生在它们还是空的时候，
+   * 内容进来把整页撑高，锚点就被推到屏幕外——人点过来看到的是公告，不是邀请码。
+   * 设置页那几个锚点栽过同一跤，那边记下的两条教训这里同样适用：
+   *
+   * ① **判据是「目标还在不在该在的位置」，不是「scrollY 变没变」。**
+   *    内容撑高时浏览器的滚动锚定会自己挪视口，拿 scrollY 当「用户动过了」
+   *    的信号，正好会把补滚整个跳过——因为改掉 scrollY 的恰恰是锚定本身。
+   * ② **用户真动了就立刻停手。** wheel / touchstart / keydown 只会由人触发。
+   *
+   * 所以这里不是「等一个拍脑袋的毫秒数再滚一次」，而是每帧看一眼：目标偏了就
+   * 重新对齐，连续几帧都没偏才算稳、收工。字体加载完、图片进来、列表再长一截，
+   * 全都在这个窗口里被兜住。总时长有上限，不会一直跑。
+   */
+  var hashWatch = null
+  function rescrollToHash() {
+    var id = (location.hash || '').slice(1)
+    if (!id || hashWatch) return
+    var el = document.getElementById(id)
+    if (!el) return
+
+    var moved = false
+    var evs = ['wheel', 'touchstart', 'keydown']
+    function stop() { moved = true }
+    for (var i = 0; i < evs.length; i++) addEventListener(evs[i], stop, { passive: true })
+    function cleanup() {
+      for (var j = 0; j < evs.length; j++) removeEventListener(evs[j], stop)
+      hashWatch = null
+    }
+
+    var deadline = Date.now() + 3000   // 总预算：再长就不是「页面还在长」了
+    var stable = 0
+    hashWatch = function tick() {
+      if (moved) return cleanup()
+      var target = document.getElementById(id)
+      if (!target) return cleanup()
+      var top = target.getBoundingClientRect().top
+      /*
+       * 「到位了」有**两种**：目标顶到了视口顶，**或者**页面已经滚到底、
+       * 再也滚不动了。只判前者的话，目标靠近文档末尾时永远满足不了，
+       * 于是每一帧都在白白 scrollIntoView，直到 3 秒预算耗尽——
+       * 功能上看不出来，但那是三秒的无用滚动，还会一直压着用户的滚动。
+       *
+       * 允许 2px 抖动：子像素与滚动惯性会让它一直差一点点，判死了收不了工。
+       */
+      var atEnd = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2
+      if (top <= 2 || atEnd) {
+        if (++stable >= 3) return cleanup()
+      } else {
+        stable = 0
+        target.scrollIntoView({ block: 'start' })
+      }
+      if (Date.now() > deadline) return cleanup()
+      requestAnimationFrame(hashWatch)
+    }
+    requestAnimationFrame(hashWatch)
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot)

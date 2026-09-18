@@ -173,6 +173,10 @@
     {
       "pattern": "^未使用 · ([\\d/\\-.: ]{1,32}) 前有效 · 开出的账号 (\\d+) 天有效$",
       "to": "Unused · valid until $1 · the account it creates is valid for $2 days"
+    },
+    {
+      "pattern": "^(\\d+) 台设备$",
+      "to": "$1 devices"
     }
   ]
 }

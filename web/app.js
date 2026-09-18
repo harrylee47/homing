@@ -164,14 +164,25 @@ function deviceClass(id) {
  * `/welcome`——而那是唯一一张讲「这是什么」的页面，也是唯一一张给
  * 还没有账号的人看的页面。点 logo 回首页是通用习惯，这里正好补上这个口子。
  */
-const brand = (sub = '') => `
-  <a class="brand" href="/welcome">
-    <img src="/logo.svg" alt="" width="52" height="52">
-    <div class="col">
-      <b>Homing</b>
-      ${sub ? `<span class="muted">${esc(sub)}</span>` : ''}
-    </div>
-  </a>`
+/**
+ * 品牌头。
+ *
+ * `home: true` 时右上角多一颗「返回首页」——给**还没有账号**的那几页用
+ * （登录、注册、找回）。logo 本身一直是通往落地页的链接，但那是个不写出来的
+ * 约定：没账号的人第一次落在登录页上，没有任何一处告诉他「这是什么、还能去哪」。
+ * 而这几页恰恰是陌生人最常落到的地方。
+ */
+const brand = (sub = '', opts = {}) => `
+  <div class="brandbar">
+    <a class="brand" href="/welcome">
+      <img src="/logo.svg" alt="" width="52" height="52">
+      <div class="col">
+        <b>Homing</b>
+        ${sub ? `<span class="muted">${esc(sub)}</span>` : ''}
+      </div>
+    </a>
+    ${opts.home ? '<a href="/welcome" class="muted brandhome">返回首页</a>' : ''}
+  </div>`
 
 /** 列表项左侧色带的类别。与 style.css 的 .s-* 对应。 */
 const stripeOf = (kind, direction) =>
@@ -704,7 +715,7 @@ function login() {
   if (back) sessionStorage.setItem(BACK_KEY, back)
 
   render(`
-    ${brand('把消息带到你身边')}
+    ${brand('把消息带到你身边', { home: true })}
     ${back ? '<div class="card tight muted">登录后回到你要看的那条消息。</div>' : ''}
     <div class="card">
       <label>用户名</label>
@@ -937,7 +948,7 @@ async function register() {
 
   if (!pub?.open) {
     render(`
-      ${brand('注册')}
+      ${brand('注册', { home: true })}
       <div class="card">
         <div class="notice">这台服务器<b>没有开放注册</b>。</div>
         <p class="muted">它是个人自建的服务，账号由管理员发放。
@@ -950,9 +961,17 @@ async function register() {
   }
 
   render(`
-    ${brand('创建账号')}
+    ${brand('创建账号', { home: true })}
     <div class="card">
-      <label>邀请码</label>
+      <!--
+        「没有码的人怎么办」原来这一页一个字都没说，而这恰恰是陌生人卡住的地方：
+        占位符写着「向邀请你的人要一个」——可他要是没人可要呢。
+        通知页上就挂着公开码，而那一页不需要登录，正是为这种人准备的。
+      -->
+      <div class="row" style="align-items:baseline">
+        <label style="margin:0">邀请码</label>
+        <a href="/notice#invites" class="muted" style="flex:none;font-size:13px">没有码？去看公开的 →</a>
+      </div>
       <input id="code" class="mono" style="letter-spacing:3px;text-transform:uppercase"
              value="${esc(fromLink)}" placeholder="向邀请你的人要一个">
       <label>用户名</label>
@@ -1052,7 +1071,7 @@ async function recover() {
   const paint = () => {
     if (state.step === 'who') {
       render(`
-        ${brand('找回口令')}
+        ${brand('找回口令', { home: true })}
         <div class="card">
           <label>用户名</label>
           <input id="name" autocomplete="username" value="${esc(state.name)}">
@@ -1095,7 +1114,7 @@ async function recover() {
     // 第二步：填码 + 设新口令
     const isCh = state.method === 'channel'
     render(`
-      ${brand('找回口令')}
+      ${brand('找回口令', { home: true })}
       <div class="card">
         ${isCh ? `
           <div class="notice">已向 <b>${esc(state.name)}</b> 配置的<b>所有渠道</b>发送了验证码，10 分钟内有效。
@@ -1220,7 +1239,13 @@ async function overview() {
               <span class="badge ${deviceClass(d.id)}">${esc(d.name)}</span>
               <span class="dot ${d.status}"></span>
             </div>
-            <div class="muted">最后心跳 ${ago(d.last_seen_at)}${d.status === 'revoked' ? battery(d) : ''}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</div>
+            <!--
+              **拼在一起就翻不了。** i18n 走的是整串精确匹配，而这一行原来是
+              「最后心跳 ${'$'}{ago()} · v…」拼成的**一个**文本节点：整句命中了规则，
+              可捕获组里那个「13 分钟前」是原样透传的，英文界面下就露出来了。
+              拆成各自的 span，每一段就都能单独查表（「13 分钟前」词表里本来就有）。
+            -->
+            <div class="muted"><span>最后心跳</span> <span>${ago(d.last_seen_at)}</span>${d.status === 'revoked' ? battery(d) : ''}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</div>
             ${d.status === 'revoked' ? '' : statusBadges(d)}
           </div>
           <span class="badge ${d.status === 'online' ? 'ok' : d.status === 'revoked' ? 'err' : 'plain'}">${
@@ -1943,9 +1968,19 @@ async function sent() {
           <div class="muted truncate" style="margin-top:3px">${esc(o.text)}</div>
           <div class="row" style="justify-content:flex-start;gap:6px;margin-top:6px">
             ${statusBadge(o.status)}
-            ${o.error ? `<span class="badge err">${esc(o.error)}</span>` : ''}
           </div>
-          ${metaLine([o.sim], o.device_id, o.device_name, multi)}
+          <!--
+            失败原因不能塞进徽章。徽章是 white-space:nowrap 的（「失败」「已送达」
+            这种短标签本来就该不换行），而这里装的是系统给的任意长文本——
+            在 flex 行里它会把整行撑开，进而把整页撑出横向滚动，实测 360 宽下
+            body 到了 462，而「body 绝不横向滚动」是硬要求。
+
+            按列表排版那条规矩，长的次要信息本来就该压成一行小字；
+            徽章只留「状态本身就是主要信息」的那一个。会话气泡那边早就是这么做的。
+
+            （注意：这段注释在模板字符串里，不能出现反引号——会把模板提前闭合。）
+          -->
+          ${metaLine([o.sim, o.error].filter(Boolean), o.device_id, o.device_name, multi)}
         </div>`).join('')}</div>` : ''}
       ${r.total > limit ? `
         <div class="card tight row">
@@ -2118,7 +2153,7 @@ async function rules() {
         <div class="item" data-id="${esc(r.id)}">
           <div class="row">
             <div class="col grow">
-              <b>${esc(r.name)}</b>
+              <b class="wrap">${esc(r.name)}</b>
               <span class="muted">优先级 ${r.priority} · ${r.action.channels.length ? `${r.action.channels.length} 个渠道` : '只归档'}${r.action.extract_code ? ' · 提取验证码' : ''}</span>
               <span class="muted">${esc(matchSummary(r.match))}</span>
               ${r.match.device_ids?.length
@@ -2757,7 +2792,12 @@ async function channels() {
         <div class="item">
           <div class="row">
             <div class="col grow">
-              <b>${esc(c.name)}</b>
+              <!--
+                名字用 wrap 不用 truncate：渠道名是用户自己起的、是这一行的主标识，
+                截断会让「主 Bark」和「主 Bark（备用）」在列表里长得一模一样。
+                只有几条渠道，换行的代价可以忽略。
+              -->
+              <b class="wrap">${esc(c.name)}</b>
               <span class="muted">${c.type === 'webpush' ? '浏览器通知' : esc(c.type)}${c.enabled ? '' : ' · 已停用'}</span>
             </div>
             ${c.enabled && c.in_rules === 0
@@ -3116,7 +3156,15 @@ async function channels() {
       const gen = $('#f_gen')
       if (gen) gen.onclick = () => {
         const A = 'abcdefghijkmnpqrstuvwxyz23456789'
-        const r = crypto.getRandomValues(new Uint8Array(20))
+        /*
+         * 10 位。原来 20 位（整串 27 个字符），抄进 ntfy App 很痛苦。
+         *
+         * 为什么不是 6：公共实例上**主题名就是唯一的门**，而 `homing-` 这个前缀
+         * 会把搜索空间锁定到本项目的用户——扫的人可以一次扫所有人，不必针对
+         * 某一个。32 字符表下 6 位约 2^30，那是扫得动的；10 位约 2^50，扫不动。
+         * 整串 17 个字符，比原来短了十个，也还抄得动。
+         */
+        const r = crypto.getRandomValues(new Uint8Array(10))
         $('#f_topic').value = 'homing-' + Array.from(r, (x) => A[x % A.length]).join('')
       }
 
@@ -3569,7 +3617,8 @@ async function devices() {
             <div class="col grow">
               <div><span class="dot ${d.status}"></span><b>${esc(d.name)}</b></div>
               <span class="muted mono" style="font-size:11px">${esc(d.id)}</span>
-              <span class="muted">心跳 ${ago(d.last_seen_at)}${d.status === 'revoked' ? battery(d) : ''}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</span>
+              <!-- 同总览页那条：拼成一个文本节点的话，捕获组里的「15 分钟前」翻不到 -->
+              <span class="muted"><span>心跳</span> <span>${ago(d.last_seen_at)}</span>${d.status === 'revoked' ? battery(d) : ''}${d.app_version ? ` · v${esc(d.app_version)}` : ''}</span>
               ${d.status === 'revoked' ? '' : statusBadges(d)}
             </div>
             <div style="display:flex;gap:6px;flex-direction:column;align-items:flex-end">
@@ -3583,7 +3632,7 @@ async function devices() {
             </div>
           </div>
           <div class="muted" data-loc="${esc(d.id)}" style="margin-top:6px">
-            ${d.has_location ? `上次定位 ${ago(d.location_at)} · <a href="#" data-showloc="${esc(d.id)}">查看</a>` : ''}
+            ${d.has_location ? `<span>上次定位</span> <span>${ago(d.location_at)}</span> · <a href="#" data-showloc="${esc(d.id)}">查看</a>` : ''}
           </div>
         </div>`).join('')}</div>` : '<div class="card muted">还没有设备。</div>'}
       <h2>同步手机里已有的短信和通话</h2>
@@ -3860,8 +3909,9 @@ async function paintUsers() {
           <b>${esc(u.name)}${u.is_me ? ' <span class="muted">（你）</span>' : ''}</b>
           ${u.disabled ? '<span class="badge err">已停用</span>' : ''}
         </div>
-        <span class="muted">${u.role === 'admin' ? '管理员' : '普通用户'} · ${u.devices} 台设备 · ${
-          u.totp ? '已开两步验证' : '未开两步验证'} · ${validityText(u)}</span>
+        <!-- 同上：每一段各自成节点，否则整句只会命中一条规则，里面的词原样透传 -->
+        <span class="muted"><span>${u.role === 'admin' ? '管理员' : '普通用户'}</span> · <span>${u.devices} 台设备</span> · <span>${
+          u.totp ? '已开两步验证' : '未开两步验证'}</span> · <span>${validityText(u)}</span></span>
         ${u.is_me ? '' : `
           <!-- 按钮横排在下面一行，不挤在名字旁边：窄屏上三个按钮竖着排会把行撑得很高 -->
           <div class="row" style="justify-content:flex-start;gap:6px;flex-wrap:wrap;margin-top:8px">

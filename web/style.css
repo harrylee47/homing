@@ -130,7 +130,28 @@ h2::before {
 .grow { flex: 1; min-width: 0; }
 .muted { color: var(--muted); font-size: 13px; }
 .mono { font-family: var(--mono); }
-.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/*
+ * 单行截断。
+ *
+ * **`display: block` 不能省。** `overflow: hidden` 对行内元素不生效——
+ * 行内盒不建立滚动容器，于是 `white-space: nowrap` 照旧生效而裁剪没有，
+ * 结果就是一长条文字直接捅出卡片。公告正文那条
+ * （`<span class="muted truncate">`）就是这么溢出的：里面一个
+ * `【i@kou.im】` 是不可断的长 token，一行排不下又裁不掉。
+ *
+ * 挂在 flex 子项上的那几个（`.row` 里的 `<b class="truncate">`）本来就被
+ * 自动块级化了，所以这条对它们是无操作；真正被修好的是那些独立的 span。
+ *
+ * `min-width: 0` 是给 flex 子项的：不写的话它默认 `min-width: auto`，
+ * 撑到内容宽度就不再收缩，截断永远不会发生。
+ */
+.truncate {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .wrap { overflow-wrap: anywhere; }
 
 /*
@@ -332,6 +353,21 @@ b.missed { font-weight: 800; }
   background: var(--card);
   color: var(--fg);
   white-space: nowrap;
+  /*
+   * **徽章永远不许把版面撑开。** 它是 nowrap 的，所以只要有人往里塞一段长文本
+   * （系统返回的错误原因最常见），在 flex 行里就会把整页撑出横向滚动——
+   * 实测 /sent 在 360 宽下 body 到了 462，而「body 绝不横向滚动」是硬要求。
+   *
+   * 正确的做法是别往徽章里塞长文本（长的次要信息压成 .meta 那行小字），
+   * 这几行是兜底：万一哪天又有人塞了，最多是这一个徽章被省略号截住，
+   * 而不是整页能左右拖。inline 元素的 overflow 不生效，所以要 inline-block。
+   */
+  display: inline-block;
+  vertical-align: middle;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -682,6 +718,20 @@ details[open] > summary::before { content: "▾ "; }
 a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 3px; }
 
 /* 品牌头：logo + 名字。只在登录、向导、总览出现 */
+/*
+ * 品牌头那一条。右边可以挂一颗「返回首页」——给还没有账号的那几页用。
+ * brand 自己不再带下外边距，改由 .brandbar 统一给，否则两者会各算一份。
+ */
+.brandbar {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin: 2px 0 18px;
+}
+.brandbar .brand { margin: 0; }
+.brandhome {
+  flex: none; font-size: 13px; text-decoration: underline;
+  text-underline-offset: 3px; padding-top: 6px; white-space: nowrap;
+}
+
 .brand {
   display: flex; align-items: center; gap: 12px;
   margin: 2px 0 18px;

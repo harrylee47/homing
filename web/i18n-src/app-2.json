@@ -233,7 +233,18 @@
     "里把它改成「凭邀请码自助注册」才生效。": " at the top of this page and switch it to \"Register with an invite code\".",
     "你是管理员": "You are the admin",
     "：到「管理员」那一栏最上面的": ": open it under Admin → ",
-    "里打开它。": " at the top of that tab."
+    "里打开它。": " at the top of that tab.",
+    "返回首页": "Home",
+    "没有码？去看公开的 →": "No code? See public ones →",
+    "在路上": "on the move",
+    "咖啡馆": "in a café",
+    "机场": "at the airport",
+    "继续下滑": "Keep scrolling",
+    "往下看它怎么用": "See how it works",
+    "下滑，把它传过去": "Scroll — send it across",
+    "最后心跳": "Last heartbeat",
+    "心跳": "Heartbeat",
+    "上次定位": "Last location"
   },
   "rules": [
     {
